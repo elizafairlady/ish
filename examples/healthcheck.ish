@@ -1,0 +1,38 @@
+# healthcheck.ish — Parallel service health checker
+#
+# The point: curl is just a command. spawn is just a keyword.
+# Pattern matching routes results. No libraries, no boilerplate.
+
+fn check url, reply_to do
+  code = $(curl -s -o /dev/null -w "%{http_code}" --max-time 3 $url 2>/dev/null)
+  if [ "$code" = "200" ]; then
+    send reply_to, {:ok, url, code}
+  else
+    send reply_to, {:error, url, code}
+  fi
+end
+
+fn report {:ok, url, code} do
+  echo "  ok   $url ($code)"
+end
+fn report {:error, url, code} do
+  echo "  FAIL $url ($code)"
+end
+
+# --- check endpoints concurrently ---
+echo "Checking endpoints..."
+
+me = self
+spawn fn do check "https://example.com", me end
+spawn fn do check "https://httpbin.org/status/200", me end
+spawn fn do check "https://httpbin.org/status/500", me end
+spawn fn do check "https://httpbin.org/status/404", me end
+
+# Collect all 4 results — they arrive in whatever order finishes first
+for _ in 1 2 3 4; do
+  receive do
+    result -> report result
+  end
+done
+
+echo "Done."

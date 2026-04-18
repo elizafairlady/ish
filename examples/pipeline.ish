@@ -1,0 +1,30 @@
+# pipeline.ish — Data processing pipeline
+#
+# Shell commands produce data, ish functions transform it.
+# User-defined functions pipe seamlessly with grep, sort, awk.
+
+fn make_logs do
+  echo "10:23:01 INFO  /api/users 200 45ms"
+  echo "10:23:02 ERROR /api/login 500 120ms"
+  echo "10:23:03 INFO  /api/users 200 38ms"
+  echo "10:23:04 WARN  /api/search 429 200ms"
+  echo "10:23:05 ERROR /api/upload 503 5000ms"
+  echo "10:23:06 INFO  /api/users 200 42ms"
+  echo "10:23:07 INFO  /api/health 200 2ms"
+  echo "10:23:08 ERROR /api/login 401 15ms"
+end
+
+echo "=== All errors ==="
+make_logs | grep ERROR
+
+echo ""
+echo "=== Status codes ==="
+make_logs | awk '{print $4}' | sort | uniq -c | sort -rn
+
+echo ""
+echo "=== Error endpoints ==="
+make_logs | grep ERROR | awk '{print $3}' | sort | uniq -c | sort -rn
+
+echo ""
+echo "=== Requests per endpoint ==="
+make_logs | awk '{print $3}' | sort | uniq -c | sort -rn

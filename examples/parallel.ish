@@ -1,0 +1,36 @@
+# parallel.ish — Fan-out/fan-in with await
+#
+# Spawn N tasks, each doing real work (DNS lookups),
+# await all results. Like Elixir's Task.async_stream.
+
+fn lookup host do
+  ip = $(getent hosts $host 2>/dev/null | head -1 | awk '{print $1}')
+  if [ -n "$ip" ]; then
+    {:ok, host, ip}
+  else
+    {:error, host, "no result"}
+  fi
+end
+
+fn report {:ok, host, ip} do
+  echo "  $host -> $ip"
+end
+fn report {:error, host, reason} do
+  echo "  $host -> FAILED ($reason)"
+end
+
+# --- Resolve multiple domains concurrently ---
+echo "Resolving domains..."
+
+t1 = spawn fn do lookup "example.com" end
+t2 = spawn fn do lookup "google.com" end
+t3 = spawn fn do lookup "github.com" end
+t4 = spawn fn do lookup "nonexistent.invalid" end
+
+# Await each — they run concurrently, we collect in order
+report (await t1)
+report (await t2)
+report (await t3)
+report (await t4)
+
+echo "Done."

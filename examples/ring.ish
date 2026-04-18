@@ -1,0 +1,45 @@
+# ring.ish — Process ring benchmark
+#
+# The classic Erlang ring benchmark: spawn N processes in a ring,
+# pass a message around, count the hops.
+#
+# Each process receives a message, increments the counter,
+# and forwards it to the next process in the ring.
+
+fn ring_node next do
+  receive do
+    {:hop, count} ->
+      send next, {:hop, count + 1}
+      ring_node next
+    {:stop} ->
+      send next, {:stop}
+  end
+end
+
+# --- Build the ring ---
+N = 100
+echo "Building ring of $N processes..."
+
+me = self
+
+# The collector: last node reports back
+collector = spawn fn do
+  receive do
+    {:hop, count} -> send me, {:result, count + 1}
+    {:stop} -> send me, :ring_done
+  end
+end
+
+# Build the ring backwards: each node points to the previous
+prev = collector
+for _ in $(seq 2 $N); do
+  prev = spawn fn do ring_node prev end
+done
+first = prev
+
+echo "Sending message around the ring..."
+send first, {:hop, 0}
+
+receive do
+  {:result, count} -> echo "Message traversed $count hops through $N processes."
+end

@@ -1,0 +1,69 @@
+# kv.ish — Key-value store as a process (GenServer pattern)
+#
+# A process holds state via recursive message handling.
+# This is the Elixir GenServer pattern: loop(state) receives
+# messages and calls itself with updated state.
+#
+# State is a simple string of "key=val" pairs separated by spaces.
+# Real implementation would use a map, but this shows the pattern.
+
+fn kv_server do
+  kv_loop ""
+end
+
+fn kv_loop state do
+  receive do
+    {:put, kv, sender} ->
+      send sender, :ok
+      kv_loop "$state $kv"
+
+    {:get, key, sender} ->
+      val = $(echo $state | tr ' ' '\n' | grep "^${key}=" | head -1 | cut -d= -f2)
+      send sender, {:ok, val}
+      kv_loop state
+
+    {:all, sender} ->
+      send sender, {:ok, state}
+      kv_loop state
+
+    {:stop, sender} ->
+      send sender, :stopped
+  end
+end
+
+# --- Start the KV store ---
+echo "Starting key-value store..."
+store = spawn kv_server
+
+# Put some values
+send store, {:put, "name=ish", self}
+receive do :ok -> echo "  put name=ish" end
+
+send store, {:put, "version=0.1", self}
+receive do :ok -> echo "  put version=0.1" end
+
+send store, {:put, "lang=go", self}
+receive do :ok -> echo "  put lang=go" end
+
+# Get values back
+send store, {:get, "name", self}
+receive do
+  {:ok, val} -> echo "  get name -> $val"
+end
+
+send store, {:get, "version", self}
+receive do
+  {:ok, val} -> echo "  get version -> $val"
+end
+
+# Dump all
+send store, {:all, self}
+receive do
+  {:ok, all} -> echo "  all: $all"
+end
+
+# Stop
+send store, {:stop, self}
+receive do
+  :stopped -> echo "Store stopped."
+end
