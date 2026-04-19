@@ -21,10 +21,7 @@ func testEnv() *core.Env {
 	env.Proc = process.NewProcess()
 	stdlib.Register(env)
 	builtin.Init(builtin.EvalContext{RunSource: RunSource})
-	env.CmdSub = func(cmd string, e *core.Env) (string, error) {
-		val := RunSource(cmd, e)
-		return val.ToStr(), nil
-	}
+	env.CmdSub = RunCmdSub
 	env.CallFn = CallFn
 	return env
 }

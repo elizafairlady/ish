@@ -30,10 +30,7 @@ func main() {
 
 	env := core.TopEnv()
 	env.ShellName = os.Args[0]
-	env.CmdSub = func(cmd string, e *core.Env) (string, error) {
-		val := eval.RunSource(cmd, e)
-		return val.ToStr(), nil
-	}
+	env.CmdSub = eval.RunCmdSub
 
 	// Create main process
 	env.Proc = process.NewProcess()

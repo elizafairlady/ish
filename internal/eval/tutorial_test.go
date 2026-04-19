@@ -92,6 +92,13 @@ func TestTutorialExamples(t *testing.T) {
 		{"s12 reduce lambda", "r = reduce [1, 2, 3, 4], 0, \\acc, x -> acc + x\necho $r", "10\n"},
 		{"s12 range filter length", "r = range 1, 11 |> filter \\x -> x >= 6 |> length\necho $r", "5\n"},
 
+		// === $() in strings ===
+		{"cmdsub in string", "echo \"hello $(echo world)\"", "hello world\n"},
+		{"cmdsub date", "echo \"year: $(date +%Y)\"", "year: 2026\n"},
+		{"arith no spaces", "echo $((3+4))", "7\n"},
+		{"arith in string", "echo \"r=$((2+2))\"", "r=4\n"},
+		{"nested cmdsub", "echo \"nested: $(echo $(echo deep))\"", "nested: deep\n"},
+
 		// === Float math ===
 		{"float literal", "r = 3.14\necho $r", "3.14\n"},
 		{"float division", "r = 5.0 / 2\necho $r", "2.5\n"},

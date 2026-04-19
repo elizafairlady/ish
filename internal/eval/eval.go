@@ -1,7 +1,9 @@
 package eval
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -201,6 +203,29 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (core.Value, err
 }
 
 // RunSource parses and evaluates a source string. Exported for builtin/main use.
+// RunCmdSub runs a command string and captures its stdout, returning the
+// output with trailing newlines stripped. This is the $() mechanism.
+func RunCmdSub(cmd string, env *core.Env) (string, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	subEnv := core.NewEnv(env)
+	subEnv.Stdout_ = w
+	val := RunSource(cmd, subEnv)
+	// If the command produced a non-nil value (e.g. an expression),
+	// write its string representation to the pipe
+	if val.Kind != core.VNil {
+		fmt.Fprintln(w, val.ToStr())
+	}
+	w.Close()
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	r.Close()
+	result := strings.TrimRight(buf.String(), "\n")
+	return result, nil
+}
+
 func RunSource(src string, env *core.Env) core.Value {
 	tokens, lexErr := lexer.LexCheck(src)
 	if lexErr != nil {

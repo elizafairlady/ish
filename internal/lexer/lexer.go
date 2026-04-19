@@ -98,18 +98,8 @@ func (l *Lexer) lex() {
 			l.pos++
 		case ch == '+':
 			next := l.peek(1)
-			if next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' {
-				start := l.pos
-				l.pos++
-				for l.pos < len(l.src) {
-					c := l.src[l.pos]
-					if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
-						l.pos++
-					} else {
-						break
-					}
-				}
-				l.emit(ast.TWord, l.src[start:l.pos])
+			if next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' || next == '%' {
+				l.lexWord()
 			} else {
 				l.emit(ast.TPlus, "+")
 				l.pos++
@@ -361,12 +351,18 @@ func (l *Lexer) lexNumber() {
 		l.emit(ast.TFloat, l.src[start:l.pos])
 		return
 	}
-	if l.pos < len(l.src) && isWordChar(l.src[l.pos]) {
-		for l.pos < len(l.src) && isWordChar(l.src[l.pos]) {
-			l.pos++
+	// If followed by a letter or underscore, treat the whole thing as a word
+	// (e.g. "3abc"). Don't extend for operators like +, -, /, % which should
+	// be tokenized separately.
+	if l.pos < len(l.src) {
+		ch := l.src[l.pos]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' {
+			for l.pos < len(l.src) && isWordChar(l.src[l.pos]) {
+				l.pos++
+			}
+			l.emit(ast.TWord, l.src[start:l.pos])
+			return
 		}
-		l.emit(ast.TWord, l.src[start:l.pos])
-		return
 	}
 	l.emit(ast.TInt, l.src[start:l.pos])
 }
@@ -685,7 +681,7 @@ func (l *Lexer) lexDollar() {
 
 func isWordChar(ch byte) bool {
 	return ch == '_' || ch == '-' || ch == '/' || ch == '.' || ch == '~' ||
-		ch == '@' || ch == ':' || ch == '+' ||
+		ch == '@' || ch == ':' || ch == '+' || ch == '%' ||
 		(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
 		ch > 127
 }
