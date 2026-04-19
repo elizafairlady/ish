@@ -539,6 +539,21 @@ greet
 hello
 ```
 
+Lambdas capture their enclosing scope. This is how you build configurable things:
+
+```
+fn make_greeter prefix do
+  \name -> echo "$prefix, $name!"
+end
+hi = make_greeter "Hello"
+hi "world"
+```
+```
+Hello, world!
+```
+
+The returned lambda remembers `prefix` even after `make_greeter` has returned. Functions that return functions — the fox might call it overthinking, but it's how you avoid repeating yourself.
+
 The fox's way still works too. POSIX functions use `$1`, `$2` for arguments:
 
 ```
@@ -550,6 +565,18 @@ hi world
 ```
 
 You call them the same way. Name followed by arguments. Doesn't matter which kind.
+
+**One important thing:** user functions evaluate their arguments as expressions. Builtins and external commands don't.
+
+```
+x = 42
+echo x                       # prints "x" (the literal string)
+add x, 1                     # passes 42 (looks up the variable)
+```
+
+`echo` is a builtin — it gets the raw string `"x"`. `add` is a user function — it looks up `x` and gets `42`. If you need the value in a builtin argument, use `$x` or `$(expr)`.
+
+And one more thing about arguments: parentheses group sub-expressions. In the `fib` example, `fib (n - 1)` passes the result of `n - 1` to `fib`. Without the parentheses, `fib n - 1` would parse as `(fib n) - 1`. The parser reads left to right — parentheses are how you say "evaluate this part first."
 
 *The fox reached into the raccoon's box without looking and pulled out a flashlight. Clicked it on. It worked.*
 
@@ -893,6 +920,30 @@ echo $result
 ```
 5
 ```
+
+Here's the most important concurrency pattern in ish — a process that carries state:
+
+```
+fn counter state do
+  receive do
+    {:inc, sender} ->
+      send sender, state + 1
+      counter (state + 1)
+    {:get, sender} ->
+      send sender, state
+      counter state
+  end
+end
+
+pid = spawn fn do counter 0 end
+send pid, {:inc, self}
+receive do n -> echo $n end
+```
+```
+1
+```
+
+The function calls itself with the new state after each message. No mutable variables, no locks. Every receive ends with a recursive call that becomes the next receive. This is how you build stateful services — a key-value store, a rate limiter, a session manager. The function *is* the loop.
 
 *The fox had been quiet for a while.*
 

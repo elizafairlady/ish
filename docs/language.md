@@ -1056,7 +1056,7 @@ The prompt is controlled by the `PS1` variable. It supports Bash-compatible back
 
 After backslash escapes are processed, `$var` and `#{expr}` are expanded via `env.Expand`.
 
-Default prompt (when PS1 is not set): `~/current/dir ish> `
+Default prompt (when PS1 is not set): `~/current/dir $ `
 
 ## Keyboard Shortcuts
 
