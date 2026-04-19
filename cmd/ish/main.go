@@ -23,6 +23,8 @@ import (
 	"ish/internal/stdlib"
 )
 
+var Version = "0.2.0"
+
 func main() {
 	// Wire up eval <-> builtin cycle via Init
 	builtin.Init(builtin.EvalContext{
@@ -54,9 +56,13 @@ func main() {
 	args := os.Args[1:]
 	var filteredArgs []string
 	for _, a := range args {
-		if a == "-l" || a == "--login" {
+		switch a {
+		case "-l", "--login":
 			loginShell = true
-		} else {
+		case "--version":
+			fmt.Printf("ish %s\n", Version)
+			os.Exit(0)
+		default:
 			filteredArgs = append(filteredArgs, a)
 		}
 	}
