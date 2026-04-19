@@ -1277,6 +1277,66 @@ func TestParseGroupCommand(t *testing.T) {
 	}
 }
 
+func TestParseDotPaths(t *testing.T) {
+	t.Run("cd dotdot is command", func(t *testing.T) {
+		node, err := parseStr("cd ..")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if node.Kind != ast.NCmd {
+			t.Fatalf("expected NCmd, got %d", node.Kind)
+		}
+		if len(node.Children) != 2 {
+			t.Fatalf("expected 2 children [cd, ..], got %d", len(node.Children))
+		}
+		if node.Children[1].Tok.Val != ".." {
+			t.Errorf("arg = %q, want %q", node.Children[1].Tok.Val, "..")
+		}
+	})
+
+	t.Run("dot-slash script is command", func(t *testing.T) {
+		node, err := parseStr("./script")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if node.Kind != ast.NCmd {
+			t.Fatalf("expected NCmd, got %d", node.Kind)
+		}
+		if node.Children[0].Tok.Val != "./script" {
+			t.Errorf("cmd = %q, want %q", node.Children[0].Tok.Val, "./script")
+		}
+	})
+
+	t.Run("ls dotfile is command", func(t *testing.T) {
+		node, err := parseStr("ls .hidden")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if node.Kind != ast.NCmd {
+			t.Fatalf("expected NCmd, got %d", node.Kind)
+		}
+		if len(node.Children) != 2 {
+			t.Fatalf("expected 2 children, got %d", len(node.Children))
+		}
+		if node.Children[1].Tok.Val != ".hidden" {
+			t.Errorf("arg = %q, want %q", node.Children[1].Tok.Val, ".hidden")
+		}
+	})
+
+	t.Run("cd ../foo is command", func(t *testing.T) {
+		node, err := parseStr("cd ../foo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if node.Kind != ast.NCmd {
+			t.Fatalf("expected NCmd, got %d", node.Kind)
+		}
+		if node.Children[1].Tok.Val != "../foo" {
+			t.Errorf("arg = %q, want %q", node.Children[1].Tok.Val, "../foo")
+		}
+	})
+}
+
 func TestParseExprDepthLimit(t *testing.T) {
 	deep := "x = " + strings.Repeat("(", 1001) + "1" + strings.Repeat(")", 1001)
 	_, err := parseStr(deep)

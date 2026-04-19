@@ -1,4 +1,4 @@
-# ish
+# ish: a (poignant) guide
 
 ## 1. Your First Commands
 
@@ -1296,6 +1296,6 @@ Tab completes commands, paths, and variables. Type a few letters, press Tab. If 
 
 ---
 
-The Unix kernel already provides what Erlang discovered independently: process isolation, message passing through pipes and signals, and supervision through init and systemd. ish makes that analogy concrete and programmable.
+The Unix kernel already provides what Erlang discovered independently: process isolation, message passing through pipes and signals, and supervision through init. Go makes supervision easier with goroutines, and ish makes the analogy concrete and programmable.
 
 The road doesn't end here.

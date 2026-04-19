@@ -318,6 +318,10 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 			}
 			matches, _ := filepath.Glob(expanded + "*")
 			for _, m := range matches {
+				// filepath.Glob strips "./" prefix; restore it to match the typed prefix
+				if strings.HasPrefix(prefix, "./") && !strings.HasPrefix(m, "./") {
+					m = "./" + m
+				}
 				display := m
 				if strings.HasPrefix(prefix, "~") {
 					home := ""
