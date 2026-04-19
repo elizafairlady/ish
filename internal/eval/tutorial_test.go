@@ -65,6 +65,8 @@ func TestTutorialExamples(t *testing.T) {
 		{"s6 lambda multi param", "sum = \\a, b -> a + b\necho $(sum 3 4)", "7\n"},
 		{"s6 lambda zero param", "greet = \\ -> echo \"hello\"\ngreet", "hello\n"},
 		{"s6 posix fn", "greet() { echo \"hi $1\"; }\ngreet world", "hi world\n"},
+		{"s6 anon with params", "f = fn a, b do\na + b\nend\nr = f 3, 4\necho $r", "7\n"},
+		{"s6 anon single param", "doubled = fn x do x * 2 end\necho $(doubled 5)", "10\n"},
 
 		// === Section 7: Two Kinds of Pipes ===
 		{"s7 pipe arrow", "fn double x do x * 2 end\nfn inc x do x + 1 end\nr = 5 |> double |> inc\necho $r", "11\n"},

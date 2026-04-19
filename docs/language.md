@@ -522,9 +522,21 @@ fn classify do
 end
 ```
 
-**Anonymous multi-clause dispatch:**
+**Anonymous functions (fn as expression):**
 
-`fn do ... end` without a name creates an anonymous function value with dispatch clauses:
+In expression context (RHS of `=`, argument to `spawn`/`map`/etc.), `fn` produces a function value without requiring a name:
+
+```
+add = fn a, b do
+  a + b
+end
+add 3, 4                     # 7
+
+doubled = fn x do x * 2 end
+doubled 5                    # 10
+```
+
+Anonymous multi-clause dispatch uses `fn do ... end` with arrow clauses:
 
 ```
 f = fn do
@@ -533,6 +545,18 @@ f = fn do
   _ -> :negative
 end
 ```
+
+Anonymous functions can be passed directly as arguments:
+
+```
+spawn fn do
+  echo "hello from a process"
+end
+
+map [1, 2, 3], fn x do x * 2 end
+```
+
+The parser distinguishes named vs anonymous by context: at statement level (command position), `fn` expects a name. In expression position, `fn` is anonymous and parameters come directly.
 
 ### Lambdas
 
@@ -564,9 +588,11 @@ result = [1, 2, 3] |> map \x -> x * 2    # [2, 4, 6]
 
 | Syntax | Use case |
 |--------|----------|
-| `fn name params do body end` | Named functions and recursive functions |
-| `fn name do clauses end` | Named multi-clause dispatch |
-| `fn do clauses end` | Anonymous multi-clause dispatch |
+| `fn name params do body end` | Named functions (statement level) |
+| `fn name do clauses end` | Named multi-clause dispatch (statement level) |
+| `name = fn params do body end` | Function value bound to a variable |
+| `name = fn do clauses end` | Multi-clause dispatch bound to a variable |
+| `fn do clauses end` | Anonymous multi-clause (inline in spawn, map, etc.) |
 | `\params -> expr` | Short anonymous functions (callbacks, transforms) |
 
 ### Calling Functions
@@ -581,10 +607,10 @@ Functions are called like commands -- the function name followed by arguments. F
 
 **Calling function values stored in variables:**
 
-Functions stored in variables (from lambdas or `fn do ... end`) can be called the same way as named functions:
+Functions stored in variables (from lambdas, `fn params do...end`, or `fn do...end`) can be called the same way as named functions:
 
 ```
-doubled = \x -> x * 2
+doubled = fn x do x * 2 end
 doubled 5                # 10
 
 classify = fn do
@@ -595,6 +621,15 @@ classify 0               # :zero
 ```
 
 In command position, if a variable holds a function value, it is called with the provided arguments. In expression position (e.g., `x = f`), the function value is returned without calling it, allowing functions to be passed as values.
+
+**All functions are first-class values.** Named functions defined with `fn name do...end` can be passed as values in expression position, just like lambdas and fn expressions:
+
+```
+fn double x do x * 2 end
+map [1, 2, 3], double       # [2, 4, 6]
+f = double                   # store named function in a variable
+f 5                          # 10
+```
 
 **POSIX vs ish function argument evaluation:**
 

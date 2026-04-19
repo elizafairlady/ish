@@ -442,6 +442,46 @@ func TestParseIshFnAnonymous(t *testing.T) {
 	}
 }
 
+func TestParseIshFnAnonWithParams(t *testing.T) {
+	t.Run("bound to variable", func(t *testing.T) {
+		node, err := parseStr("f = fn a, b do\na + b\nend")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Top-level is NMatch (binding)
+		if node.Kind != ast.NMatch {
+			t.Fatalf("expected NMatch, got %d", node.Kind)
+		}
+		fn := node.Children[1]
+		if fn.Kind != ast.NIshFn {
+			t.Fatalf("expected NIshFn on RHS, got %d", fn.Kind)
+		}
+		if fn.Tok.Val != "<anon>" {
+			t.Errorf("fn name = %q, want %q", fn.Tok.Val, "<anon>")
+		}
+		if len(fn.Children) != 2 {
+			t.Fatalf("expected 2 params, got %d", len(fn.Children))
+		}
+		if fn.Children[0].Tok.Val != "a" {
+			t.Errorf("param[0] = %q, want %q", fn.Children[0].Tok.Val, "a")
+		}
+	})
+
+	t.Run("no params multi-clause", func(t *testing.T) {
+		node, err := parseStr("f = fn do\n0 -> :zero\n_ -> :other\nend")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fn := node.Children[1]
+		if fn.Kind != ast.NIshFn {
+			t.Fatalf("expected NIshFn, got %d", fn.Kind)
+		}
+		if len(fn.Clauses) != 2 {
+			t.Fatalf("expected 2 clauses, got %d", len(fn.Clauses))
+		}
+	})
+}
+
 func TestParseLambda(t *testing.T) {
 	t.Run("single param", func(t *testing.T) {
 		node, err := parseStr(`\x -> x`)

@@ -80,6 +80,10 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 		return v, nil
 	}
 
+	if fn, ok := env.GetFn(name); ok {
+		return core.Value{Kind: core.VFn, Fn: fn}, nil
+	}
+
 	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
 		objName := name[:dotIdx]
 		field := name[dotIdx+1:]

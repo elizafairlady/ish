@@ -497,7 +497,17 @@ classify 0
 :zero
 ```
 
-Anonymous dispatch tables use `fn do ... end` without a name. They're values you can pass around:
+`fn` in expression context — on the right side of `=`, as an argument to `spawn` or `map` — produces a value you can hold onto:
+
+```
+add = fn a, b do a + b end
+add 3, 4
+```
+```
+7
+```
+
+Multi-clause dispatch works the same way with `fn do ... end`:
 
 ```
 f = fn do
@@ -509,6 +519,16 @@ f 0
 ```
 ```
 :zero
+```
+
+All functions are values — including named ones. You can pass `double` to `map` the same way you'd pass a lambda:
+
+```
+fn double x do x * 2 end
+map [1, 2, 3], double
+```
+```
+[2, 4, 6]
 ```
 
 For simple anonymous functions, use the backslash lambda syntax — it's shorter and clearer:

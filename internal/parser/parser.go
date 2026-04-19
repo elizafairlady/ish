@@ -475,6 +475,7 @@ func (p *Parser) parseArg(isFirst bool) (*ast.Node, error) {
 		return expr, nil
 	case ast.TWord:
 		if cur.Val == "fn" {
+			defer p.restoreMode(p.withMode(ModeExpr))
 			return p.parseIshFn()
 		}
 		p.advance()
@@ -1015,13 +1016,11 @@ func (p *Parser) parseIshFn() (*ast.Node, error) {
 	p.advance()
 
 	var nameTok ast.Token
-	isAnon := false
-	if p.cur().Type == ast.TWord && p.cur().Val == "do" {
-		// fn do ... end — anonymous multi-clause dispatch
-		isAnon = true
+	if p.mode == ModeExpr || (p.cur().Type == ast.TWord && p.cur().Val == "do") {
+		// Anonymous: expression context, or fn do...end at statement level
 		nameTok = ast.Token{Type: ast.TWord, Val: "<anon>"}
 	} else {
-		// fn name ... — named function definition
+		// fn name ... — named function definition at statement level
 		var err error
 		nameTok, err = p.expect(ast.TWord)
 		if err != nil {
@@ -1030,21 +1029,19 @@ func (p *Parser) parseIshFn() (*ast.Node, error) {
 	}
 
 	var params []*ast.Node
-	if !isAnon {
-		for p.cur().Type != ast.TEOF {
-			if p.cur().Type == ast.TWord && (p.cur().Val == "when" || p.cur().Val == "do") {
-				break
-			}
-			if p.cur().Type == ast.TComma {
-				p.advance()
-				continue
-			}
-			param, err := p.parsePattern()
-			if err != nil {
-				return nil, err
-			}
-			params = append(params, param)
+	for p.cur().Type != ast.TEOF {
+		if p.cur().Type == ast.TWord && (p.cur().Val == "when" || p.cur().Val == "do") {
+			break
 		}
+		if p.cur().Type == ast.TComma {
+			p.advance()
+			continue
+		}
+		param, err := p.parsePattern()
+		if err != nil {
+			return nil, err
+		}
+		params = append(params, param)
 	}
 
 	var guard *ast.Node
@@ -1609,6 +1606,9 @@ func (p *Parser) parseAtom() (*ast.Node, error) {
 		p.advance()
 		return ast.LitNode(cur), nil
 	case ast.TWord:
+		if cur.Val == "fn" {
+			return p.parseIshFn()
+		}
 		p.advance()
 		return ast.WordNode(cur), nil
 	case ast.TLParen:

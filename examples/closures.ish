@@ -1,35 +1,49 @@
-# Closure test: lambdas capture their definition environment
-# Demonstrates higher-order functions that return functions
+# Closures: functions that remember their environment
+# Shows three ways to write the same thing
 
-fn make_greeter prefix do
+echo "=== make_greeter ==="
+
+# Way 1: fn as expression (Elixir-like)
+make_greeter = fn prefix do
   \name -> "$prefix, $name!"
 end
 
+# Way 2: named fn at statement level
+fn make_greeter2 prefix do
+  \name -> "$prefix, $name!"
+end
+
+# Way 3: pure lambda (when the body is one expression)
+make_greeter3 = \prefix -> \name -> "$prefix, $name!"
+
 hello = make_greeter "Hello"
-hi = make_greeter "Hi"
+hi = make_greeter2 "Hi"
+hey = make_greeter3 "Hey"
 
-r1 = hello "world"
-r2 = hi "fox"
+echo $(hello "world")
+echo $(hi "world")
+echo $(hey "world")
 
-if r1 != "Hello, world!" do
-  echo "FAIL: expected 'Hello, world!' got '$r1'"
-  exit 1
-end
-if r2 != "Hi, fox!" do
-  echo "FAIL: expected 'Hi, fox!' got '$r2'"
-  exit 1
-end
+echo ""
+echo "=== make_adder ==="
 
-echo $r1
-echo $r2
-
-# Also test make_adder pattern
-fn make_adder n do
+# Way 1: fn as expression
+make_adder = fn n do
   \x -> x + n
 end
 
-add5 = make_adder 5
-add10 = make_adder 10
+# Way 2: named fn
+fn make_adder2 n do
+  \x -> x + n
+end
 
-echo "add5(3) = $(add5 3)"
-echo "add10(3) = $(add10 3)"
+# Way 3: lambda
+make_adder3 = \n -> \x -> x + n
+
+add5 = make_adder 5
+add5b = make_adder2 5
+add5c = make_adder3 5
+
+echo "fn expr:  add5(3) = $(add5 3)"
+echo "named fn: add5(3) = $(add5b 3)"
+echo "lambda:   add5(3) = $(add5c 3)"

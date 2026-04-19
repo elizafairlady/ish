@@ -1,28 +1,79 @@
 # Higher-order functions: passing and calling function values
-# Tests that variable-stored functions receive typed args, not strings
+# Shows multiple ways to define, store, and compose functions
 
-fn double x do x * 2 end
+echo "=== defining functions ==="
 
-# Lambda stored in variable, called with variable arg
-f = \x -> x + 1
-y = 5
-echo "f(y) = $(f y)"
+# Three ways to write double
+fn double_named x do x * 2 end          # named statement
+double_expr = fn x do x * 2 end         # fn expression
+double_lambda = \x -> x * 2             # lambda
 
-# Lambda wrapping a named function
-d = \x -> double x
-echo "d(10) = $(d 10)"
+echo "named:  $(double_named 5)"
+echo "expr:   $(double_expr 5)"
+echo "lambda: $(double_lambda 5)"
 
-# Composing closures
-fn compose f, g do
+echo ""
+echo "=== passing functions to map ==="
+
+# All forms can be passed directly to higher-order functions
+echo "map with named fn:  $(map [1, 2, 3], double_named)"
+echo "map with fn expr:   $(map [1, 2, 3], double_expr)"
+echo "map with lambda:    $(map [1, 2, 3], double_lambda)"
+echo "map inline lambda:  $(map [1, 2, 3], \x -> x * 2)"
+echo "map inline fn:      $(map [1, 2, 3], fn x do x * 2 end)"
+
+echo ""
+echo "=== composing functions ==="
+
+# compose as fn expression
+compose = fn f, g do
+  \x -> f (g x)
+end
+
+# same thing as a named fn
+fn compose2 f, g do
   \x -> f (g x)
 end
 
 inc = \x -> x + 1
 dbl = \x -> x * 2
-inc_then_dbl = compose dbl, inc
-echo "dbl(inc(3)) = $(inc_then_dbl 3)"
 
-# Passing function values to higher-order functions
-ops = [\x -> x + 1, \x -> x * 2, \x -> x * x]
+# compose returns a function — bind it, then call
+inc_then_dbl = compose dbl, inc
+inc_then_dbl2 = compose2 dbl, inc
+
+echo "compose:  dbl(inc(3)) = $(inc_then_dbl 3)"
+echo "compose2: dbl(inc(3)) = $(inc_then_dbl2 3)"
+
+echo ""
+echo "=== multi-clause dispatch ==="
+
+# As a named statement
+fn classify_named do
+  n when n > 0 -> :positive
+  0 -> :zero
+  _ -> :negative
+end
+
+# As an expression bound to a variable
+classify_expr = fn do
+  n when n > 0 -> :positive
+  0 -> :zero
+  _ -> :negative
+end
+
+echo "named:  $(classify_named 5) $(classify_named 0) $(classify_named (-1))"
+echo "expr:   $(classify_expr 5) $(classify_expr 0) $(classify_expr (-1))"
+
+echo ""
+echo "=== list of functions ==="
+
+# fn expressions work inside list literals
+ops = [fn x do x + 1 end, fn x do x * 2 end, fn x do x * x end]
 results = map ops, \op -> op 5
-echo "ops applied to 5: $results"
+echo "fn exprs applied to 5: $results"
+
+# lambdas too
+ops2 = [\x -> x + 1, \x -> x * 2, \x -> x * x]
+results2 = map ops2, \op -> op 5
+echo "lambdas applied to 5: $results2"
