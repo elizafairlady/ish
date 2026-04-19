@@ -488,7 +488,48 @@ func stripAssignQuotes(s string) string {
 	var buf strings.Builder
 	i := 0
 	for i < len(s) {
-		if s[i] == '"' {
+		// Skip over $(...) and ${...} — don't strip quotes inside them
+		if s[i] == '$' && i+1 < len(s) && s[i+1] == '(' {
+			depth := 1
+			buf.WriteByte(s[i])
+			buf.WriteByte(s[i+1])
+			i += 2
+			for i < len(s) && depth > 0 {
+				if s[i] == '(' {
+					depth++
+				} else if s[i] == ')' {
+					depth--
+				}
+				if depth > 0 {
+					buf.WriteByte(s[i])
+					i++
+				}
+			}
+			if i < len(s) {
+				buf.WriteByte(s[i])
+				i++
+			}
+		} else if s[i] == '$' && i+1 < len(s) && s[i+1] == '{' {
+			depth := 1
+			buf.WriteByte(s[i])
+			buf.WriteByte(s[i+1])
+			i += 2
+			for i < len(s) && depth > 0 {
+				if s[i] == '{' {
+					depth++
+				} else if s[i] == '}' {
+					depth--
+				}
+				if depth > 0 {
+					buf.WriteByte(s[i])
+					i++
+				}
+			}
+			if i < len(s) {
+				buf.WriteByte(s[i])
+				i++
+			}
+		} else if s[i] == '"' {
 			i++
 			for i < len(s) && s[i] != '"' {
 				if s[i] == '\\' && i+1 < len(s) {

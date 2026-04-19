@@ -230,8 +230,13 @@ func (l *Lexer) lex() {
 		case ch == '`':
 			l.lexBacktick()
 		case ch == '\\':
-			l.emit(ast.TBackslash, "\\")
-			l.pos++
+			if l.peek(1) == '\n' {
+				// Backslash-newline: line continuation, skip both
+				l.pos += 2
+			} else {
+				l.emit(ast.TBackslash, "\\")
+				l.pos++
+			}
 		default:
 			l.lexWord()
 		}
@@ -316,6 +321,20 @@ func (l *Lexer) lexWord() {
 		if ch == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
 			braceDepth++
 			l.pos += 2
+			continue
+		}
+		if ch == '`' {
+			// Backtick substitution inside a word: skip to closing backtick
+			l.pos++
+			for l.pos < len(l.src) && l.src[l.pos] != '`' {
+				if l.src[l.pos] == '\\' {
+					l.pos++
+				}
+				l.pos++
+			}
+			if l.pos < len(l.src) {
+				l.pos++ // skip closing backtick
+			}
 			continue
 		}
 		if ch == '(' && parenDepth > 0 {
