@@ -642,6 +642,21 @@ func ShellGlobMatch(pattern, s string) bool {
 func (e *Env) expandParamOp(expr string, buf *strings.Builder) bool {
 	for i := 1; i < len(expr); i++ {
 		ch := expr[i]
+		// Skip over $(...) content — operators inside it aren't ours
+		if ch == '$' && i+1 < len(expr) && expr[i+1] == '(' {
+			depth := 1
+			i += 2
+			for i < len(expr) && depth > 0 {
+				if expr[i] == '(' {
+					depth++
+				} else if expr[i] == ')' {
+					depth--
+				}
+				i++
+			}
+			i-- // compensate for loop increment
+			continue
+		}
 		if ch == '#' || ch == '%' || ch == '/' {
 			name := expr[:i]
 			op := expr[i:]
