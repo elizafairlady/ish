@@ -5,16 +5,16 @@
 m = %{x: 10, y: 20, z: 30}
 echo "original: $m"
 
-m2 = put m, "w", 40
+m2 = Map.put m, "w", 40
 echo "after put: $m2"
 
-m3 = delete m2, "y"
+m3 = Map.delete m2, "y"
 echo "after delete: $m3"
 
-m4 = merge m, %{a: 1, b: 2}
+m4 = Map.merge m, %{a: 1, b: 2}
 echo "after merge: $m4"
 
-echo "keys: $(keys m)"
-echo "values: $(values m)"
-echo "has x? $(has_key m, \"x\")"
-echo "has q? $(has_key m, \"q\")"
+echo "keys: $(Map.keys m)"
+echo "values: $(Map.values m)"
+echo "has x? $(Map.has_key m, \"x\")"
+echo "has q? $(Map.has_key m, \"q\")"

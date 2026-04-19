@@ -36,6 +36,11 @@ func makeIsCommand(env *core.Env) func(string) bool {
 			if _, ok := env.GetNativeFn(name); ok {
 				return true
 			}
+			if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
+				if _, ok := env.GetModule(name[:dotIdx]); ok {
+					return true
+				}
+			}
 		}
 		if found, ok := pathCache[name]; ok {
 			return found
@@ -133,6 +138,10 @@ func Eval(node *ast.Node, env *core.Env) (core.Value, error) {
 		return evalPosixFnDef(node, env)
 	case ast.NLambda:
 		return evalLambda(node, env)
+	case ast.NDefModule:
+		return evalDefModule(node, env)
+	case ast.NUse:
+		return evalUse(node, env)
 	default:
 		return core.Nil, fmt.Errorf("unknown node kind: %d", node.Kind)
 	}
@@ -180,6 +189,9 @@ func syncExit(val core.Value, env *core.Env) {
 
 // CallFn calls a user-defined function with Value arguments.
 func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Value, retErr error) {
+	if fn.Native != nil {
+		return fn.Native(vals, env)
+	}
 	dbg, hasDbg := env.Debugger.(*debug.Debugger)
 	var tcoDepth int
 	if hasDbg {

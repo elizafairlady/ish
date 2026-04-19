@@ -87,10 +87,10 @@ func TestTutorialExamples(t *testing.T) {
 		{"s11 supervisor", "sup = supervise :one_for_one do\nworker :greeter fn do\necho \"worker started\"\nend\nend\nawait sup", "worker started\n"},
 
 		// === Section 12: The Toolbox ===
-		{"s12 map lambda", "r = map [1, 2, 3], \\x -> x * 2\necho $r", "[2, 4, 6]\n"},
-		{"s12 filter lambda", "r = filter [1, 2, 3, 4, 5], \\x -> x >= 4\necho $r", "[4, 5]\n"},
-		{"s12 reduce lambda", "r = reduce [1, 2, 3, 4], 0, \\acc, x -> acc + x\necho $r", "10\n"},
-		{"s12 range filter length", "r = range 1, 11 |> filter \\x -> x >= 6 |> length\necho $r", "5\n"},
+		{"s12 map lambda", "r = List.map [1, 2, 3], \\x -> x * 2\necho $r", "[2, 4, 6]\n"},
+		{"s12 filter lambda", "r = List.filter [1, 2, 3, 4, 5], \\x -> x >= 4\necho $r", "[4, 5]\n"},
+		{"s12 reduce lambda", "r = List.reduce [1, 2, 3, 4], 0, \\acc, x -> acc + x\necho $r", "10\n"},
+		{"s12 range filter length", "r = List.range 1, 11 |> List.filter \\x -> x >= 6 |> List.length\necho $r", "5\n"},
 
 		// === Script safety ===
 		{"pipefail catches left failure", "set -o pipefail\nfalse | true\necho $?", "1\n"},
@@ -124,17 +124,17 @@ func TestTutorialExamples(t *testing.T) {
 		{"pipe value to cmd", "[1, 2, 3] | cat", "1\n2\n3\n"},
 		{"pipe scalar to cmd", "42 | cat", "42\n"},
 		{"pipe tuple to cmd", "{:ok, \"hi\"} | cat", "{:ok, \"hi\"}\n"},
-		{"pipe value chain to cmd", "range 1, 4 |> filter \\x -> x > 1 | cat", "2\n3\n"},
-		{"pipefn cmd to map", "r = printf \"a\\nb\\nc\\n\" |> map \\f -> upcase f\necho $r", "[\"A\", \"B\", \"C\"]\n"},
-		{"pipefn cmd to length", "r = printf \"a\\nb\\nc\\n\" |> length\necho $r", "3\n"},
-		{"pipefn explicit from_json", "r = echo \"{\\\"x\\\":1}\" |> from_json\necho $r", "%{x: 1}\n"},
+		{"pipe value chain to cmd", "List.range 1, 4 |> List.filter \\x -> x > 1 | cat", "2\n3\n"},
+		{"pipefn cmd to map", "r = printf \"a\\nb\\nc\\n\" |> List.map \\f -> String.upcase f\necho $r", "[\"A\", \"B\", \"C\"]\n"},
+		{"pipefn cmd to length", "r = printf \"a\\nb\\nc\\n\" |> List.length\necho $r", "3\n"},
+		{"pipefn explicit from_json", "r = echo \"{\\\"x\\\":1}\" |> JSON.parse\necho $r", "%{x: 1}\n"},
 
 		// === Serialization (bridge) ===
-		{"s12 from_json map", "r = from_json \"{\\\"name\\\":\\\"fox\\\"}\";\necho $r", "%{name: \"fox\"}\n"},
-		{"s12 from_json list", "r = from_json \"[1,2,3]\"\necho $r", "[1, 2, 3]\n"},
-		{"s12 to_json", "r = to_json [1, 2, 3]\necho $r", "[1,2,3]\n"},
-		{"s12 from_lines", "r = from_lines \"hello\\nworld\"\necho $r", "[\"hello\\\\nworld\"]\n"},
-		{"s12 to_lines", "r = to_lines [\"hello\", \"world\"]\necho $r", "hello world\n"},
+		{"s12 JSON.parse map", "r = JSON.parse \"{\\\"name\\\":\\\"fox\\\"}\";\necho $r", "%{name: \"fox\"}\n"},
+		{"s12 JSON.parse list", "r = JSON.parse \"[1,2,3]\"\necho $r", "[1, 2, 3]\n"},
+		{"s12 JSON.encode", "r = JSON.encode [1, 2, 3]\necho $r", "[1,2,3]\n"},
+		{"s12 IO.lines", "r = IO.lines \"hello\\nworld\"\necho $r", "[\"hello\\\\nworld\"]\n"},
+		{"s12 IO.unlines", "r = IO.unlines [\"hello\", \"world\"]\necho $r", "hello world\n"},
 	}
 
 	for _, tt := range tests {
@@ -338,24 +338,24 @@ func TestTutorialWhile(t *testing.T) {
 
 func TestTutorialFromJSON(t *testing.T) {
 	env := testutil.TestEnv()
-	script := `data = from_json "{\"name\":\"fox\",\"age\":3}"
+	script := `data = JSON.parse "{\"name\":\"fox\",\"age\":3}"
 echo $data`
 	got := testutil.CaptureOutput(env, func() {
 		testutil.RunSource(script, env)
 	})
 	if !strings.Contains(got, "fox") || !strings.Contains(got, "3") {
-		t.Errorf("from_json: got %q, expected map with fox and 3", got)
+		t.Errorf("JSON.parse: got %q, expected map with fox and 3", got)
 	}
 }
 
 func TestTutorialToJSON(t *testing.T) {
 	env := testutil.TestEnv()
-	script := `r = to_json [1, 2, 3]
+	script := `r = JSON.encode [1, 2, 3]
 echo $r`
 	got := testutil.CaptureOutput(env, func() {
 		testutil.RunSource(script, env)
 	})
 	if got != "[1,2,3]\n" {
-		t.Errorf("to_json: got %q, want %q", got, "[1,2,3]\n")
+		t.Errorf("JSON.encode: got %q, want %q", got, "[1,2,3]\n")
 	}
 }

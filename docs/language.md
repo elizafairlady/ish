@@ -37,10 +37,11 @@ cmd arg1 arg2
 Commands follow a uniform call model. Resolution order:
 
 1. Alias expansion (if the command name has a matching alias, it is expanded and re-parsed)
-2. User-defined function (ish `fn` or POSIX `name() {}`)
-3. Native standard library function
-4. Built-in command
-5. External command on `$PATH`
+2. Module-qualified function (`Module.func` — see [Modules](#modules))
+3. User-defined function (ish `fn` or POSIX `name() {}`)
+4. Native standard library function (from `use Module` imports)
+5. Built-in command
+6. External command on `$PATH`
 
 Arguments are separated by whitespace. Commas between arguments are allowed and ignored (for ish-style function calls like `add 3, 4`).
 
@@ -130,7 +131,7 @@ Pipelines can be chained: `cmd1 | cmd2 | cmd3`.
 
 ```
 [1, 2, 3] | grep 2              # prints "2"
-range 1, 5 | wc -l              # prints "4"
+List.range 1, 5 | wc -l         # prints "4"
 42 | cat                         # prints "42"
 ```
 
@@ -586,7 +587,7 @@ spawn fn do
   echo "hello from a process"
 end
 
-map [1, 2, 3], fn x do x * 2 end
+List.map [1, 2, 3], fn x do x * 2 end
 ```
 
 The parser distinguishes named vs anonymous by context: at statement level (command position), `fn` expects a name. In expression position, `fn` is anonymous and parameters come directly.
@@ -606,15 +607,15 @@ Lambdas are single-expression: the body is everything after `->` on the same lin
 Lambdas can be passed directly as arguments:
 
 ```
-map [1, 2, 3], \x -> x * 2
-filter [1, 2, 3, 4], \x -> x > 2
-reduce [1, 2, 3], 0, \acc, x -> acc + x
+List.map [1, 2, 3], \x -> x * 2
+List.filter [1, 2, 3, 4], \x -> x > 2
+List.reduce [1, 2, 3], 0, \acc, x -> acc + x
 ```
 
 And used with the pipe operator:
 
 ```
-result = [1, 2, 3] |> map \x -> x * 2    # [2, 4, 6]
+result = [1, 2, 3] |> List.map \x -> x * 2    # [2, 4, 6]
 ```
 
 **When to use which:**
@@ -659,7 +660,7 @@ In command position, if a variable holds a function value, it is called with the
 
 ```
 fn double x do x * 2 end
-map [1, 2, 3], double       # [2, 4, 6]
+List.map [1, 2, 3], double       # [2, 4, 6]
 f = double                   # store named function in a variable
 f 5                          # 10
 ```
@@ -668,6 +669,102 @@ f 5                          # 10
 
 - User functions (ish `fn` or POSIX `name(){}`): arguments are evaluated as ish expressions. `add x y` passes the *values* of variables `x` and `y`.
 - Builtins and external commands: arguments are literal strings with `$var` expansion but no variable lookup. `echo hello` passes the literal string `"hello"`.
+
+### Modules
+
+All standard library functions are organized into modules and called with qualified names:
+
+```
+List.map [1, 2, 3], \x -> x * 2     # [2, 4, 6]
+String.upcase "hello"                 # "HELLO"
+JSON.parse '{"a": 1}'                # %{a: 1}
+```
+
+Module names are PascalCase. The dot is part of the function name token — no spaces around it.
+
+#### defmodule
+
+Define your own modules with `defmodule Name do ... end`. Function definitions inside use `def` (or `fn`):
+
+```
+defmodule Math do
+  def abs do
+    n when n >= 0 -> n
+    n -> 0 - n
+  end
+
+  def max a, b when a >= b do a end
+  def max _, b do b end
+end
+
+Math.abs (0 - 5)    # 5
+Math.max 3, 7       # 7
+```
+
+`def` supports the same syntax as `fn` — single-clause with guards, or multi-clause arrow dispatch. The difference is that `def` always expects a name (it is never anonymous) and registers the function in the module's scope rather than the enclosing scope.
+
+Functions inside a module can call each other directly by name:
+
+```
+defmodule Greeting do
+  fn _helper name do "Hello, #{name}" end
+
+  def greet name do
+    String.upcase (_helper $name)
+  end
+end
+```
+
+Functions whose names start with `_` are private — they are visible within the module but not exported. `Greeting.greet "world"` works, but `Greeting._helper "world"` does not.
+
+#### use
+
+`use Module` imports all of a module's exported functions into the current scope as bare names:
+
+```
+use List
+map [1, 2, 3], \x -> x * 2    # works without List. prefix
+hd [10, 20, 30]                # 10
+```
+
+`use` works at the top level and inside `defmodule` bodies.
+
+#### Calling module functions in expression context
+
+At statement level (assignments, bare calls, pipe chains), commas separate function arguments:
+
+```
+r = List.map [1, 2, 3], \x -> x * 2    # two args, comma is unambiguous
+[1, 2, 3] |> List.filter \x -> x > 1   # pipe chain
+```
+
+Inside tuple and list literals, commas are structural separators — they delimit elements. This creates ambiguity for multi-argument function calls. The rules:
+
+**Single-argument calls work by juxtaposition:**
+
+```
+{List.hd [1, 2], List.hd [3, 4]}    # tuple of two elements: {1, 3}
+[List.length "hello", List.hd [9]]   # list of two elements: [5, 9]
+```
+
+The parser recognizes `List.hd` as a known function and consumes the next value as its argument. No commas are consumed — the comma after `[1, 2]` is a tuple separator.
+
+**Multi-argument calls need parentheses:**
+
+When a function takes multiple comma-separated arguments inside a tuple or list, wrap the call in parentheses to distinguish function-argument commas from structural commas:
+
+```
+{(List.map [1, 2, 3], \x -> x * 2), 99}        # {[2, 4, 6], 99}
+[(List.reduce [1, 2, 3], 0, \a, x -> a + x)]    # [6]
+```
+
+Two forms work:
+- `(List.map [1, 2, 3], \x -> x * 2)` — parentheses around the whole call, parsed as a sub-expression in command mode where commas are argument separators
+- `List.map ([1, 2, 3], \x -> x * 2)` — parentheses around the arguments, parsed as a parenthesized argument list
+
+Both produce identical results. Use whichever reads more naturally.
+
+**This only matters inside `{...}` and `[...]` literals.** At statement level, in pipe chains, in assignments, and in `$()` command substitution, commas are always function-argument separators and no parentheses are needed.
 
 ### Match Expression
 
@@ -707,18 +804,18 @@ result = 3 |> inc |> double    # double(inc(3)) = 8
 
 The pipe operator works with user functions, native stdlib functions, builtins, and external commands. For builtins and external commands, the piped value is converted to a string.
 
-**Auto-coercion:** if the left side of `|>` is a command that produces bytes (an external command or builtin), its stdout is captured and automatically split into a list of lines (`from_lines`). This means you can pipe command output directly into value functions:
+**Auto-coercion:** if the left side of `|>` is a command that produces bytes (an external command or builtin), its stdout is captured and automatically split into a list of lines (`IO.lines`). This means you can pipe command output directly into value functions:
 
 ```
-ls |> map \f -> upcase f         # list of uppercased filenames
-ls |> filter \f -> ends_with f, ".go" |> length  # count .go files
+ls |> List.map \f -> String.upcase f         # list of uppercased filenames
+ls |> List.filter \f -> String.ends_with f, ".go" |> List.length  # count .go files
 ```
 
-**Explicit bridge override:** if the right side of `|>` is a bridge function (`from_json`, `from_csv`, `from_tsv`, `from_lines`), the raw string is passed instead of auto-coercing to lines:
+**Explicit bridge override:** if the right side of `|>` is a bridge function (`JSON.parse`, `CSV.parse`, `CSV.parse_tsv`, `IO.lines`), the raw string is passed instead of auto-coercing to lines:
 
 ```
-curl -s api.example.com |> from_json |> map \x -> x.name
-cat data.csv |> from_csv |> filter \row -> row.age > 30
+curl -s api.example.com |> JSON.parse |> List.map \x -> x.name
+cat data.csv |> CSV.parse |> List.filter \row -> row.age > 30
 ```
 
 ### ish if / do / end
@@ -1038,53 +1135,53 @@ await sup    # blocks until all workers exit normally
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `hd` | `hd list` | First element of the list. Error on empty list. |
-| `tl` | `tl list` | All elements except the first. Error on empty list. |
-| `length` | `length val` | Length of a list, tuple, string, or map. |
-| `append` | `append list, elem` | New list with `elem` appended at the end. |
-| `concat` | `concat list1, list2` | Concatenation of two lists. |
-| `map` | `map list, fn` | Apply `fn` to each element, return new list. |
-| `filter` | `filter list, fn` | Keep elements where `fn` returns truthy. |
-| `reduce` | `reduce list, acc, fn` | Left fold: `fn(acc, elem)` for each element. |
-| `range` | `range start, stop` | List of integers `[start, start+1, ..., stop-1]`. Empty if `start >= stop`. |
-| `at` | `at list, index` | Element at 0-based index. Error if out of bounds. |
-| `each` | `each list, fn` | Apply `fn` to each element for side effects. Returns `nil`. |
-| `sorted` | `sorted list` | New list with elements sorted (integers numerically, others by string representation). |
-| `reverse` | `reverse list` | New list with elements in reverse order. |
-| `any` | `any list, fn` | Returns `:true` if `fn` returns truthy for any element, `:false` otherwise. |
-| `all` | `all list, fn` | Returns `:true` if `fn` returns truthy for all elements, `:false` otherwise. |
-| `first` | `first list, fn` | Returns the first element where `fn` returns truthy, or `nil` if none. |
-| `enumerate` | `enumerate list` | List of `{index, value}` tuples. `enumerate ["a", "b"]` returns `[{0, "a"}, {1, "b"}]`. |
+| `List.hd` | `List.hd list` | First element of the list. Error on empty list. |
+| `List.tl` | `List.tl list` | All elements except the first. Error on empty list. |
+| `List.length` | `List.length val` | Length of a list, tuple, string, or map. |
+| `List.append` | `List.append list, elem` | New list with `elem` appended at the end. |
+| `List.concat` | `List.concat list1, list2` | Concatenation of two lists. |
+| `List.map` | `List.map list, fn` | Apply `fn` to each element, return new list. |
+| `List.filter` | `List.filter list, fn` | Keep elements where `fn` returns truthy. |
+| `List.reduce` | `List.reduce list, acc, fn` | Left fold: `fn(acc, elem)` for each element. |
+| `List.range` | `List.range start, stop` | List of integers `[start, start+1, ..., stop-1]`. Empty if `start >= stop`. |
+| `List.at` | `List.at list, index` | Element at 0-based index. Error if out of bounds. |
+| `List.each` | `List.each list, fn` | Apply `fn` to each element for side effects. Returns `nil`. |
+| `List.sort` | `List.sort list` | New list with elements sorted (integers numerically, others by string representation). |
+| `List.reverse` | `List.reverse list` | New list with elements in reverse order. |
+| `List.any` | `List.any list, fn` | Returns `:true` if `fn` returns truthy for any element, `:false` otherwise. |
+| `List.all` | `List.all list, fn` | Returns `:true` if `fn` returns truthy for all elements, `:false` otherwise. |
+| `List.find` | `List.find list, fn` | Returns the first element where `fn` returns truthy, or `nil` if none. |
+| `List.with_index` | `List.with_index list` | List of `{index, value}` tuples. `List.with_index ["a", "b"]` returns `[{0, "a"}, {1, "b"}]`. |
 
 ### String Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `split` | `split str, delim` | Split string on delimiter, return list of strings. |
-| `join` | `join list, delim` | Join list elements into a string with delimiter. |
-| `trim` | `trim str` | Remove leading and trailing whitespace. |
-| `upcase` | `upcase str` | Convert to uppercase. |
-| `downcase` | `downcase str` | Convert to lowercase. |
-| `replace` | `replace str, old, new` | Replace first occurrence of `old` with `new`. |
-| `replace_all` | `replace_all str, old, new` | Replace all occurrences of `old` with `new`. |
-| `starts_with` | `starts_with str, prefix` | Returns `:true` or `:false`. |
-| `ends_with` | `ends_with str, suffix` | Returns `:true` or `:false`. |
-| `contains` | `contains str, substr` | Returns `:true` or `:false`. |
-| `substring` | `substring str, start, len` | Extract a substring by 0-based start position and length. |
-| `index_of` | `index_of str, substr` | Returns 0-based index of first occurrence, or `-1` if not found. |
+| `String.split` | `String.split str, delim` | Split string on delimiter, return list of strings. |
+| `String.join` | `String.join list, delim` | Join list elements into a string with delimiter. |
+| `String.trim` | `String.trim str` | Remove leading and trailing whitespace. |
+| `String.upcase` | `String.upcase str` | Convert to uppercase. |
+| `String.downcase` | `String.downcase str` | Convert to lowercase. |
+| `String.replace` | `String.replace str, old, new` | Replace first occurrence of `old` with `new`. |
+| `String.replace_all` | `String.replace_all str, old, new` | Replace all occurrences of `old` with `new`. |
+| `String.starts_with` | `String.starts_with str, prefix` | Returns `:true` or `:false`. |
+| `String.ends_with` | `String.ends_with str, suffix` | Returns `:true` or `:false`. |
+| `String.contains` | `String.contains str, substr` | Returns `:true` or `:false`. |
+| `String.slice` | `String.slice str, start, len` | Extract a substring by 0-based start position and length. |
+| `String.index_of` | `String.index_of str, substr` | Returns 0-based index of first occurrence, or `-1` if not found. |
 
 ### Map Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `put` | `put map, key, value` | New map with `key` set to `value`. |
-| `delete` | `delete map, key` | New map with `key` removed. |
-| `merge` | `merge map1, map2` | Combined map (`map2` wins on key conflicts). |
-| `keys` | `keys map` | List of key strings (in insertion order). |
-| `values` | `values map` | List of values (in insertion order). |
-| `has_key` | `has_key map, key` | Returns `:true` or `:false`. |
-| `get` | `get map, key` | Value for `key`, or `nil` if the key does not exist. |
-| `pairs` | `pairs map` | List of `{key, value}` tuples (in insertion order). |
+| `Map.put` | `Map.put map, key, value` | New map with `key` set to `value`. |
+| `Map.delete` | `Map.delete map, key` | New map with `key` removed. |
+| `Map.merge` | `Map.merge map1, map2` | Combined map (`map2` wins on key conflicts). |
+| `Map.keys` | `Map.keys map` | List of key strings (in insertion order). |
+| `Map.values` | `Map.values map` | List of values (in insertion order). |
+| `Map.has_key` | `Map.has_key map, key` | Returns `:true` or `:false`. |
+| `Map.get` | `Map.get map, key` | Value for `key`, or `nil` if the key does not exist. |
+| `Map.pairs` | `Map.pairs map` | List of `{key, value}` tuples (in insertion order). |
 
 All map operations return new maps (maps are immutable values).
 
@@ -1094,34 +1191,34 @@ These functions convert between strings and structured ish values. They are used
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `from_json` | `from_json str` | Parse JSON string into ish values. Objects become maps, arrays become lists, numbers become ints (when whole), booleans become atoms, null becomes `nil`. |
-| `to_json` | `to_json value` | Serialize an ish value to a JSON string. Maps become objects, lists/tuples become arrays, atoms become strings (except `:true`/`:false` which become booleans), `nil` becomes null. |
-| `from_csv` | `from_csv str` | Parse CSV text. If multiple rows, the first row is treated as headers and subsequent rows become maps. A single row returns a list of strings. Uses RFC 4180 parsing (handles quoted fields, embedded newlines). |
-| `to_csv` | `to_csv list` | Serialize a list of maps to CSV text (keys from the first map become the header row). Also accepts a list of lists. |
-| `from_tsv` | `from_tsv str` | Like `from_csv` but tab-delimited. |
-| `to_tsv` | `to_tsv list` | Like `to_csv` but tab-delimited. |
-| `from_lines` | `from_lines str` | Split a string on newlines into a list of strings. Trailing empty line is removed. |
-| `to_lines` | `to_lines list` | Join a list of strings with newlines. |
+| `JSON.parse` | `JSON.parse str` | Parse JSON string into ish values. Objects become maps, arrays become lists, numbers become ints (when whole), booleans become atoms, null becomes `nil`. |
+| `JSON.encode` | `JSON.encode value` | Serialize an ish value to a JSON string. Maps become objects, lists/tuples become arrays, atoms become strings (except `:true`/`:false` which become booleans), `nil` becomes null. |
+| `CSV.parse` | `CSV.parse str` | Parse CSV text. If multiple rows, the first row is treated as headers and subsequent rows become maps. A single row returns a list of strings. Uses RFC 4180 parsing (handles quoted fields, embedded newlines). |
+| `CSV.encode` | `CSV.encode list` | Serialize a list of maps to CSV text (keys from the first map become the header row). Also accepts a list of lists. |
+| `CSV.parse_tsv` | `CSV.parse_tsv str` | Like `CSV.parse` but tab-delimited. |
+| `CSV.encode_tsv` | `CSV.encode_tsv list` | Like `CSV.encode` but tab-delimited. |
+| `IO.lines` | `IO.lines str` | Split a string on newlines into a list of strings. Trailing empty line is removed. |
+| `IO.unlines` | `IO.unlines list` | Join a list of strings with newlines. |
 
-The pipes handle most conversions automatically. `|>` auto-applies `from_lines` when the left side is a command; `|` auto-converts values to lines when piping to a command. Use explicit bridge functions when you need a different format:
+The pipes handle most conversions automatically. `|>` auto-applies `IO.lines` when the left side is a command; `|` auto-converts values to lines when piping to a command. Use explicit bridge functions when you need a different format:
 
 ```
 # auto-coercion (default: lines)
-ls |> map \f -> upcase f | sort
+ls |> List.map \f -> String.upcase f | sort
 
 # explicit bridge for structured data
-curl -s api.example.com |> from_json |> map \x -> x.name
-cat data.csv |> from_csv |> filter \row -> row.age > 30
+curl -s api.example.com |> JSON.parse |> List.map \x -> x.name
+cat data.csv |> CSV.parse |> List.filter \row -> row.age > 30
 
 # explicit bridge for output
-to_json data | jq .
+JSON.encode data | jq .
 ```
 
 ### Utility Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `delay` | `delay ms` | Pause for `ms` milliseconds. Returns `nil`. Named `delay` instead of `sleep` to avoid shadowing the Unix `sleep` command. |
+| `Process.sleep` | `Process.sleep ms` | Pause for `ms` milliseconds. Returns `nil`. |
 
 ## How Disambiguation Works
 
@@ -1133,7 +1230,7 @@ The parser uses position and context to decide between POSIX shell syntax and is
 
 **`|` vs `|>`:**
 - `|` -- Unix pipe. Connects stdout to stdin. If the left side produces a value instead of bytes, it is auto-converted to lines.
-- `|>` -- Functional pipe. Passes the left value as the first argument to the right function. If the left side is a command that produces bytes, its stdout is auto-converted to a list of lines (unless the right side is an explicit bridge function like `from_json`).
+- `|>` -- Functional pipe. Passes the left value as the first argument to the right function. If the left side is a command that produces bytes, its stdout is auto-converted to a list of lines (unless the right side is an explicit bridge function like `JSON.parse`).
 
 **Command position vs argument position:**
 - In **command position** (first word of a statement): keywords (`if`, `for`, `while`, `fn`, `match`, `spawn`, etc.) trigger their respective parsers. A word followed by `()` is a POSIX function definition. A word followed by `=` (as a separate token) is an ish binding.
@@ -1174,7 +1271,17 @@ The parser uses position and context to decide between POSIX shell syntax and is
 - `fn name ... do ... end` -- named function definition (statement). The word after `fn` is always the function name.
 - Lambdas (`\params -> expr`) are the preferred syntax for simple anonymous functions.
 
-**General rule:** ish extensions never use tokens that are valid in POSIX shell at the same position. Atoms (`:word`), tuples (`{a, b}`), maps (`%{}`), pipe arrows (`|>`), lambdas (`\x -> expr`), and the `fn`/`match`/`spawn`/`receive`/`supervise` keywords occupy syntactic positions that are unambiguous.
+**Module-qualified names (`Name.func`):**
+- In command mode, `List.map` is a single word token (the lexer treats `.` as a word character). The eval layer splits on `.` and checks for a module named `List`.
+- In expression mode, `List.map` produces a dot-access node (`List` `.` `map`). The eval layer checks if `List` is a module before falling back to map field access.
+- PascalCase names are reserved for modules. If a variable `List` holds a map and a module `List` is registered, the module takes priority for dot access.
+
+**Commas in function arguments vs data structure elements:**
+- At statement level: commas always separate function arguments. `List.map [1,2,3], \x -> x * 2` passes two arguments to `List.map`.
+- Inside `{...}` (tuples) and `[...]` (lists): commas are structural separators between elements. A multi-argument function call must be wrapped in parentheses: `{(List.map [1,2,3], \x -> x * 2), other}`.
+- Single-argument calls inside tuples/lists work without parentheses: `{List.hd [1,2], List.hd [3,4]}` — the parser recognizes known functions and consumes one argument by juxtaposition.
+
+**General rule:** ish extensions never use tokens that are valid in POSIX shell at the same position. Atoms (`:word`), tuples (`{a, b}`), maps (`%{}`), pipe arrows (`|>`), lambdas (`\x -> expr`), and the `fn`/`match`/`spawn`/`receive`/`supervise`/`defmodule`/`use` keywords occupy syntactic positions that are unambiguous.
 
 ## Prompt (PS1)
 

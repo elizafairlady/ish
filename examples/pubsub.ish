@@ -8,17 +8,17 @@ fn broker_loop subs do
   receive do
     {:subscribe, pid} ->
       echo "broker: new subscriber"
-      broker_loop (concat subs, [pid])
+      broker_loop (List.concat subs, [pid])
     {:publish, topic, msg} ->
-      echo "broker: publishing to #{length subs} subscribers"
-      map subs, \sub -> send sub, {:message, topic, msg}
+      echo "broker: publishing to #{List.length subs} subscribers"
+      List.each subs, \sub -> send sub, {:message, topic, msg}
       broker_loop subs
     {:unsubscribe, pid} ->
-      new_subs = filter subs, \s -> s != pid
-      echo "broker: subscriber removed, #{length new_subs} remaining"
+      new_subs = List.filter subs, \s -> s != pid
+      echo "broker: subscriber removed, #{List.length new_subs} remaining"
       broker_loop new_subs
     :stop ->
-      map subs, \sub -> send sub, :broker_stopped
+      List.each subs, \sub -> send sub, :broker_stopped
       echo "broker: stopped"
   end
 end

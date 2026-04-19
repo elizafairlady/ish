@@ -9,7 +9,7 @@ fn worker id, caller do
   send caller, {:result, id, result}
 end
 
-map (range 1, 6), \i -> spawn fn do worker i, me end
+List.map (List.range 1, 6), \i -> spawn fn do worker i, me end
 
 fn collect n, acc do
   if n == 0 do
@@ -17,7 +17,7 @@ fn collect n, acc do
   else
     receive do
       {:result, id, val} ->
-        collect (n - 1), (concat acc, [{id, val}])
+        collect (n - 1), (List.concat acc, [{id, val}])
     after 3000 ->
       echo "timeout waiting for results"
       acc

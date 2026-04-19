@@ -555,7 +555,7 @@ All functions are values — including named ones. You can pass `double` to `map
 
 ```
 fn double x do x * 2 end
-map [1, 2, 3], double
+List.map [1, 2, 3], double
 ```
 ```
 [2, 4, 6]
@@ -671,14 +671,14 @@ echo $r
 `|` connects stdin to stdout. `|>` connects return values to first arguments. But the roads merge. When a value meets a byte pipe, ish converts automatically:
 
 ```
-# command output flows into value functions — auto from_lines
-ls |> map \f -> upcase f | sort
+# command output flows into value functions — auto IO.lines
+ls |> List.map \f -> String.upcase f | sort
 ```
 
-`ls` produces bytes. `|>` catches them, splits on newlines, and hands a list to `map`. `map` returns a list. `|` catches it, joins with newlines, and feeds it to `sort`. No bridge functions needed.
+`ls` produces bytes. `|>` catches them, splits on newlines, and hands a list to `List.map`. `List.map` returns a list. `|` catches it, joins with newlines, and feeds it to `sort`. No bridge functions needed.
 
 ```
-# values flow into unix commands — auto to_lines
+# values flow into unix commands — auto IO.unlines
 [3, 1, 2] | sort
 ```
 ```
@@ -690,14 +690,14 @@ ls |> map \f -> upcase f | sort
 The default conversion is lines — the universal unix format. When your data isn't lines, you override with an explicit bridge:
 
 ```
-# JSON: tell |> to use from_json instead of from_lines
-curl -s api.example.com |> from_json |> map \x -> x.name
+# JSON: tell |> to use JSON.parse instead of IO.lines
+curl -s api.example.com |> JSON.parse |> List.map \x -> x.name
 
 # CSV: same idea
-cat data.csv |> from_csv |> filter \row -> row.age > 30
+cat data.csv |> CSV.parse |> List.filter \row -> row.age > 30
 ```
 
-The bridge functions (`from_json`, `from_csv`, `from_tsv`, `from_lines` and their `to_` counterparts) still exist for when you need them. But for the common case — line-oriented text flowing between unix and ish — the pipes handle it.
+The bridge functions (`JSON.parse`, `CSV.parse`, `CSV.parse_tsv`, `IO.lines` and their encode/unlines counterparts) still exist for when you need them. But for the common case — line-oriented text flowing between unix and ish — the pipes handle it.
 
 *The dirt road turned out to be faster. The fox was annoyed about this.*
 
@@ -1109,22 +1109,22 @@ ish has built-in functions for working with lists, strings, and maps. They work 
 **Lists:**
 
 ```
-hd [1, 2, 3]             # 1
-tl [1, 2, 3]             # [2, 3]
-length [10, 20, 30]      # 3
-at [10, 20, 30], 1       # 20 (zero-indexed)
-append [1, 2], 3          # [1, 2, 3]
-concat [1, 2], [3, 4]    # [1, 2, 3, 4]
-range 0, 5               # [0, 1, 2, 3, 4]
-sorted [3, 1, 2]         # [1, 2, 3]
-reverse [1, 2, 3]        # [3, 2, 1]
-enumerate ["a", "b"]     # [{0, "a"}, {1, "b"}]
+List.hd [1, 2, 3]             # 1
+List.tl [1, 2, 3]             # [2, 3]
+List.length [10, 20, 30]      # 3
+List.at [10, 20, 30], 1       # 20 (zero-indexed)
+List.append [1, 2], 3          # [1, 2, 3]
+List.concat [1, 2], [3, 4]    # [1, 2, 3, 4]
+List.range 0, 5               # [0, 1, 2, 3, 4]
+List.sort [3, 1, 2]           # [1, 2, 3]
+List.reverse [1, 2, 3]        # [3, 2, 1]
+List.with_index ["a", "b"]    # [{0, "a"}, {1, "b"}]
 ```
 
 Transform with lambdas:
 
 ```
-r = map [1, 2, 3], \x -> x * 2
+r = List.map [1, 2, 3], \x -> x * 2
 echo $r
 ```
 ```
@@ -1132,7 +1132,7 @@ echo $r
 ```
 
 ```
-r = filter [1, 2, 3, 4, 5], \x -> x >= 4
+r = List.filter [1, 2, 3, 4, 5], \x -> x >= 4
 echo $r
 ```
 ```
@@ -1140,26 +1140,26 @@ echo $r
 ```
 
 ```
-r = reduce [1, 2, 3, 4], 0, \acc, x -> acc + x
+r = List.reduce [1, 2, 3, 4], 0, \acc, x -> acc + x
 echo $r
 ```
 ```
 10
 ```
 
-There are also `each` (like `map` but for side effects), `any`, `all`, and `first`:
+There are also `List.each` (like `List.map` but for side effects), `List.any`, `List.all`, and `List.find`:
 
 ```
-each [1, 2, 3], \x -> echo $x    # prints 1, 2, 3 on separate lines
-any [0, 0, 1], \x -> x > 0       # :true
-all [1, 2, 3], \x -> x > 0       # :true
-first [1, 2, 3, 4], \x -> x > 2  # 3
+List.each [1, 2, 3], \x -> echo $x    # prints 1, 2, 3 on separate lines
+List.any [0, 0, 1], \x -> x > 0       # :true
+List.all [1, 2, 3], \x -> x > 0       # :true
+List.find [1, 2, 3, 4], \x -> x > 2   # 3
 ```
 
 These chain with `|>`:
 
 ```
-r = range 1, 11 |> filter \x -> x >= 6 |> length
+r = List.range 1, 11 |> List.filter \x -> x >= 6 |> List.length
 echo $r
 ```
 ```
@@ -1169,31 +1169,31 @@ echo $r
 **Strings:**
 
 ```
-split "a:b:c", ":"         # ["a", "b", "c"]
-join ["a", "b", "c"], "-"  # "a-b-c"
-trim "  hello  "           # "hello"
-upcase "hello"             # "HELLO"
-downcase "HELLO"           # "hello"
-replace "hello", "l", "r"  # "herlo"
-replace_all "hello", "l", "r"  # "herro"
-starts_with "hello", "hel" # :true
-ends_with "hello", "llo"   # :true
-contains "hello", "ell"    # :true
-substring "hello", 1, 3    # "ell"
-index_of "hello", "ll"     # 2
+String.split "a:b:c", ":"         # ["a", "b", "c"]
+String.join ["a", "b", "c"], "-"  # "a-b-c"
+String.trim "  hello  "           # "hello"
+String.upcase "hello"             # "HELLO"
+String.downcase "HELLO"           # "hello"
+String.replace "hello", "l", "r"  # "herlo"
+String.replace_all "hello", "l", "r"  # "herro"
+String.starts_with "hello", "hel" # :true
+String.ends_with "hello", "llo"   # :true
+String.contains "hello", "ell"    # :true
+String.slice "hello", 1, 3        # "ell"
+String.index_of "hello", "ll"     # 2
 ```
 
 **Maps:**
 
 ```
-put %{a: 1}, "b", 2        # %{a: 1, b: 2}
-delete %{a: 1, b: 2}, "a"  # %{b: 2}
-merge %{a: 1}, %{b: 2}     # %{a: 1, b: 2}
-keys %{x: 1, y: 2}         # ["x", "y"]
-values %{x: 1, y: 2}       # [1, 2]
-has_key %{x: 1}, "x"       # :true
-get %{x: 1, y: 2}, "x"    # 1
-pairs %{a: 1, b: 2}        # [{"a", 1}, {"b", 2}]
+Map.put %{a: 1}, "b", 2        # %{a: 1, b: 2}
+Map.delete %{a: 1, b: 2}, "a"  # %{b: 2}
+Map.merge %{a: 1}, %{b: 2}     # %{a: 1, b: 2}
+Map.keys %{x: 1, y: 2}         # ["x", "y"]
+Map.values %{x: 1, y: 2}       # [1, 2]
+Map.has_key %{x: 1}, "x"       # :true
+Map.get %{x: 1, y: 2}, "x"    # 1
+Map.pairs %{a: 1, b: 2}        # [{"a", 1}, {"b", 2}]
 ```
 
 **Format conversion (override auto-coercion for structured data):**
@@ -1201,23 +1201,78 @@ pairs %{a: 1, b: 2}        # [{"a", 1}, {"b", 2}]
 The pipes auto-convert using lines by default. These functions handle other formats:
 
 ```
-from_json str              # JSON string -> value (map, list, etc.)
-to_json value              # value -> JSON string
-from_csv str               # CSV with headers -> list of maps
-to_csv list                # list of maps -> CSV string
-from_tsv str               # TSV with headers -> list of maps
-to_tsv list                # list of maps -> TSV string
-from_lines str             # string -> list of lines (what auto-coercion does)
-to_lines list              # list of strings -> newline-joined string
+JSON.parse str              # JSON string -> value (map, list, etc.)
+JSON.encode value           # value -> JSON string
+CSV.parse str               # CSV with headers -> list of maps
+CSV.encode list             # list of maps -> CSV string
+CSV.parse_tsv str           # TSV with headers -> list of maps
+CSV.encode_tsv list         # list of maps -> TSV string
+IO.lines str                # string -> list of lines (what auto-coercion does)
+IO.unlines list             # list of strings -> newline-joined string
 ```
 
 **Utilities:**
 
 ```
-delay 1000                 # pause for 1000 milliseconds
+Process.sleep 1000           # pause for 1000 milliseconds
 ```
 
-`delay` is named to avoid shadowing the Unix `sleep` command. Similarly, `sorted` avoids `sort` and `first` avoids `find`.
+Module-qualified names avoid shadowing Unix commands. `List.sort` instead of `sort`, `List.find` instead of `find`, `Process.sleep` instead of `sleep`.
+
+**Defining your own modules:**
+
+```
+defmodule Math do
+  def abs do
+    n when n >= 0 -> n
+    n -> 0 - n
+  end
+
+  def clamp val, lo, hi do
+    Math.max lo, (Math.min val, hi)
+  end
+
+  def max a, b when a >= b do a end
+  def max _, b do b end
+  def min a, b when a <= b do a end
+  def min _, b do b end
+end
+
+Math.abs (0 - 5)            # 5
+Math.clamp 10, 0, 5         # 5
+```
+
+`def` works like `fn` inside a module — guards, pattern matching, multi-clause dispatch all work. Functions inside a module can call each other by name. Prefix a name with `_` to make it private.
+
+**Importing with `use`:**
+
+```
+use List
+map [1, 2, 3], \x -> x * 2    # works without the List. prefix
+```
+
+**Commas inside tuples and lists:**
+
+At statement level, commas separate function arguments:
+
+```
+r = List.map [1, 2, 3], \x -> x * 2    # two args, no ambiguity
+```
+
+Inside `{...}` and `[...]`, commas separate elements. Single-argument calls work by juxtaposition:
+
+```
+{List.hd [1, 2], List.hd [3, 4]}    # {1, 3}
+```
+
+Multi-argument calls need parentheses to avoid ambiguity with element commas:
+
+```
+{(List.map [1, 2, 3], \x -> x * 2), 99}        # {[2, 4, 6], 99}
+{List.map ([1, 2, 3], \x -> x * 2), 99}         # same thing
+```
+
+Both forms work — parentheses around the whole call, or parentheses around the arguments.
 
 *The fox picked up a string function and turned it over.*
 
@@ -1237,7 +1292,7 @@ delay 1000                 # pause for 1000 milliseconds
 
 Here's a real program. It reads a list of services from a config file, checks them all concurrently, and produces a report. The fox handles the system. The AI handles the data.
 
-The config file, `services.conf` (if this were CSV, `from_csv` would handle it in one call — but space-separated configs are everywhere, so we parse it ourselves):
+The config file, `services.conf` (if this were CSV, `CSV.parse` would handle it in one call — but space-separated configs are everywhere, so we parse it ourselves):
 
 ```
 web https://example.com
@@ -1254,12 +1309,12 @@ The script, `checkup.ish` (run it with `ish checkup.ish`):
 fn read_services file do
   lines = $(cat $file)
   lines
-    |> split "\n"
-    |> filter \line -> length line >= 1
-    |> map fn do line ->
-      parts = split line, " "
+    |> String.split "\n"
+    |> List.filter \line -> List.length line >= 1
+    |> List.map fn do line ->
+      parts = String.split line, " "
       [name | rest] = parts
-      url = join rest, " "
+      url = String.join rest, " "
       %{name: name, url: url}
     end
 end
@@ -1281,7 +1336,7 @@ fn check service, reply_to do
 end
 
 me = self
-map services, \svc -> spawn fn do check svc, me end
+List.map services, \svc -> spawn fn do check svc, me end
 
 # --- collect results ---
 
@@ -1297,29 +1352,29 @@ fn collect n do
   end
 end
 
-results = collect (length services)
+results = collect (List.length services)
 
 # --- report (the fox's part again) ---
 
-ok = filter results, \r -> match r do {:ok, _, _} -> :true; _ -> :false end
-failed = filter results, \r -> match r do {:ok, _, _} -> :false; _ -> :true end
+ok = List.filter results, \r -> match r do {:ok, _, _} -> :true; _ -> :false end
+failed = List.filter results, \r -> match r do {:ok, _, _} -> :false; _ -> :true end
 
 echo "=== Service Report ==="
 echo ""
 
-map ok, fn do
+List.each ok, fn do
   {:ok, name, code} -> printf "  %-12s %s\n" $name $code
 end
 
-map failed, fn do
+List.each failed, fn do
   {:error, name, reason} -> printf "  %-12s FAILED (%s)\n" $name $reason
 end
 
 echo ""
-printf "%d ok, %d failed\n" (length ok) (length failed)
+printf "%d ok, %d failed\n" (List.length ok) (List.length failed)
 ```
 
-`cat` reads the file, `|>` transforms it. `curl` checks the URLs, `try/rescue` catches failures. `spawn` fires them all at once. `receive` with `after 5000` collects results without hanging. `filter` separates the good from the bad. `printf` prints the report.
+`cat` reads the file, `|>` transforms it. `curl` checks the URLs, `try/rescue` catches failures. `spawn` fires them all at once. `receive` with `after 5000` collects results without hanging. `List.filter` separates the good from the bad. `printf` prints the report.
 
 The fox's tools and the AI's tools, in the same script, doing what each one does best.
 

@@ -1,0 +1,93 @@
+# defmodule: user-defined modules with pattern matching and guards
+# STATUS: PASS
+
+# Multi-clause dispatch with guards
+defmodule Fib do
+  def calc 0 do 0 end
+  def calc 1 do 1 end
+  def calc n do Fib.calc (n - 1) + Fib.calc (n - 2) end
+end
+
+echo "fib(10): $(Fib.calc 10)"
+
+# Arrow-clause form
+defmodule Classify do
+  def sign do
+    n when n > 0 -> :positive
+    0 -> :zero
+    _ -> :negative
+  end
+
+  def even_odd do
+    n when n % 2 == 0 -> :even
+    _ -> :odd
+  end
+end
+
+echo "sign(-5): $(Classify.sign (0 - 5))"
+echo "sign(0):  $(Classify.sign 0)"
+echo "sign(3):  $(Classify.sign 3)"
+echo "even(4):  $(Classify.even_odd 4)"
+echo "odd(7):   $(Classify.even_odd 7)"
+
+# Pattern matching on data structures
+defmodule Shape do
+  def area {:circle, r} do
+    314 * r * r / 100
+  end
+  def area {:rect, w, h} do
+    w * h
+  end
+  def area {:square, s} do
+    s * s
+  end
+
+  def describe {:circle, _} do "circle" end
+  def describe {:rect, _, _} do "rectangle" end
+  def describe {:square, _} do "square" end
+end
+
+shapes = [{:circle, 5}, {:rect, 3, 4}, {:square, 6}]
+echo ""
+echo "=== shapes ==="
+List.each $shapes, fn shape do
+  echo "$(Shape.describe $shape): area = $(Shape.area $shape)"
+end
+
+# Modules calling other modules
+defmodule Stats do
+  def sum list do
+    List.reduce $list, 0, \acc, x -> acc + x
+  end
+
+  def mean list do
+    Stats.sum $list / List.length $list
+  end
+
+  def min_max list do
+    sorted = List.sort $list
+    {List.hd $sorted, List.hd (List.reverse $sorted)}
+  end
+end
+
+data = [4, 7, 2, 9, 1, 5]
+echo ""
+echo "=== stats ==="
+echo "sum:     $(Stats.sum $data)"
+echo "mean:    $(Stats.mean $data)"
+echo "min_max: $(Stats.min_max $data)"
+
+# Private functions (underscore prefix)
+defmodule Greeting do
+  fn _prefix name do
+    "Hello, #{name}"
+  end
+
+  def greet name do
+    msg = _prefix $name
+    String.upcase $msg
+  end
+end
+
+echo ""
+echo "greet: $(Greeting.greet "world")"

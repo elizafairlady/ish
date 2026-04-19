@@ -63,20 +63,32 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 		}
 	}
 
-	if fn, ok := env.GetFn(name); ok {
-		argVals := make([]core.Value, 0, len(node.Children)-1)
-		for _, child := range node.Children[1:] {
-			if child.Kind == ast.NWord && child.Tok.Val == "$@" {
-				for _, arg := range env.PosArgs() {
-					argVals = append(argVals, core.StringVal(arg))
-				}
-				continue
-			}
-			v, err := Eval(child, env)
+	// Module-qualified call: Module.func args
+	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
+		modName := name[:dotIdx]
+		fnName := name[dotIdx+1:]
+		if mod, ok := env.GetModule(modName); ok {
+			argVals, err := evalFnArgs(node, env)
 			if err != nil {
 				return core.Nil, err
 			}
-			argVals = append(argVals, v)
+			if fn, ok := mod.Fns[fnName]; ok {
+				if node.Tail {
+					return core.TailCallVal(fn, argVals), nil
+				}
+				return CallFn(fn, argVals, env)
+			}
+			if nfn, ok := mod.NativeFns[fnName]; ok {
+				return nfn(argVals, env)
+			}
+			return core.Nil, fmt.Errorf("%s: undefined function %s in module %s", name, fnName, modName)
+		}
+	}
+
+	if fn, ok := env.GetFn(name); ok {
+		argVals, err := evalFnArgs(node, env)
+		if err != nil {
+			return core.Nil, err
 		}
 		if node.Tail {
 			return core.TailCallVal(fn, argVals), nil
@@ -85,41 +97,20 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	if nfn, ok := env.GetNativeFn(name); ok {
-		argVals := make([]core.Value, 0, len(node.Children)-1)
-		for _, child := range node.Children[1:] {
-			if child.Kind == ast.NWord && child.Tok.Val == "$@" {
-				for _, arg := range env.PosArgs() {
-					argVals = append(argVals, core.StringVal(arg))
-				}
-				continue
-			}
-			v, err := Eval(child, env)
-			if err != nil {
-				return core.Nil, err
-			}
-			argVals = append(argVals, v)
+		argVals, err := evalFnArgs(node, env)
+		if err != nil {
+			return core.Nil, err
 		}
 		return nfn(argVals, env)
 	}
 
 	// Check if the command name is a variable holding a function value.
-	// Evaluate args as expressions (same as named functions), not as command strings.
 	if v, ok := env.Get(name); ok && v.Kind == core.VFn {
-		fnArgVals := make([]core.Value, 0, len(node.Children)-1)
-		for _, child := range node.Children[1:] {
-			if child.Kind == ast.NWord && child.Tok.Val == "$@" {
-				for _, arg := range env.PosArgs() {
-					fnArgVals = append(fnArgVals, core.StringVal(arg))
-				}
-				continue
-			}
-			av, err := Eval(child, env)
-			if err != nil {
-				return core.Nil, err
-			}
-			fnArgVals = append(fnArgVals, av)
+		argVals, err := evalFnArgs(node, env)
+		if err != nil {
+			return core.Nil, err
 		}
-		return CallFn(v.Fn, fnArgVals, env)
+		return CallFn(v.Fn, argVals, env)
 	}
 
 	argVals := make([]core.Value, 0, len(node.Children)-1)
@@ -283,6 +274,25 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 
 	result, err := evalExternalCmd(name, expanded, node.Redirs, env)
 	return result, err
+}
+
+// evalFnArgs evaluates command arguments as expressions for function calls.
+func evalFnArgs(node *ast.Node, env *core.Env) ([]core.Value, error) {
+	argVals := make([]core.Value, 0, len(node.Children)-1)
+	for _, child := range node.Children[1:] {
+		if child.Kind == ast.NWord && child.Tok.Val == "$@" {
+			for _, arg := range env.PosArgs() {
+				argVals = append(argVals, core.StringVal(arg))
+			}
+			continue
+		}
+		v, err := Eval(child, env)
+		if err != nil {
+			return nil, err
+		}
+		argVals = append(argVals, v)
+	}
+	return argVals, nil
 }
 
 func evalCmdArg(node *ast.Node, env *core.Env) (core.Value, error) {

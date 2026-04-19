@@ -32,6 +32,12 @@ func isCommandNode(node *ast.Node, env *core.Env) bool {
 		if name == "" {
 			return true
 		}
+		// Module-qualified calls produce values
+		if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
+			if _, ok := env.GetModule(name[:dotIdx]); ok {
+				return false
+			}
+		}
 		// User functions, native functions, and variable-stored functions produce values
 		if _, ok := env.GetFn(name); ok {
 			return false
@@ -60,7 +66,8 @@ func isBridgeFn(node *ast.Node) bool {
 		name = node.Tok.Val
 	}
 	switch name {
-	case "from_json", "from_csv", "from_tsv", "from_lines":
+	case "from_json", "from_csv", "from_tsv", "from_lines",
+		"JSON.parse", "CSV.parse", "CSV.parse_tsv", "IO.lines":
 		return true
 	}
 	return false
@@ -396,6 +403,22 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 	case ast.NWord:
 		name := right.Tok.Val
 		argVals := []core.Value{left}
+		// Module-qualified lookup
+		if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
+			modName := name[:dotIdx]
+			fnName := name[dotIdx+1:]
+			if mod, ok := env.GetModule(modName); ok {
+				if fn, ok := mod.Fns[fnName]; ok {
+					if node.Tail {
+						return core.TailCallVal(fn, argVals), nil
+					}
+					return CallFn(fn, argVals, env)
+				}
+				if nfn, ok := mod.NativeFns[fnName]; ok {
+					return nfn(argVals, env)
+				}
+			}
+		}
 		if fn, ok := env.GetFn(name); ok {
 			if node.Tail {
 				return core.TailCallVal(fn, argVals), nil

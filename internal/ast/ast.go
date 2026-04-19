@@ -107,8 +107,10 @@ const (
 	NTuple  // {a, b, c}
 	NList   // [a, b, c]
 	NMap    // %{k: v}
-	NAccess // expr.field
-	NLambda // \params -> expr
+	NAccess    // expr.field
+	NLambda    // \params -> expr
+	NDefModule // defmodule Name do defs end
+	NUse       // use Module
 )
 
 type Node struct {

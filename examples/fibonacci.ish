@@ -8,5 +8,5 @@ fn fib do
   n -> fib (n - 1) + fib (n - 2)
 end
 
-results = map (range 0, 11), \n -> fib n
+results = List.map (List.range 0, 11), \n -> fib n
 echo $results

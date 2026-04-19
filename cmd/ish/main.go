@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -25,7 +26,7 @@ import (
 	"ish/internal/stdlib"
 )
 
-var Version = "0.3.10"
+var Version = "0.4.0"
 
 func main() {
 	// Wire up eval <-> builtin cycle via Init
@@ -143,6 +144,19 @@ func main() {
 		env.ShellName = args[0]
 		env.SourceName = args[0]
 		env.Args = args[1:]
+		eval.RunSource(string(data), env)
+		shellExit(env)
+		os.Exit(env.LastExit)
+	}
+
+	// Piped stdin: read and execute as a script
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
+			os.Exit(1)
+		}
+		env.SourceName = "<stdin>"
 		eval.RunSource(string(data), env)
 		shellExit(env)
 		os.Exit(env.LastExit)

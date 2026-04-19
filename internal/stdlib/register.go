@@ -2,61 +2,94 @@ package stdlib
 
 import "ish/internal/core"
 
-// Register registers all stdlib native functions into the environment.
+// Register registers all stdlib native functions as modules.
 func Register(env *core.Env) {
-	env.SetNativeFn("hd", stdlibHd)
-	env.SetNativeFn("tl", stdlibTl)
-	env.SetNativeFn("length", stdlibLength)
-	env.SetNativeFn("append", stdlibAppend)
-	env.SetNativeFn("concat", stdlibConcat)
-	env.SetNativeFn("map", stdlibMap)
-	env.SetNativeFn("filter", stdlibFilter)
-	env.SetNativeFn("reduce", stdlibReduce)
-	env.SetNativeFn("range", stdlibRange)
-	env.SetNativeFn("at", stdlibAt)
+	env.SetModule("List", &core.Module{
+		Name: "List",
+		NativeFns: map[string]core.NativeFn{
+			"hd":         stdlibHd,
+			"tl":         stdlibTl,
+			"length":     stdlibLength,
+			"append":     stdlibAppend,
+			"concat":     stdlibConcat,
+			"at":         stdlibAt,
+			"range":      stdlibRange,
+			"map":        stdlibMap,
+			"filter":     stdlibFilter,
+			"reduce":     stdlibReduce,
+			"each":       stdlibEach,
+			"sort":       stdlibSort,
+			"reverse":    stdlibReverse,
+			"any":        stdlibAny,
+			"all":        stdlibAll,
+			"find":       stdlibFind,
+			"with_index": stdlibEnumerate,
+		},
+	})
 
-	env.SetNativeFn("each", stdlibEach)
-	env.SetNativeFn("sorted", stdlibSort)
-	env.SetNativeFn("reverse", stdlibReverse)
-	env.SetNativeFn("any", stdlibAny)
-	env.SetNativeFn("all", stdlibAll)
-	env.SetNativeFn("first", stdlibFind)
-	env.SetNativeFn("enumerate", stdlibEnumerate)
+	env.SetModule("String", &core.Module{
+		Name: "String",
+		NativeFns: map[string]core.NativeFn{
+			"length":      stdlibLength,
+			"split":       stdlibSplit,
+			"join":        stdlibJoin,
+			"trim":        stdlibTrim,
+			"upcase":      stdlibUpcase,
+			"downcase":    stdlibDowncase,
+			"replace":     stdlibReplace,
+			"replace_all": stdlibReplaceAll,
+			"starts_with": stdlibStartsWith,
+			"ends_with":   stdlibEndsWith,
+			"contains":    stdlibContains,
+			"slice":       stdlibSubstring,
+			"index_of":    stdlibIndexOf,
+		},
+	})
 
-	// Map functions
-	env.SetNativeFn("put", stdlibPut)
-	env.SetNativeFn("delete", stdlibDelete)
-	env.SetNativeFn("merge", stdlibMerge)
-	env.SetNativeFn("keys", stdlibKeys)
-	env.SetNativeFn("values", stdlibValues)
-	env.SetNativeFn("has_key", stdlibHasKey)
-	env.SetNativeFn("get", stdlibGet)
-	env.SetNativeFn("pairs", stdlibPairs)
+	env.SetModule("Map", &core.Module{
+		Name: "Map",
+		NativeFns: map[string]core.NativeFn{
+			"put":     stdlibPut,
+			"delete":  stdlibDelete,
+			"merge":   stdlibMerge,
+			"keys":    stdlibKeys,
+			"values":  stdlibValues,
+			"has_key": stdlibHasKey,
+			"get":     stdlibGet,
+			"pairs":   stdlibPairs,
+		},
+	})
 
-	// String functions
-	env.SetNativeFn("split", stdlibSplit)
-	env.SetNativeFn("join", stdlibJoin)
-	env.SetNativeFn("trim", stdlibTrim)
-	env.SetNativeFn("upcase", stdlibUpcase)
-	env.SetNativeFn("downcase", stdlibDowncase)
-	env.SetNativeFn("replace", stdlibReplace)
-	env.SetNativeFn("replace_all", stdlibReplaceAll)
-	env.SetNativeFn("starts_with", stdlibStartsWith)
-	env.SetNativeFn("ends_with", stdlibEndsWith)
-	env.SetNativeFn("contains", stdlibContains)
-	env.SetNativeFn("substring", stdlibSubstring)
-	env.SetNativeFn("index_of", stdlibIndexOf)
+	env.SetModule("JSON", &core.Module{
+		Name: "JSON",
+		NativeFns: map[string]core.NativeFn{
+			"parse":  stdlibFromJSON,
+			"encode": stdlibToJSON,
+		},
+	})
 
-	// Serialization functions
-	env.SetNativeFn("from_json", stdlibFromJSON)
-	env.SetNativeFn("to_json", stdlibToJSON)
-	env.SetNativeFn("from_csv", stdlibFromCSV)
-	env.SetNativeFn("to_csv", stdlibToCSV)
-	env.SetNativeFn("from_tsv", stdlibFromTSV)
-	env.SetNativeFn("to_tsv", stdlibToTSV)
-	env.SetNativeFn("from_lines", stdlibFromLines)
-	env.SetNativeFn("to_lines", stdlibToLines)
+	env.SetModule("CSV", &core.Module{
+		Name: "CSV",
+		NativeFns: map[string]core.NativeFn{
+			"parse":      stdlibFromCSV,
+			"encode":     stdlibToCSV,
+			"parse_tsv":  stdlibFromTSV,
+			"encode_tsv": stdlibToTSV,
+		},
+	})
 
-	// Utilities
-	env.SetNativeFn("delay", stdlibSleep)
+	env.SetModule("IO", &core.Module{
+		Name: "IO",
+		NativeFns: map[string]core.NativeFn{
+			"lines":   stdlibFromLines,
+			"unlines": stdlibToLines,
+		},
+	})
+
+	env.SetModule("Process", &core.Module{
+		Name: "Process",
+		NativeFns: map[string]core.NativeFn{
+			"sleep": stdlibSleep,
+		},
+	})
 }

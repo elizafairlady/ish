@@ -40,7 +40,8 @@ type Value struct {
 type FnValue struct {
 	Name    string
 	Clauses []FnClause
-	Env     *Env // closure environment (nil for non-closures)
+	Env     *Env     // closure environment (nil for non-closures)
+	Native  NativeFn // non-nil for wrapped native functions
 }
 
 type FnClause struct {
@@ -51,6 +52,13 @@ type FnClause struct {
 
 // NativeFn is a Go function callable as an ish function.
 type NativeFn func(args []Value, env *Env) (Value, error)
+
+// Module is a named collection of functions.
+type Module struct {
+	Name      string
+	Fns       map[string]*FnValue
+	NativeFns map[string]NativeFn
+}
 
 // OrdMap is a simple ordered map.
 type OrdMap struct {

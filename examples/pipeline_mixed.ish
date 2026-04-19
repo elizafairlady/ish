@@ -7,16 +7,16 @@ file_count = $(ls /tmp | wc -l)
 echo "Files in /tmp: $file_count"
 
 # Value pipe: values through functions
-result = range 1, 21 |> filter \x -> x > 10 |> length
+result = List.range 1, 21 |> List.filter \x -> x > 10 |> List.length
 echo "Numbers > 10 in 1..20: $result"
 
 # Value pipe with map
-squares = range 1, 6 |> map \x -> x * x
+squares = List.range 1, 6 |> List.map \x -> x * x
 echo "Squares of 1..5: $squares"
 
-# Bridge: bytes to values via from_json
+# Bridge: bytes to values via JSON.parse
 json_str = '{"name":"fox","speed":42}'
-json_data = from_json $json_str
+json_data = JSON.parse $json_str
 name = json_data.name
 speed = json_data.speed
 echo "Name: $name"
@@ -24,4 +24,4 @@ echo "Speed: $speed"
 
 # Bridge back: values become bytes
 data = [%{name: "alice", age: 30}, %{name: "bob", age: 25}]
-echo "JSON: $(to_json data)"
+echo "JSON: $(JSON.encode data)"

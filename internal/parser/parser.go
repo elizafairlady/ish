@@ -462,6 +462,10 @@ func (p *Parser) dispatchKeyword() (*ast.Node, error) {
 		return p.parseCase()
 	case "fn":
 		return p.parseIshFn()
+	case "defmodule":
+		return p.parseDefModule()
+	case "use":
+		return p.parseUse()
 	case "match":
 		return p.parseIshMatchExpr()
 	case "spawn":
@@ -1248,6 +1252,152 @@ func (p *Parser) parseIshFn() (*ast.Node, error) {
 	return fnNode, nil
 }
 
+func (p *Parser) parseDefModule() (*ast.Node, error) {
+	pos := p.cur().Pos
+	p.advance() // consume "defmodule"
+	if p.cur().Type != ast.TWord {
+		return nil, fmt.Errorf("defmodule: expected module name")
+	}
+	name := p.advance()
+	if !p.matchWord("do") {
+		return nil, fmt.Errorf("defmodule: expected 'do'")
+	}
+	p.skipNewlines()
+
+	old := p.withMode(ModeExpr)
+	defer p.restoreMode(old)
+	defer p.restoreTerminators(p.pushTerminators("end"))
+
+	var children []*ast.Node
+	for !p.isWord("end") && p.cur().Type != ast.TEOF {
+		p.skipNewlines()
+		if p.isWord("end") {
+			break
+		}
+		var child *ast.Node
+		var err error
+		switch p.cur().Val {
+		case "def":
+			child, err = p.parseDef()
+		case "fn":
+			child, err = p.parseDef()
+		case "use":
+			child, err = p.parseUse()
+		default:
+			child, err = p.parseStmt()
+		}
+		if err != nil {
+			return nil, err
+		}
+		if child != nil {
+			children = append(children, child)
+		}
+		p.skipSeparators()
+	}
+	if !p.matchWord("end") {
+		return nil, fmt.Errorf("defmodule: expected 'end'")
+	}
+	return &ast.Node{Kind: ast.NDefModule, Pos: pos, Tok: name, Children: children}, nil
+}
+
+// parseDef parses a function definition inside a module body.
+// Unlike parseIshFn, it always expects a name (never anonymous).
+func (p *Parser) parseDef() (*ast.Node, error) {
+	p.advance() // consume "def" or "fn"
+
+	nameTok, err := p.expect(ast.TWord)
+	if err != nil {
+		return nil, fmt.Errorf("expected function name after 'def' at pos %d", p.cur().Pos)
+	}
+
+	// Parse params until "when" or "do"
+	var params []*ast.Node
+	for p.cur().Type != ast.TEOF {
+		if p.isWord("when") || p.isWord("do") {
+			break
+		}
+		if p.cur().Type == ast.TComma {
+			p.advance()
+			continue
+		}
+		param, err := p.parsePattern()
+		if err != nil {
+			return nil, err
+		}
+		params = append(params, param)
+	}
+
+	// Optional guard
+	var guard *ast.Node
+	if p.isWord("when") {
+		p.advance()
+		guardMode := p.withMode(ModeExpr)
+		guard, err = p.parseExpr(0)
+		p.restoreMode(guardMode)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var fnNode *ast.Node
+	if err := p.ishBlock(func() error {
+		if len(params) == 0 && guard == nil && p.looksLikeClauseStart() {
+			clauses, err := p.parseClauses(func() (*ast.Node, error) {
+				var clauseParams []*ast.Node
+				for p.cur().Type != ast.TEOF {
+					if p.cur().Type == ast.TArrow || p.isWord("when") {
+						break
+					}
+					if p.cur().Type == ast.TComma {
+						p.advance()
+						continue
+					}
+					param, err := p.parsePattern()
+					if err != nil {
+						return nil, err
+					}
+					clauseParams = append(clauseParams, param)
+				}
+				return ast.BlockNode(clauseParams), nil
+			})
+			if err != nil {
+				return err
+			}
+			fnNode = &ast.Node{Kind: ast.NIshFn, Tok: nameTok, Clauses: clauses}
+			return nil
+		}
+
+		bodyStmts, err := p.parseBlock()
+		if err != nil {
+			return err
+		}
+		markTail(bodyStmts)
+		fnNode = &ast.Node{
+			Kind: ast.NIshFn,
+			Tok:  nameTok,
+			Clauses: []ast.Clause{{
+				Body:  ast.BlockNode(bodyStmts),
+				Guard: guard,
+			}},
+			Children: params,
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return fnNode, nil
+}
+
+func (p *Parser) parseUse() (*ast.Node, error) {
+	pos := p.cur().Pos
+	p.advance() // consume "use"
+	if p.cur().Type != ast.TWord {
+		return nil, fmt.Errorf("use: expected module name")
+	}
+	name := p.advance()
+	return &ast.Node{Kind: ast.NUse, Pos: pos, Tok: name}, nil
+}
+
 func (p *Parser) parseClauseBody() (*ast.Node, error) {
 	defer p.restoreTerminators(p.pushTerminators("end"))
 	var stmts []*ast.Node
@@ -1643,7 +1793,55 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 		left = &ast.Node{Kind: ast.NAccess, Tok: field, Children: []*ast.Node{left}}
 	}
 
+	// Function application in expression context: if the left value is a
+	// known command (e.g. module-qualified name), parse as a function call.
+	// Two forms:
+	//   List.hd [1,2]              — juxtaposition, single arg only (no comma)
+	//   List.map ([1,2,3], \x->x)  — parens group multi-arg calls
+	if left.Kind == ast.NWord && p.IsCommand != nil && p.IsCommand(left.Tok.Val) {
+		if p.cur().Type == ast.TLParen {
+			// Parenthesized argument list: fn (arg1, arg2, ...)
+			p.advance() // consume (
+			cmd := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{left}}
+			for p.cur().Type != ast.TRParen && p.cur().Type != ast.TEOF {
+				arg, err := p.parseExpr(0)
+				if err != nil {
+					return nil, err
+				}
+				cmd.Children = append(cmd.Children, arg)
+				if p.cur().Type == ast.TComma {
+					p.advance()
+				}
+			}
+			if _, err := p.expect(ast.TRParen); err != nil {
+				return nil, err
+			}
+			left = cmd
+		} else if isValueStart(p.cur().Type) {
+			// Juxtaposition: single-arg call without commas
+			cmd := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{left}}
+			arg, err := p.parseValue(false)
+			if err != nil {
+				return nil, err
+			}
+			cmd.Children = append(cmd.Children, arg)
+			left = cmd
+		}
+	}
+
 	return left, nil
+}
+
+// isValueStart returns true if the token type can begin a value expression.
+// Commas are NOT included — they are structural separators in expression context.
+func isValueStart(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TWord, ast.TInt, ast.TFloat, ast.TString, ast.TAtom,
+		ast.TLParen, ast.TLBracket, ast.TLBrace, ast.TPercent,
+		ast.TBackslash:
+		return true
+	}
+	return false
 }
 
 func (p *Parser) precedence(tt ast.TokenType) int {

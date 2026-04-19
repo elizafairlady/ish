@@ -32,6 +32,7 @@ type Env struct {
 	SetFlags    map[byte]bool   // shell options: e, u, x, etc.
 	Traps       map[string]string // signal -> command
 	Aliases     map[string]string // alias name -> expansion
+	Modules     map[string]*Module // registered modules
 
 	// CallFn is set by eval to allow stdlib/process to call user functions.
 	CallFn func(fn *FnValue, args []Value, env *Env) (Value, error)
@@ -124,6 +125,15 @@ func CopyEnv(src *Env) *Env {
 			}
 			for k, v := range c.NativeFns {
 				e.NativeFns[k] = v
+			}
+		}
+		// Copy modules -- immutable after construction, safe to share
+		if c.Modules != nil {
+			if e.Modules == nil {
+				e.Modules = make(map[string]*Module)
+			}
+			for k, v := range c.Modules {
+				e.Modules[k] = v
 			}
 		}
 		if c.ShellPid != 0 {
@@ -368,6 +378,26 @@ func (e *Env) SetFn(name string, f *FnValue) {
 // dispatch tables like fn name do pattern -> body ... end).
 func (e *Env) ReplaceFn(name string, f *FnValue) {
 	e.Fns[name] = f
+}
+
+// GetModule looks up a module in the scope chain.
+func (e *Env) GetModule(name string) (*Module, bool) {
+	for c := e; c != nil; c = c.Parent {
+		if c.Modules != nil {
+			if m, ok := c.Modules[name]; ok {
+				return m, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// SetModule registers a module in this scope.
+func (e *Env) SetModule(name string, mod *Module) {
+	if e.Modules == nil {
+		e.Modules = make(map[string]*Module)
+	}
+	e.Modules[name] = mod
 }
 
 // Export marks a variable as exported and sets its value.

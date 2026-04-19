@@ -593,6 +593,66 @@ func (l *Lexer) lexDoubleQuote() {
 			}
 			continue
 		}
+		// $() creates a new quoting context — skip over it so inner
+		// quotes don't terminate the outer string.
+		if l.src[l.pos] == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '(' {
+			buf.WriteString("$(")
+			l.pos += 2
+			depth := 1
+			for l.pos < len(l.src) && depth > 0 {
+				ch := l.src[l.pos]
+				if ch == '(' {
+					depth++
+				} else if ch == ')' {
+					depth--
+					if depth == 0 {
+						buf.WriteByte(')')
+						l.pos++
+						break
+					}
+				} else if ch == '\'' {
+					// Single-quoted string inside $() — skip entirely
+					buf.WriteByte('\'')
+					l.pos++
+					for l.pos < len(l.src) && l.src[l.pos] != '\'' {
+						buf.WriteByte(l.src[l.pos])
+						l.pos++
+					}
+					if l.pos < len(l.src) {
+						buf.WriteByte('\'')
+						l.pos++
+					}
+					continue
+				} else if ch == '"' {
+					// Double-quoted string inside $() — skip entirely
+					buf.WriteByte('"')
+					l.pos++
+					for l.pos < len(l.src) && l.src[l.pos] != '"' {
+						if l.src[l.pos] == '\\' && l.pos+1 < len(l.src) {
+							buf.WriteByte(l.src[l.pos])
+							buf.WriteByte(l.src[l.pos+1])
+							l.pos += 2
+							continue
+						}
+						buf.WriteByte(l.src[l.pos])
+						l.pos++
+					}
+					if l.pos < len(l.src) {
+						buf.WriteByte('"')
+						l.pos++
+					}
+					continue
+				} else if ch == '\\' && l.pos+1 < len(l.src) {
+					buf.WriteByte(ch)
+					buf.WriteByte(l.src[l.pos+1])
+					l.pos += 2
+					continue
+				}
+				buf.WriteByte(ch)
+				l.pos++
+			}
+			continue
+		}
 		buf.WriteByte(l.src[l.pos])
 		l.pos++
 	}

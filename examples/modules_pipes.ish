@@ -1,0 +1,56 @@
+# Module-qualified functions in pipe chains
+# Shows how modules work with |>, |, and command substitution
+# STATUS: PASS
+
+echo "=== value pipes with modules ==="
+
+# Pipe chains with module-qualified functions
+r = [3, 1, 4, 1, 5] |> List.sort |> List.reverse
+echo "sort then reverse: $r"
+
+r = List.range 1, 11 |> List.filter \x -> x > 5 |> List.map \x -> x * x
+echo "filter > 5, square: $r"
+
+r = ["hello", "world"] |> List.map \s -> String.upcase s
+echo "upcase all: $r"
+
+echo ""
+echo "=== shell pipes with module functions ==="
+
+# Shell pipe into module function
+r = printf "hello\nworld\n" |> List.map \line -> String.upcase line
+echo "printf |> List.map upcase: $r"
+
+# Module function output into shell pipe
+echo "sort and pipe to wc:" $(List.range 1, 4 |> List.map \x -> x * 10 | wc -w)
+
+echo ""
+echo "=== command substitution ==="
+
+# Module calls inside $()
+echo "hd: $(List.hd [10, 20, 30])"
+echo "tl: $(List.tl [10, 20, 30])"
+echo "join: $(String.join ["a", "b", "c"], ":")"
+echo "nested: $(String.downcase "$(String.upcase "hello")")"
+
+echo ""
+echo "=== JSON pipeline ==="
+
+json = '{"name": "ish", "version": 4}'
+data = echo $json |> JSON.parse
+echo "parsed: $data"
+echo "name: $(Map.get $data, "name")"
+
+echo ""
+echo "=== mixed defmodule + pipes ==="
+
+defmodule Transform do
+  def double x do x * 2 end
+  def negate x do 0 - x end
+end
+
+r = [1, 2, 3] |> List.map \x -> Transform.double x
+echo "double: $r"
+
+r = [1, 2, 3] |> List.map Transform.negate
+echo "negate: $r"

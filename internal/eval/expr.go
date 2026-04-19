@@ -101,10 +101,21 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-		objName := name[:dotIdx]
-		field := name[dotIdx+1:]
-		if obj, ok := env.Get(objName); ok && obj.Kind == core.VMap && obj.Map != nil {
-			if v, ok := obj.Map.Get(field); ok {
+		modName := name[:dotIdx]
+		fnName := name[dotIdx+1:]
+		if mod, ok := env.GetModule(modName); ok {
+			if fn, ok := mod.Fns[fnName]; ok {
+				return core.Value{Kind: core.VFn, Fn: fn}, nil
+			}
+			if nfn, ok := mod.NativeFns[fnName]; ok {
+				return core.Value{Kind: core.VFn, Fn: &core.FnValue{
+					Name: modName + "." + fnName, Native: nfn,
+				}}, nil
+			}
+		}
+		// Map field access fallback
+		if obj, ok := env.Get(modName); ok && obj.Kind == core.VMap && obj.Map != nil {
+			if v, ok := obj.Map.Get(fnName); ok {
 				return v, nil
 			}
 		}
@@ -303,6 +314,22 @@ func evalMap(node *ast.Node, env *core.Env) (core.Value, error) {
 }
 
 func evalAccess(node *ast.Node, env *core.Env) (core.Value, error) {
+	// Module-qualified reference: Module.func
+	if node.Children[0].Kind == ast.NWord {
+		modName := node.Children[0].Tok.Val
+		if mod, ok := env.GetModule(modName); ok {
+			field := node.Tok.Val
+			if fn, ok := mod.Fns[field]; ok {
+				return core.Value{Kind: core.VFn, Fn: fn}, nil
+			}
+			if nfn, ok := mod.NativeFns[field]; ok {
+				return core.Value{Kind: core.VFn, Fn: &core.FnValue{
+					Name: modName + "." + field, Native: nfn,
+				}}, nil
+			}
+			return core.Nil, fmt.Errorf("%s.%s: undefined function", modName, field)
+		}
+	}
 	obj, err := Eval(node.Children[0], env)
 	if err != nil {
 		return core.Nil, err

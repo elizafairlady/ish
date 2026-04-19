@@ -73,10 +73,10 @@ end
 fib 10                        # 55
 
 # value pipes
-range 1, 11 |> filter \x -> x > 5 |> length   # 5
+List.range 1, 11 |> List.filter \x -> x > 5 |> List.length   # 5
 
 # pipes auto-coerce between bytes and values
-ls |> map \f -> upcase f | sort
+ls |> List.map \f -> String.upcase f | sort
 [3, 1, 2] | sort | cat
 
 # concurrency

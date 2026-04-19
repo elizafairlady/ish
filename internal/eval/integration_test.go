@@ -292,14 +292,14 @@ func TestStdlibIntegration(t *testing.T) {
 		script string
 		want   string
 	}{
-		{"hd", "r = hd [1, 2, 3]\necho $r", "1\n"},
-		{"tl", "r = tl [1, 2, 3]\necho $r", "[2, 3]\n"},
-		{"length list", "r = length [10, 20, 30]\necho $r", "3\n"},
-		{"length string", `r = length "hello"` + "\necho $r", "5\n"},
-		{"append", "r = append [1, 2], 3\necho $r", "[1, 2, 3]\n"},
-		{"concat", "r = concat [1, 2], [3, 4]\necho $r", "[1, 2, 3, 4]\n"},
-		{"range", "r = range 1, 4\necho $r", "[1, 2, 3]\n"},
-		{"at", "r = at [10, 20, 30], 1\necho $r", "20\n"},
+		{"hd", "r = List.hd [1, 2, 3]\necho $r", "1\n"},
+		{"tl", "r = List.tl [1, 2, 3]\necho $r", "[2, 3]\n"},
+		{"length list", "r = List.length [10, 20, 30]\necho $r", "3\n"},
+		{"length string", `r = String.length "hello"` + "\necho $r", "5\n"},
+		{"append", "r = List.append [1, 2], 3\necho $r", "[1, 2, 3]\n"},
+		{"concat", "r = List.concat [1, 2], [3, 4]\necho $r", "[1, 2, 3, 4]\n"},
+		{"range", "r = List.range 1, 4\necho $r", "[1, 2, 3]\n"},
+		{"at", "r = List.at [10, 20, 30], 1\necho $r", "20\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
