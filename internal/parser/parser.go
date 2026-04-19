@@ -377,7 +377,7 @@ func (p *Parser) parseWordCommand() (*ast.Node, error) {
 	if p.peek().Type == ast.TEquals {
 		return p.parseIshBind()
 	}
-	if isExprOperator(p.peek().Type) {
+	if isExprOperator(p.peek().Type) && p.mode == ModeExpr {
 		return p.parseExpression()
 	}
 	// Inside ish blocks (do...end), treat < and > as comparison operators

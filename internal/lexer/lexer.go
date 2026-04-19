@@ -109,12 +109,16 @@ func (l *Lexer) lex() {
 			l.pos++
 		case ch == '/':
 			isDivision := false
-			switch l.lastEmitted {
-			case ast.TInt, ast.TFloat, ast.TRParen, ast.TRBracket:
-				isDivision = true
-			case ast.TWord:
-				next := l.peek(1)
-				isDivision = next == 0 || next == ' ' || next == '\t' || next == '\n'
+			next := l.peek(1)
+			isPathStart := (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') ||
+				(next >= '0' && next <= '9') || next == '.' || next == '_' || next == '-'
+			if !isPathStart {
+				switch l.lastEmitted {
+				case ast.TInt, ast.TFloat, ast.TRParen, ast.TRBracket:
+					isDivision = true
+				case ast.TWord:
+					isDivision = next == 0 || next == ' ' || next == '\t' || next == '\n'
+				}
 			}
 			if isDivision {
 				l.emit(ast.TDiv, "/")

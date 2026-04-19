@@ -6,6 +6,9 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"unsafe"
+
+	"golang.org/x/term"
 
 	"ish/internal/ast"
 	"ish/internal/builtin"
@@ -399,24 +402,71 @@ func evalExternalCmd(name string, args []string, redirs []ast.Redir, env *core.E
 	cmd.Stderr = os.Stderr
 	cmd.Env = env.BuildEnv()
 
+	// Put child in its own process group for job control
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	cleanup, err := applyRedirects(cmd, redirs, env)
 	if err != nil {
 		return core.Nil, err
 	}
 	defer cleanup()
 
-	err = cmd.Run()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			env.SetExit(exitErr.ExitCode())
-			return core.Nil, nil
-		}
+	if err := cmd.Start(); err != nil {
 		env.SetExit(127)
 		fmt.Fprintf(os.Stderr, "ish: %s: %s\n", name, err)
 		return core.Nil, nil
 	}
+
+	// Give the child's process group the terminal
+	pgid := cmd.Process.Pid
+	ttyFd := int(os.Stdin.Fd())
+	isTTY := term.IsTerminal(ttyFd)
+	if isTTY {
+		tcsetpgrp(ttyFd, pgid)
+	}
+
+	state, waitErr := cmd.Process.Wait()
+
+	// Reclaim the terminal for the shell
+	if isTTY {
+		tcsetpgrp(ttyFd, os.Getpid())
+	}
+
+	if state != nil && state.Exited() {
+		env.SetExit(state.ExitCode())
+		return core.Nil, nil
+	}
+
+	// Check if the process was stopped (ctrl-z)
+	if state != nil {
+		if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Stopped() {
+			cmdStr := name + " " + strings.Join(args, " ")
+			jobID := jobs.AddJob(pgid, strings.TrimSpace(cmdStr), cmd.Process)
+			j := jobs.FindJob(jobID)
+			j.Mu.Lock()
+			j.Status = "Stopped"
+			j.Mu.Unlock()
+			fmt.Fprintf(os.Stderr, "\n[%d]+ Stopped\t%s\n", jobID, strings.TrimSpace(cmdStr))
+			env.SetExit(148) // 128 + SIGTSTP(20) = 148
+			return core.Nil, nil
+		}
+	}
+
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			env.SetExit(exitErr.ExitCode())
+		} else {
+			env.SetExit(127)
+			fmt.Fprintf(os.Stderr, "ish: %s: %s\n", name, waitErr)
+		}
+		return core.Nil, nil
+	}
 	env.SetExit(0)
 	return core.Nil, nil
+}
+
+func tcsetpgrp(fd int, pgid int) {
+	syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TIOCSPGRP), uintptr(unsafe.Pointer(&pgid)))
 }
 
 func stripAssignQuotes(s string) string {

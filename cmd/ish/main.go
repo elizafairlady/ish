@@ -9,6 +9,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
+
+	"golang.org/x/term"
 
 	"ish/internal/builtin"
 	"ish/internal/core"
@@ -77,6 +80,17 @@ func main() {
 		eval.RunSource(string(data), env)
 		builtin.RunExitTraps(env)
 		os.Exit(env.LastExit)
+	}
+
+	// Job control: ignore signals that should only affect child processes
+	signal.Ignore(syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIGTTOU)
+
+	// Put the shell in its own process group and take the terminal
+	pgid := os.Getpid()
+	syscall.Setpgid(0, pgid)
+	ttyFd := int(os.Stdin.Fd())
+	if term.IsTerminal(ttyFd) {
+		syscall.Syscall(syscall.SYS_IOCTL, uintptr(ttyFd), uintptr(syscall.TIOCSPGRP), uintptr(unsafe.Pointer(&pgid)))
 	}
 
 	// Signal handling

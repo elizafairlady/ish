@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"unsafe"
 
 	"ish/internal/core"
 )
@@ -127,19 +128,46 @@ func BuiltinFg(args []string, env *core.Env) (int, error) {
 		return 1, fmt.Errorf("fg: %s: no such job", args[0])
 	}
 
-	if j.Process != nil {
-		syscall.Kill(j.Pid, syscall.SIGCONT)
-	}
+	// Give the job's process group the terminal
+	ttyFd := int(os.Stdin.Fd())
+	tcsetpgrp(ttyFd, j.Pgid)
+
+	// Send SIGCONT to resume
+	syscall.Kill(-j.Pgid, syscall.SIGCONT)
 	j.Mu.Lock()
 	j.Status = "Running"
 	j.Mu.Unlock()
 
-	<-j.Done
+	// Wait for process to finish or stop again
+	var ws syscall.WaitStatus
+	_, err := syscall.Wait4(j.Pid, &ws, syscall.WUNTRACED, nil)
+
+	// Reclaim terminal
+	tcsetpgrp(ttyFd, os.Getpid())
+
+	if err != nil {
+		RemoveJob(j.ID)
+		return 1, nil
+	}
+	if ws.Stopped() {
+		j.Mu.Lock()
+		j.Status = "Stopped"
+		j.Mu.Unlock()
+		fmt.Fprintf(os.Stderr, "\n[%d]+ Stopped\t%s\n", j.ID, j.Command)
+		return 148, nil
+	}
 	j.Mu.Lock()
-	code := j.ExitCode
+	j.Status = "Done"
+	j.ExitCode = ws.ExitStatus()
 	j.Mu.Unlock()
+	close(j.Done)
+	code := ws.ExitStatus()
 	RemoveJob(j.ID)
 	return code, nil
+}
+
+func tcsetpgrp(fd int, pgid int) {
+	syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TIOCSPGRP), uintptr(unsafe.Pointer(&pgid)))
 }
 
 // BuiltinBg resumes a stopped job in the background.
