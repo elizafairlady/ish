@@ -10,7 +10,7 @@ import (
 
 // parseStr is a helper that lexes and parses a string in one step.
 func parseStr(input string) (*ast.Node, error) {
-	return Parse(lexer.Lex(input))
+	return Parse(lexer.New(input))
 }
 
 // ---------------------------------------------------------------------------

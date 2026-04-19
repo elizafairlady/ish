@@ -271,7 +271,7 @@ func evalArithExpansion(name string, env *core.Env) (core.Value, error) {
 			}
 		}
 	}
-	node, err := parser.Parse(tokens)
+	node, err := parser.Parse(lexer.NewFromTokens(tokens))
 	if err != nil {
 		return core.Nil, err
 	}
@@ -283,8 +283,7 @@ func evalArithExpansion(name string, env *core.Env) (core.Value, error) {
 }
 
 func evalCmdSub(cmdStr string, env *core.Env) (core.Value, error) {
-	tokens := lexer.Lex(cmdStr)
-	node, err := parser.Parse(tokens)
+	node, err := parser.Parse(lexer.New(cmdStr))
 	if err != nil {
 		return core.Nil, err
 	}

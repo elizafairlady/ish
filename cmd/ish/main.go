@@ -230,8 +230,7 @@ func hasStoppedJobs() bool {
 }
 
 func needsMore(input string) bool {
-	tokens := lexer.Lex(input)
-	_, err := parser.Parse(tokens)
+	_, err := parser.Parse(lexer.New(input))
 	if err == nil {
 		return false
 	}

@@ -74,8 +74,7 @@ func TestEvalBinOp(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			env := testEnv()
 			script := "result = " + tt.script
-			tokens := lexer.Lex(script)
-			node, err := parser.Parse(tokens)
+			node, err := parser.Parse(lexer.New(script))
 			if err != nil {
 				t.Fatalf("parse error: %v", err)
 			}
@@ -120,8 +119,7 @@ func TestEvalUnary(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			env := testEnv()
 			script := "result = " + tt.script
-			tokens := lexer.Lex(script)
-			node, err := parser.Parse(tokens)
+			node, err := parser.Parse(lexer.New(script))
 			if err != nil {
 				t.Fatalf("parse error: %v", err)
 			}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"ish/internal/ast"
+	"ish/internal/lexer"
 )
 
 func IsAssignment(tok ast.Token) bool {
@@ -64,29 +65,69 @@ const (
 )
 
 type Parser struct {
-	tokens      []ast.Token
-	pos         int
-	terminators []string
-	mode        ParseMode
-	depth       int
+	lex             *lexer.Lexer
+	tokens          []ast.Token
+	pos             int
+	resumePositions []int
+	terminators     []string
+	mode            ParseMode
+	depth           int
+}
+
+func (p *Parser) syncLexerMode() {
+	lm := lexer.LexerShell
+	if p.mode == ModeExpr {
+		lm = lexer.LexerExpr
+	}
+	if p.lex.Mode() == lm {
+		return // no mode change, no invalidation needed
+	}
+	p.lex.SetMode(lm)
+	// Invalidate buffered tokens from current position onwards — they were
+	// lexed in the old mode and may have wrong token types or hints.
+	if p.pos < len(p.tokens) {
+		p.lex.SetPos(p.resumePositions[p.pos])
+		if p.pos > 0 {
+			p.lex.SetLastEmitted(p.tokens[p.pos-1].Type)
+		} else {
+			p.lex.SetLastEmitted(ast.TEOF)
+		}
+		p.tokens = p.tokens[:p.pos]
+		p.resumePositions = p.resumePositions[:p.pos]
+	}
 }
 
 func (p *Parser) withMode(m ParseMode) ParseMode {
 	old := p.mode
 	p.mode = m
+	p.syncLexerMode()
 	return old
 }
 
 func (p *Parser) restoreMode(old ParseMode) {
 	p.mode = old
+	p.syncLexerMode()
 }
 
-func Parse(tokens []ast.Token) (*ast.Node, error) {
-	p := &Parser{tokens: tokens}
+func Parse(l *lexer.Lexer) (*ast.Node, error) {
+	p := &Parser{lex: l}
 	return p.parseProgram()
 }
 
+func (p *Parser) fillTo(n int) {
+	for len(p.tokens) <= n {
+		resumePos := p.lex.SourcePos()
+		tok := p.lex.NextToken()
+		p.tokens = append(p.tokens, tok)
+		p.resumePositions = append(p.resumePositions, resumePos)
+		if tok.Type == ast.TEOF {
+			break
+		}
+	}
+}
+
 func (p *Parser) cur() ast.Token {
+	p.fillTo(p.pos)
 	if p.pos >= len(p.tokens) {
 		return ast.Token{Type: ast.TEOF}
 	}
@@ -94,6 +135,7 @@ func (p *Parser) cur() ast.Token {
 }
 
 func (p *Parser) peek() ast.Token {
+	p.fillTo(p.pos + 1)
 	if p.pos+1 >= len(p.tokens) {
 		return ast.Token{Type: ast.TEOF}
 	}
@@ -133,15 +175,25 @@ func (p *Parser) skipNewlines() {
 	}
 }
 
+func (p *Parser) skipSeparators() {
+	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
+		p.pos++
+	}
+}
+
+func (p *Parser) withExprBlock(terminators []string, body func() error) error {
+	defer p.restoreMode(p.withMode(ModeExpr))
+	defer p.restoreTerminators(p.pushTerminators(terminators...))
+	return body()
+}
+
 func (p *Parser) ishBlock(body func() error) error {
 	if p.cur().Type != ast.TWord || p.cur().Val != "do" {
 		return fmt.Errorf("expected 'do' at pos %d", p.cur().Pos)
 	}
 	p.advance()
 	p.skipNewlines()
-	defer p.restoreMode(p.withMode(ModeExpr))
-	defer p.restoreTerminators(p.pushTerminators("end"))
-	if err := body(); err != nil {
+	if err := p.withExprBlock([]string{"end"}, body); err != nil {
 		return err
 	}
 	if p.cur().Type == ast.TWord && p.cur().Val == "end" {
@@ -164,9 +216,7 @@ func (p *Parser) parseBlock() ([]*ast.Node, error) {
 		if stmt != nil {
 			stmts = append(stmts, stmt)
 		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
+		p.skipSeparators()
 	}
 	return stmts, nil
 }
@@ -263,41 +313,45 @@ func (p *Parser) parseCommand() (*ast.Node, error) {
 	return left, nil
 }
 
+// parsePrimary dispatches mode-dependent bracketed constructs:
+// ( ) → subshell or expression, { } → group or tuple, [ ] → test or list.
+// For { and [, the streaming lexer detects expression syntax (commas, atoms,
+// pipes) during lexing and sets ExprHint on the token.
+func (p *Parser) parsePrimary() (*ast.Node, error) {
+	cur := p.cur()
+	isExpr := p.mode == ModeExpr || cur.ExprHint
+	switch cur.Type {
+	case ast.TLParen:
+		if p.mode == ModeExpr {
+			return p.parseExpression()
+		}
+		return p.parseSubshell()
+	case ast.TLBrace:
+		if isExpr {
+			return p.parseExpression()
+		}
+		return p.parseGroup()
+	case ast.TLBracket:
+		if isExpr {
+			return p.parseExpression()
+		}
+		return p.parseSimpleCommand()
+	}
+	return nil, nil
+}
+
 func (p *Parser) parseCommandInner() (*ast.Node, error) {
 	cur := p.cur()
 
 	switch cur.Type {
 	case ast.TEOF:
 		return nil, nil
-	case ast.TLParen:
-		if p.mode == ModeExpr {
-			return p.parseExpression()
-		}
-		return p.parseSubshell()
+	case ast.TLParen, ast.TLBrace, ast.TLBracket:
+		return p.parsePrimary()
 	case ast.TBang:
 		return p.parseExpression()
 	case ast.TAtom:
 		return p.parseExpression()
-	case ast.TLBrace:
-		if p.mode == ModeExpr {
-			return p.parseExpression()
-		}
-		// In ModeCommand, { could be a tuple or a group command.
-		// Peek ahead: atoms or commas indicate a tuple.
-		if p.looksLikeTupleExpr() {
-			return p.parseExpression()
-		}
-		return p.parseGroup()
-	case ast.TLBracket:
-		if p.mode == ModeExpr {
-			return p.parseExpression()
-		}
-		// In ModeCommand, [ is the test builtin unless it contains commas or |
-		// (which indicate a list literal, e.g. [a, b] = expr).
-		if p.looksLikeListLiteral() {
-			return p.parseExpression()
-		}
-		return p.parseSimpleCommand()
 	case ast.TPercent:
 		if p.peek().Type == ast.TLBrace {
 			return p.parseExpression()
@@ -319,25 +373,6 @@ func (p *Parser) parseCommandInner() (*ast.Node, error) {
 
 func (p *Parser) parseWordCommand() (*ast.Node, error) {
 	cur := p.cur()
-
-	// Inside ish blocks, a flag-word like "-n" is unary negation, not a command flag.
-	if len(cur.Val) >= 2 && cur.Val[0] == '-' && p.mode == ModeExpr {
-		rest := cur.Val[1:]
-		allLetters := true
-		for _, c := range rest {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-				allLetters = false
-				break
-			}
-		}
-		if allLetters {
-			// Split "-n" into TMinus + TWord("n") and parse as expression
-			p.tokens[p.pos] = ast.Token{Type: ast.TMinus, Val: "-", Pos: cur.Pos}
-			restTok := ast.Token{Type: ast.TWord, Val: rest, Pos: cur.Pos + 1}
-			p.tokens = append(p.tokens[:p.pos+1], append([]ast.Token{restTok}, p.tokens[p.pos+1:]...)...)
-			return p.parseExpression()
-		}
-	}
 
 	if IsAssignment(cur) {
 		return p.parsePosixAssign()
@@ -384,6 +419,7 @@ func (p *Parser) parseWordCommand() (*ast.Node, error) {
 	if (p.peek().Type == ast.TRedirIn || p.peek().Type == ast.TRedirOut) && p.mode == ModeExpr {
 		return p.parseExpression()
 	}
+	p.fillTo(p.pos + 2)
 	if p.peek().Type == ast.TLParen && p.pos+2 < len(p.tokens) && p.tokens[p.pos+2].Type == ast.TRParen {
 		return p.parsePosixFnDef()
 	}
@@ -676,9 +712,7 @@ func (p *Parser) parseIf() (*ast.Node, error) {
 		return nil, err
 	}
 
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
-	}
+	p.skipSeparators()
 
 	if p.cur().Type == ast.TWord && p.cur().Val == "then" {
 		return p.parsePosixIf(cond, node)
@@ -715,9 +749,7 @@ func (p *Parser) parsePosixIf(cond *ast.Node, node *ast.Node) (*ast.Node, error)
 		if err != nil {
 			return nil, err
 		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
+		p.skipSeparators()
 		if p.cur().Type == ast.TWord && p.cur().Val == "then" {
 			p.advance()
 		}
@@ -795,9 +827,7 @@ func (p *Parser) parseFor() (*ast.Node, error) {
 		return nil, fmt.Errorf("expected variable name after 'for' at pos %d", p.cur().Pos)
 	}
 
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
-	}
+	p.skipSeparators()
 	if p.cur().Type != ast.TWord || p.cur().Val != "in" {
 		return nil, fmt.Errorf("expected 'in' after 'for %s' at pos %d", varTok.Val, p.cur().Pos)
 	}
@@ -821,9 +851,7 @@ func (p *Parser) parseFor() (*ast.Node, error) {
 	}
 	p.restoreTerminators(old)
 
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
-	}
+	p.skipSeparators()
 	if p.cur().Type == ast.TWord && p.cur().Val == "do" {
 		p.advance()
 	} else {
@@ -866,9 +894,7 @@ func (p *Parser) parseWhileUntil(kind ast.NodeKind) (*ast.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
-	}
+	p.skipSeparators()
 	if p.cur().Type != ast.TWord || p.cur().Val != "do" {
 		return nil, fmt.Errorf("expected 'do' at pos %d", p.cur().Pos)
 	}
@@ -901,9 +927,7 @@ func (p *Parser) parseCase() (*ast.Node, error) {
 	wordTok := p.advance()
 	node.Children = []*ast.Node{{Kind: ast.NWord, Tok: wordTok}}
 
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
-	}
+	p.skipSeparators()
 	if p.cur().Type != ast.TWord || p.cur().Val != "in" {
 		return nil, fmt.Errorf("expected 'in' in case at pos %d", p.cur().Pos)
 	}
@@ -995,9 +1019,7 @@ func (p *Parser) parsePosixFnDef() (*ast.Node, error) {
 		if stmt != nil {
 			bodyStmts = append(bodyStmts, stmt)
 		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
+		p.skipSeparators()
 	}
 	if p.cur().Type == ast.TRBrace {
 		p.advance()
@@ -1121,9 +1143,7 @@ func (p *Parser) parseClauseBody() (*ast.Node, error) {
 		if stmt != nil {
 			stmts = append(stmts, stmt)
 		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
+		p.skipSeparators()
 	}
 	return ast.BlockNode(stmts), nil
 }
@@ -1131,7 +1151,11 @@ func (p *Parser) parseClauseBody() (*ast.Node, error) {
 func (p *Parser) looksLikeClauseStart() bool {
 	depth := 0
 	inLambda := false
-	for i := p.pos; i < len(p.tokens); i++ {
+	for i := p.pos; ; i++ {
+		p.fillTo(i)
+		if i >= len(p.tokens) {
+			return false
+		}
 		t := p.tokens[i]
 		if t.Type == ast.TNewline || t.Type == ast.TSemicolon || t.Type == ast.TEOF {
 			return false
@@ -1158,63 +1182,6 @@ func (p *Parser) looksLikeClauseStart() bool {
 			}
 		}
 	}
-	return false
-}
-
-func (p *Parser) looksLikeTupleExpr() bool {
-	depth := 0
-	for i := p.pos; i < len(p.tokens); i++ {
-		t := p.tokens[i]
-		switch t.Type {
-		case ast.TLBrace:
-			depth++
-		case ast.TRBrace:
-			depth--
-			if depth == 0 {
-				if i == p.pos+1 {
-					return true
-				}
-				return false
-			}
-		case ast.TComma:
-			if depth == 1 {
-				return true
-			}
-		case ast.TAtom:
-			if depth == 1 && i == p.pos+1 {
-				return true
-			}
-		case ast.TNewline, ast.TEOF:
-			return false
-		}
-	}
-	return false
-}
-
-// looksLikeListLiteral peeks ahead from [ to check for commas or | at depth 1,
-// which distinguish a list literal [a, b] from the test builtin [ -n x ].
-// Only used in ModeCommand; in ModeExpr, [ is always a list.
-func (p *Parser) looksLikeListLiteral() bool {
-	depth := 0
-	for i := p.pos; i < len(p.tokens); i++ {
-		t := p.tokens[i]
-		switch t.Type {
-		case ast.TLBracket:
-			depth++
-		case ast.TRBracket:
-			depth--
-			if depth == 0 {
-				return i == p.pos+1 // empty [] is a list
-			}
-		case ast.TComma, ast.TPipe:
-			if depth == 1 {
-				return true
-			}
-		case ast.TNewline, ast.TEOF:
-			return false
-		}
-	}
-	return false
 }
 
 func (p *Parser) parseClauses(parsePattern func() (*ast.Node, error)) ([]ast.Clause, error) {
@@ -1244,9 +1211,7 @@ func (p *Parser) parseClauses(parsePattern func() (*ast.Node, error)) ([]ast.Cla
 		if err != nil {
 			return nil, err
 		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
+		p.skipSeparators()
 		clauses = append(clauses, ast.Clause{Pattern: pat, Guard: guard, Body: body})
 	}
 	return clauses, nil
@@ -1260,9 +1225,7 @@ func (p *Parser) parseIshMatchExpr() (*ast.Node, error) {
 		return nil, err
 	}
 
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
-	}
+	p.skipSeparators()
 	var clauses []ast.Clause
 	if err := p.ishBlock(func() error {
 		var err error
@@ -1318,9 +1281,7 @@ func (p *Parser) parseIshSupervise() (*ast.Node, error) {
 		return nil, err
 	}
 
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
-	}
+	p.skipSeparators()
 	var workers []*ast.Node
 	if err := p.ishBlock(func() error {
 		for p.cur().Type != ast.TEOF {
@@ -1381,9 +1342,7 @@ func (p *Parser) parseIshSend() (*ast.Node, error) {
 
 func (p *Parser) parseIshReceive() (*ast.Node, error) {
 	p.advance()
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
-	}
+	p.skipSeparators()
 
 	node := &ast.Node{Kind: ast.NIshReceive}
 	if err := p.ishBlock(func() error {
@@ -1423,9 +1382,7 @@ func (p *Parser) parseIshReceive() (*ast.Node, error) {
 
 func (p *Parser) parseIshTry() (*ast.Node, error) {
 	p.advance()
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
-	}
+	p.skipSeparators()
 
 	node := &ast.Node{Kind: ast.NIshTry}
 	if err := p.ishBlock(func() error {
@@ -1503,13 +1460,12 @@ func (p *Parser) parseLambda() (*ast.Node, error) {
 	}
 	p.advance() // skip ->
 
-	// Push "end" terminator and switch to expression mode so the body
-	// is parsed in expression context (comparisons work instead of
-	// being treated as redirects)
-	defer p.restoreMode(p.withMode(ModeExpr))
-	defer p.restoreTerminators(p.pushTerminators("end"))
-	body, err := p.parseCommand()
-	if err != nil {
+	var body *ast.Node
+	if err := p.withExprBlock([]string{"end"}, func() error {
+		var e error
+		body, e = p.parseCommand()
+		return e
+	}); err != nil {
 		return nil, err
 	}
 

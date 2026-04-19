@@ -13,8 +13,7 @@ import (
 
 func evalScript(t *testing.T, env *core.Env, script string) {
 	t.Helper()
-	tokens := lexer.Lex(script)
-	node, err := parser.Parse(tokens)
+	node, err := parser.Parse(lexer.New(script))
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
@@ -26,8 +25,7 @@ func evalScript(t *testing.T, env *core.Env, script string) {
 
 func evalScriptErr(t *testing.T, env *core.Env, script string) error {
 	t.Helper()
-	tokens := lexer.Lex(script)
-	node, err := parser.Parse(tokens)
+	node, err := parser.Parse(lexer.New(script))
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}

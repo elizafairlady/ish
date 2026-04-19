@@ -52,10 +52,11 @@ const (
 )
 
 type Token struct {
-	Type   TokenType
-	Val    string
-	Pos    int
-	Quoted bool // true for single-quoted strings (no expansion)
+	Type     TokenType
+	Val      string
+	Pos      int
+	Quoted   bool // true for single-quoted strings (no expansion)
+	ExprHint bool // true when { or [ in shell mode contains expression syntax
 }
 
 func (t Token) String() string {

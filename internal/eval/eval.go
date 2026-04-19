@@ -239,13 +239,13 @@ func RunCmdSub(cmd string, env *core.Env) (string, error) {
 }
 
 func RunSource(src string, env *core.Env) core.Value {
-	tokens, lexErr := lexer.LexCheck(src)
-	if lexErr != nil {
-		fmt.Fprintf(os.Stderr, "ish: %s\n", lexErr)
+	l := lexer.New(src)
+	node, err := parser.Parse(l)
+	if l.Error() != "" {
+		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 		env.SetExit(2)
 		return core.Nil
 	}
-	node, err := parser.Parse(tokens)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ish: parse error: %s\n", err)
 		env.SetExit(2)
@@ -267,13 +267,13 @@ func RunSource(src string, env *core.Env) core.Value {
 
 // RunSourceErr is like RunSource but returns ErrExit if exit was called.
 func RunSourceErr(src string, env *core.Env) (core.Value, error) {
-	tokens, lexErr := lexer.LexCheck(src)
-	if lexErr != nil {
-		fmt.Fprintf(os.Stderr, "ish: %s\n", lexErr)
+	l := lexer.New(src)
+	node, err := parser.Parse(l)
+	if l.Error() != "" {
+		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 		env.SetExit(2)
 		return core.Nil, nil
 	}
-	node, err := parser.Parse(tokens)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ish: parse error: %s\n", err)
 		env.SetExit(2)
