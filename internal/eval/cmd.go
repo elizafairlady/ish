@@ -232,7 +232,7 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 				f.Close()
 			}
 			if err != nil {
-				if err == core.ErrReturn || err == core.ErrBreak || err == core.ErrContinue {
+				if err == core.ErrReturn || err == core.ErrBreak || err == core.ErrContinue || err == core.ErrExit {
 					return core.Nil, err
 				}
 				fmt.Fprintln(os.Stderr, err)

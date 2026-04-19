@@ -253,7 +253,7 @@ func RunSource(src string, env *core.Env) core.Value {
 	}
 	val, err := Eval(node, env)
 	if err != nil {
-		if err == core.ErrSetE {
+		if err == core.ErrExit || err == core.ErrSetE {
 			return core.Nil
 		}
 		if err != core.ErrReturn && err != core.ErrBreak && err != core.ErrContinue {
@@ -263,4 +263,35 @@ func RunSource(src string, env *core.Env) core.Value {
 		return core.Nil
 	}
 	return val
+}
+
+// RunSourceErr is like RunSource but returns ErrExit if exit was called.
+func RunSourceErr(src string, env *core.Env) (core.Value, error) {
+	tokens, lexErr := lexer.LexCheck(src)
+	if lexErr != nil {
+		fmt.Fprintf(os.Stderr, "ish: %s\n", lexErr)
+		env.SetExit(2)
+		return core.Nil, nil
+	}
+	node, err := parser.Parse(tokens)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ish: parse error: %s\n", err)
+		env.SetExit(2)
+		return core.Nil, nil
+	}
+	val, err := Eval(node, env)
+	if err != nil {
+		if err == core.ErrExit {
+			return core.Nil, core.ErrExit
+		}
+		if err == core.ErrSetE {
+			return core.Nil, core.ErrExit
+		}
+		if err != core.ErrReturn && err != core.ErrBreak && err != core.ErrContinue {
+			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
+			env.SetExit(1)
+		}
+		return core.Nil, nil
+	}
+	return val, nil
 }

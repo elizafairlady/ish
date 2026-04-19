@@ -31,6 +31,7 @@ func init() {
 		"cd": builtinCd,
 		// flow.go
 		"exit":     builtinExit,
+		"logout":   builtinLogout,
 		"return":   builtinReturn,
 		"break":    builtinBreak,
 		"continue": builtinContinue,

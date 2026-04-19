@@ -49,50 +49,54 @@ func main() {
 		env.Export("SHELL", exe)
 	}
 
-	// Load ~/.ishrc
-	home := ""
-	if v, ok := env.Get("HOME"); ok {
-		home = v.ToStr()
-	}
-	if home != "" {
-		rcPath := home + "/.ishrc"
-		if _, err := os.Stat(rcPath); err == nil {
-			data, err := os.ReadFile(rcPath)
-			if err == nil {
-				eval.RunSource(string(data), env)
-			}
+	// Detect login shell: argv[0] starts with '-' or -l/--login flag
+	loginShell := strings.HasPrefix(os.Args[0], "-")
+	args := os.Args[1:]
+	var filteredArgs []string
+	for _, a := range args {
+		if a == "-l" || a == "--login" {
+			loginShell = true
+		} else {
+			filteredArgs = append(filteredArgs, a)
 		}
 	}
+	args = filteredArgs
+	env.IsLoginShell = loginShell
 
-	if len(os.Args) > 1 {
-		if os.Args[1] == "-c" && len(os.Args) > 2 {
-			eval.RunSource(os.Args[2], env)
-			builtin.RunExitTraps(env)
+	// Non-interactive modes: -c command or script file
+	if len(args) > 0 {
+		if args[0] == "-c" && len(args) > 1 {
+			eval.RunSource(args[1], env)
+			shellExit(env)
 			os.Exit(env.LastExit)
 		}
-		data, err := os.ReadFile(os.Args[1])
+		data, err := os.ReadFile(args[0])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
 			os.Exit(1)
 		}
-		env.ShellName = os.Args[1]
-		env.Args = os.Args[2:]
+		env.ShellName = args[0]
+		env.Args = args[1:]
 		eval.RunSource(string(data), env)
-		builtin.RunExitTraps(env)
+		shellExit(env)
 		os.Exit(env.LastExit)
 	}
 
-	// Job control signal handling — catch SIGTSTP/SIGTTIN/SIGTTOU so the
-	// shell doesn't stop, but use signal.Reset before launching children
-	// so they inherit SIG_DFL (not SIG_IGN). See eval.InitJobSignals.
-	eval.InitJobSignals()
-
-	// Put the shell in its own process group and take the terminal
-	shellPid := os.Getpid()
-	if err := syscall.Setpgid(0, shellPid); err != nil {
-		// Already a process group leader — that's fine
-		_ = err
+	// Interactive mode — source startup files
+	home := homeDir(env)
+	if loginShell {
+		sourceIfExists("/etc/profile", env)
+		if !sourceIfExists(home+"/.ish_profile", env) {
+			sourceIfExists(home+"/.profile", env)
+		}
+	} else {
+		sourceIfExists(home+"/.ishrc", env)
 	}
+
+	// Job control
+	eval.InitJobSignals()
+	shellPid := os.Getpid()
+	syscall.Setpgid(0, shellPid)
 	ttyFd := int(os.Stdin.Fd())
 	if term.IsTerminal(ttyFd) {
 		jobs.GiveTerm(ttyFd, shellPid)
@@ -111,40 +115,112 @@ func main() {
 	signal.Notify(sigTerm, syscall.SIGTERM, syscall.SIGQUIT)
 	go func() {
 		sig := <-sigTerm
-		builtin.RunExitTraps(env)
+		shellExit(env)
 		if s, ok := sig.(syscall.Signal); ok {
 			os.Exit(128 + int(s))
 		}
 		os.Exit(1)
 	}()
 
+	// SIGHUP: send HUP to all jobs, then exit
+	sigHup := make(chan os.Signal, 1)
+	signal.Notify(sigHup, syscall.SIGHUP)
+	go func() {
+		<-sigHup
+		for _, j := range jobs.ListJobs() {
+			syscall.Kill(-j.Pgid, syscall.SIGHUP)
+		}
+		shellExit(env)
+		os.Exit(129) // 128 + SIGHUP(1)
+	}()
+
 	repl(env)
+	shellExit(env)
+}
+
+// shellExit runs cleanup for shell exit: exit traps, logout file, HUP to jobs.
+func shellExit(env *core.Env) {
 	builtin.RunExitTraps(env)
+	if env.IsLoginShell {
+		home := homeDir(env)
+		sourceIfExists(home+"/.ish_logout", env)
+		// Send SIGHUP to remaining background jobs
+		for _, j := range jobs.ListJobs() {
+			syscall.Kill(-j.Pgid, syscall.SIGHUP)
+		}
+	}
+}
+
+func homeDir(env *core.Env) string {
+	if v, ok := env.Get("HOME"); ok {
+		return v.ToStr()
+	}
+	return ""
+}
+
+// sourceIfExists sources a file if it exists. Returns true if found.
+func sourceIfExists(path string, env *core.Env) bool {
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	eval.RunSource(string(data), env)
+	return true
 }
 
 func repl(env *core.Env) {
 	rl := readline.NewReadline()
 	rl.Complete = makeCompleter(env)
+	exitWarned := false
 
 	for {
 		prompt := getPrompt(env)
 		line, ok := rl.ReadLine(prompt)
 		if !ok {
+			// EOF (ctrl-d)
+			if !exitWarned && hasStoppedJobs() {
+				fmt.Fprintln(os.Stderr, "There are stopped jobs.")
+				exitWarned = true
+				continue
+			}
 			break
 		}
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		exitWarned = false
 
 		line = readMultilineRL(line, rl)
-
 		rl.AddHistory(line)
 
-		val := eval.RunSource(line, env)
+		val, err := eval.RunSourceErr(line, env)
+		if err == core.ErrExit {
+			if !exitWarned && hasStoppedJobs() {
+				fmt.Fprintln(os.Stderr, "There are stopped jobs.")
+				exitWarned = true
+				continue
+			}
+			break
+		}
 		if val.Kind != core.VNil {
 			fmt.Fprintln(env.Stdout(), val.String())
 		}
 	}
+}
+
+func hasStoppedJobs() bool {
+	for _, j := range jobs.ListJobs() {
+		j.Mu.Lock()
+		stopped := j.Status == "Stopped"
+		j.Mu.Unlock()
+		if stopped {
+			return true
+		}
+	}
+	return false
 }
 
 func needsMore(input string) bool {

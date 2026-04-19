@@ -36,9 +36,10 @@ type Env struct {
 	LastExit int    // $?
 	HasExit  bool   // true once SetExit has been called in this scope
 	ShellPid int    // $$
-	ShellName string // $0
-	LastBg   int    // $!
-	Args     []string // $1, $2, ...
+	ShellName    string // $0
+	LastBg       int    // $!
+	Args         []string // $1, $2, ...
+	IsLoginShell bool
 }
 
 // Stdout returns the output writer for this env, walking up to parent if needed.

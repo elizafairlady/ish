@@ -14,12 +14,20 @@ func builtinExit(args []string, env *core.Env) (int, error) {
 		n, err := strconv.Atoi(args[0])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "exit: %s: numeric argument required\n", args[0])
-			os.Exit(2)
+			code = 2
+		} else {
+			code = n
 		}
-		code = n
 	}
-	os.Exit(code)
-	return code, nil
+	env.SetExit(code)
+	return code, core.ErrExit
+}
+
+func builtinLogout(args []string, env *core.Env) (int, error) {
+	if !env.IsLoginShell {
+		return 1, fmt.Errorf("logout: not login shell: use 'exit'")
+	}
+	return builtinExit(args, env)
 }
 
 func builtinReturn(args []string, env *core.Env) (int, error) {
