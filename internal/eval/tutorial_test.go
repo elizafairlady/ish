@@ -92,6 +92,17 @@ func TestTutorialExamples(t *testing.T) {
 		{"s12 reduce lambda", "r = reduce [1, 2, 3, 4], 0, \\acc, x -> acc + x\necho $r", "10\n"},
 		{"s12 range filter length", "r = range 1, 11 |> filter \\x -> x >= 6 |> length\necho $r", "5\n"},
 
+		// === Float math ===
+		{"float literal", "r = 3.14\necho $r", "3.14\n"},
+		{"float division", "r = 5.0 / 2\necho $r", "2.5\n"},
+		{"int division stays int", "r = 5 / 2\necho $r", "2\n"},
+		{"float add", "r = 1 + 0.5\necho $r", "1.5\n"},
+		{"float mul", "r = 3.14 * 2\necho $r", "6.28\n"},
+		{"float int equality", "r = 5 == 5.0\necho $r", ":true\n"},
+		{"float comparison", "r = 3.14 > 3\necho $r", ":true\n"},
+		{"float negation", "r = -3.14\necho $r", "-3.14\n"},
+		{"float string concat", "r = \"pi is \" + 3.14\necho $r", "pi is 3.14\n"},
+
 		// === Pipe auto-coercion ===
 		{"pipe value to cmd", "[1, 2, 3] | cat", "1\n2\n3\n"},
 		{"pipe scalar to cmd", "42 | cat", "42\n"},

@@ -26,6 +26,9 @@ func litToValue(node *ast.Node) (core.Value, error) {
 	case ast.TInt:
 		n, _ := strconv.ParseInt(node.Tok.Val, 10, 64)
 		return core.IntVal(n), nil
+	case ast.TFloat:
+		f, _ := strconv.ParseFloat(node.Tok.Val, 64)
+		return core.FloatVal(f), nil
 	case ast.TString:
 		return core.StringVal(node.Tok.Val), nil
 	case ast.TAtom:
@@ -135,6 +138,43 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 		}
 	}
 
+	// Float arithmetic: if either side is float, promote to float
+	if (left.Kind == core.VFloat || left.Kind == core.VInt) && (right.Kind == core.VFloat || right.Kind == core.VInt) && (left.Kind == core.VFloat || right.Kind == core.VFloat) {
+		lf := left.Float
+		if left.Kind == core.VInt {
+			lf = float64(left.Int)
+		}
+		rf := right.Float
+		if right.Kind == core.VInt {
+			rf = float64(right.Int)
+		}
+		switch node.Tok.Type {
+		case ast.TPlus:
+			return core.FloatVal(lf + rf), nil
+		case ast.TMinus:
+			return core.FloatVal(lf - rf), nil
+		case ast.TMul:
+			return core.FloatVal(lf * rf), nil
+		case ast.TDiv:
+			if rf == 0 {
+				return core.Nil, fmt.Errorf("division by zero")
+			}
+			return core.FloatVal(lf / rf), nil
+		case ast.TEq:
+			return core.BoolVal(lf == rf), nil
+		case ast.TNe:
+			return core.BoolVal(lf != rf), nil
+		case ast.TRedirIn:
+			return core.BoolVal(lf < rf), nil
+		case ast.TRedirOut:
+			return core.BoolVal(lf > rf), nil
+		case ast.TLe:
+			return core.BoolVal(lf <= rf), nil
+		case ast.TGe:
+			return core.BoolVal(lf >= rf), nil
+		}
+	}
+
 	if node.Tok.Type == ast.TPlus && (left.Kind == core.VString || right.Kind == core.VString) {
 		return core.StringVal(left.ToStr() + right.ToStr()), nil
 	}
@@ -160,6 +200,9 @@ func evalUnary(node *ast.Node, env *core.Env) (core.Value, error) {
 	case ast.TMinus:
 		if operand.Kind == core.VInt {
 			return core.IntVal(-operand.Int), nil
+		}
+		if operand.Kind == core.VFloat {
+			return core.FloatVal(-operand.Float), nil
 		}
 		return core.Nil, fmt.Errorf("cannot negate %s", operand.Inspect())
 	}

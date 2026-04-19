@@ -5,6 +5,7 @@ type TokenType byte
 const (
 	TWord      TokenType = iota // bare word (command name, arg, identifier)
 	TInt                        // integer literal
+	TFloat                      // float literal (e.g. 3.14)
 	TString                     // "..." or '...'
 	TAtom                       // :name
 	TNewline                    // statement separator

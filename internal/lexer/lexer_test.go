@@ -303,6 +303,24 @@ func TestLexPathVsDivision(t *testing.T) {
 			[]ast.TokenType{ast.TWord, ast.TDot},
 			[]string{"a", "."})
 	})
+
+	t.Run("float literal", func(t *testing.T) {
+		assertTokens(t, "3.14",
+			[]ast.TokenType{ast.TFloat},
+			[]string{"3.14"})
+	})
+
+	t.Run("float division", func(t *testing.T) {
+		assertTokens(t, "5.0 / 2",
+			[]ast.TokenType{ast.TFloat, ast.TDiv, ast.TInt},
+			[]string{"5.0", "/", "2"})
+	})
+
+	t.Run("integer not float", func(t *testing.T) {
+		assertTokens(t, "42",
+			[]ast.TokenType{ast.TInt},
+			[]string{"42"})
+	})
 }
 
 func TestLexComments(t *testing.T) {

@@ -4,7 +4,6 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"ish/internal/core"
@@ -35,7 +34,7 @@ func jsonToValue(v interface{}) core.Value {
 		if val == float64(int64(val)) {
 			return core.IntVal(int64(val))
 		}
-		return core.StringVal(strconv.FormatFloat(val, 'f', -1, 64))
+		return core.FloatVal(val)
 	case string:
 		return core.StringVal(val)
 	case []interface{}:
@@ -97,6 +96,8 @@ func valueToJSON(v core.Value) interface{} {
 		return v.Str
 	case core.VInt:
 		return v.Int
+	case core.VFloat:
+		return v.Float
 	case core.VString:
 		return v.Str
 	case core.VList:

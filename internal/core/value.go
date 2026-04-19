@@ -12,6 +12,7 @@ type ValueKind byte
 const (
 	VString ValueKind = iota
 	VInt
+	VFloat
 	VAtom
 	VTuple
 	VList
@@ -25,6 +26,7 @@ type Value struct {
 	Kind  ValueKind
 	Str   string
 	Int   int64
+	Float float64
 	Elems []Value
 	Map   *OrdMap
 	Pid   Pid
@@ -74,6 +76,7 @@ var False = Value{Kind: VAtom, Str: "false"}
 
 func StringVal(s string) Value     { return Value{Kind: VString, Str: s} }
 func IntVal(n int64) Value         { return Value{Kind: VInt, Int: n} }
+func FloatVal(f float64) Value     { return Value{Kind: VFloat, Float: f} }
 func AtomVal(s string) Value       { return Value{Kind: VAtom, Str: s} }
 func TupleVal(elems ...Value) Value { return Value{Kind: VTuple, Elems: elems} }
 func ListVal(elems ...Value) Value  { return Value{Kind: VList, Elems: elems} }
@@ -91,6 +94,12 @@ func (v Value) String() string {
 		return v.Str
 	case VInt:
 		return fmt.Sprintf("%d", v.Int)
+	case VFloat:
+		s := fmt.Sprintf("%g", v.Float)
+		if !strings.Contains(s, ".") {
+			s += ".0"
+		}
+		return s
 	case VAtom:
 		return ":" + v.Str
 	case VTuple:
@@ -149,6 +158,8 @@ func (v Value) Truthy() bool {
 		return v.Str != ""
 	case VInt:
 		return v.Int != 0
+	case VFloat:
+		return v.Float != 0
 	default:
 		return true
 	}
@@ -156,6 +167,13 @@ func (v Value) Truthy() bool {
 
 // Equal checks structural equality.
 func (v Value) Equal(other Value) bool {
+	// Cross-kind int/float comparison
+	if v.Kind == VInt && other.Kind == VFloat {
+		return float64(v.Int) == other.Float
+	}
+	if v.Kind == VFloat && other.Kind == VInt {
+		return v.Float == float64(other.Int)
+	}
 	if v.Kind != other.Kind {
 		return false
 	}
@@ -164,6 +182,8 @@ func (v Value) Equal(other Value) bool {
 		return v.Str == other.Str
 	case VInt:
 		return v.Int == other.Int
+	case VFloat:
+		return v.Float == other.Float
 	case VNil:
 		return true
 	case VTuple, VList:

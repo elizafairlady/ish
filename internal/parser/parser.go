@@ -304,7 +304,7 @@ func (p *Parser) parseCommandInner() (*ast.Node, error) {
 		}
 	case ast.TBackslash:
 		return p.parseLambda()
-	case ast.TInt:
+	case ast.TInt, ast.TFloat:
 		return p.parseExpression()
 	case ast.TString:
 		return p.parseExpression()
@@ -483,7 +483,7 @@ func (p *Parser) parseArg(isFirst bool) (*ast.Node, error) {
 	case ast.TString:
 		p.advance()
 		return ast.LitNode(cur), nil
-	case ast.TInt:
+	case ast.TInt, ast.TFloat:
 		p.advance()
 		return ast.LitNode(cur), nil
 	case ast.TAtom:
@@ -1459,7 +1459,7 @@ func (p *Parser) parsePattern() (*ast.Node, error) {
 	case ast.TAtom:
 		p.advance()
 		return ast.LitNode(cur), nil
-	case ast.TInt:
+	case ast.TInt, ast.TFloat:
 		p.advance()
 		return ast.LitNode(cur), nil
 	case ast.TString:
@@ -1596,7 +1596,7 @@ func (p *Parser) precedence(tt ast.TokenType) int {
 func (p *Parser) parseAtom() (*ast.Node, error) {
 	cur := p.cur()
 	switch cur.Type {
-	case ast.TInt:
+	case ast.TInt, ast.TFloat:
 		p.advance()
 		return ast.LitNode(cur), nil
 	case ast.TString:

@@ -120,7 +120,7 @@ func (l *Lexer) lex() {
 		case ch == '/':
 			isDivision := false
 			switch l.lastEmitted {
-			case ast.TInt, ast.TRParen, ast.TRBracket:
+			case ast.TInt, ast.TFloat, ast.TRParen, ast.TRBracket:
 				isDivision = true
 			case ast.TWord:
 				next := l.peek(1)
@@ -351,6 +351,15 @@ func (l *Lexer) lexNumber() {
 	start := l.pos
 	for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
 		l.pos++
+	}
+	// Check for float: digits followed by '.' followed by digit
+	if l.pos < len(l.src) && l.src[l.pos] == '.' && l.pos+1 < len(l.src) && l.src[l.pos+1] >= '0' && l.src[l.pos+1] <= '9' {
+		l.pos++ // consume '.'
+		for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
+			l.pos++
+		}
+		l.emit(ast.TFloat, l.src[start:l.pos])
+		return
 	}
 	if l.pos < len(l.src) && isWordChar(l.src[l.pos]) {
 		for l.pos < len(l.src) && isWordChar(l.src[l.pos]) {
