@@ -23,7 +23,7 @@ import (
 	"ish/internal/stdlib"
 )
 
-var Version = "0.3.5"
+var Version = "0.3.9"
 
 func main() {
 	// Wire up eval <-> builtin cycle via Init
