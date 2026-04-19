@@ -417,51 +417,44 @@ func evalExternalCmd(name string, args []string, redirs []ast.Redir, env *core.E
 		return core.Nil, nil
 	}
 
-	// Give the child's process group the terminal
-	pgid := cmd.Process.Pid
+	pid := cmd.Process.Pid
 	ttyFd := int(os.Stdin.Fd())
 	isTTY := term.IsTerminal(ttyFd)
+
+	// Give the child's process group the terminal
 	if isTTY {
-		tcsetpgrp(ttyFd, pgid)
+		tcsetpgrp(ttyFd, pid)
 	}
 
-	state, waitErr := cmd.Process.Wait()
+	// Use raw Wait4 with WUNTRACED so we detect stopped (ctrl-z) processes.
+	// Go's cmd.Process.Wait() does not support this.
+	var ws syscall.WaitStatus
+	_, waitErr := syscall.Wait4(pid, &ws, syscall.WUNTRACED, nil)
 
 	// Reclaim the terminal for the shell
 	if isTTY {
 		tcsetpgrp(ttyFd, os.Getpid())
 	}
 
-	if state != nil && state.Exited() {
-		env.SetExit(state.ExitCode())
-		return core.Nil, nil
-	}
-
-	// Check if the process was stopped (ctrl-z)
-	if state != nil {
-		if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Stopped() {
-			cmdStr := name + " " + strings.Join(args, " ")
-			jobID := jobs.AddJob(pgid, strings.TrimSpace(cmdStr), cmd.Process)
-			j := jobs.FindJob(jobID)
-			j.Mu.Lock()
-			j.Status = "Stopped"
-			j.Mu.Unlock()
-			fmt.Fprintf(os.Stderr, "\n[%d]+ Stopped\t%s\n", jobID, strings.TrimSpace(cmdStr))
-			env.SetExit(148) // 128 + SIGTSTP(20) = 148
-			return core.Nil, nil
-		}
-	}
-
 	if waitErr != nil {
-		if exitErr, ok := waitErr.(*exec.ExitError); ok {
-			env.SetExit(exitErr.ExitCode())
-		} else {
-			env.SetExit(127)
-			fmt.Fprintf(os.Stderr, "ish: %s: %s\n", name, waitErr)
-		}
+		env.SetExit(127)
+		fmt.Fprintf(os.Stderr, "ish: %s: %s\n", name, waitErr)
 		return core.Nil, nil
 	}
-	env.SetExit(0)
+
+	if ws.Stopped() {
+		cmdStr := name + " " + strings.Join(args, " ")
+		jobID := jobs.AddJob(pid, strings.TrimSpace(cmdStr), cmd.Process)
+		j := jobs.FindJob(jobID)
+		j.Mu.Lock()
+		j.Status = "Stopped"
+		j.Mu.Unlock()
+		fmt.Fprintf(os.Stderr, "\n[%d]+ Stopped\t%s\n", jobID, strings.TrimSpace(cmdStr))
+		env.SetExit(148)
+		return core.Nil, nil
+	}
+
+	env.SetExit(ws.ExitStatus())
 	return core.Nil, nil
 }
 
