@@ -1,0 +1,42 @@
+# Extended stdlib functions
+# Tests: sort, reverse, any, all, find, pairs, enumerate, get, each, sleep
+
+nums = [5, 3, 1, 4, 2]
+
+sorted = sorted nums
+echo "sorted: $sorted"
+
+reversed = reverse nums
+echo "reverse: $reversed"
+
+r = any nums, \x -> x > 3
+echo "any > 3: $r"
+
+r = all nums, \x -> x > 0
+echo "all > 0: $r"
+
+r = all nums, \x -> x > 3
+echo "all > 3: $r"
+
+r = first nums, \x -> x > 3
+echo "first > 3: $r"
+
+m = %{name: "fox", age: 3, speed: 42}
+
+p = pairs m
+echo "pairs: $p"
+
+v1 = get m, "name"
+echo "get name: $v1"
+
+v2 = get m, "missing"
+echo "get missing: $v2"
+
+e = enumerate ["a", "b", "c"]
+echo "enumerate: $e"
+
+echo "each:"
+each [1, 2, 3], \x -> echo "  item: $x"
+
+delay 50
+echo "delayed 50ms"

@@ -259,7 +259,7 @@ Multiplication and division happen before addition and subtraction. Parentheses 
 The fox doesn't care about holding onto results. The fox puts math in a sentence and keeps moving:
 
 ```
-echo "there are $(( 7 * 52 )) weeks in seven years"
+echo "there are #{7 * 52} weeks in seven years"
 ```
 
 The AI wants to compare things:
@@ -474,7 +474,7 @@ When you call `fib 10`, ish asks: does `10` match `0`? No. Does it match `1`? No
 The `when` is a guard. The pattern has to match *and* the guard has to be true:
 
 ```
-fn abs n when n < 0 do 0 - n end
+fn abs n when n < 0 do -n end
 fn abs n do n end
 r = abs (-5)
 echo $r
@@ -497,18 +497,46 @@ classify 0
 :zero
 ```
 
-Anonymous functions use the same clause syntax. They're values you can pass around:
+Anonymous dispatch tables use `fn do ... end` without a name. They're values you can pass around:
 
 ```
 f = fn do
-  x -> x * 2
+  0 -> :zero
+  n when n > 0 -> :positive
+  _ -> :negative
 end
+f 0
+```
+```
+:zero
 ```
 
-Or the short form for a single expression:
+For simple anonymous functions, use the backslash lambda syntax — it's shorter and clearer:
 
 ```
-f = fn -> 42
+doubled = \x -> x * 2
+doubled 5
+```
+```
+10
+```
+
+Lambdas can take multiple parameters, or none:
+
+```
+sum = \a, b -> a + b
+sum 3, 4
+```
+```
+7
+```
+
+```
+greet = \ -> echo "hello"
+greet
+```
+```
+hello
 ```
 
 The fox's way still works too. POSIX functions use `$1`, `$2` for arguments:
@@ -580,7 +608,7 @@ But the roads do cross. `from_json` and `to_json` convert between bytes and valu
 ```
 # bytes become values
 data = $(curl -s https://api.example.com/items) |> from_json
-names = map data, fn do item -> item.name end
+names = map data, \item -> item.name
 
 # values become bytes for a unix tool
 sorted = $(echo $(to_lines names) | sort)
@@ -638,11 +666,11 @@ c
 ```
 
 ```
-n=3
-while [ $n -gt 0 ]; do
+n = 3
+while n > 0 do
   echo $n
-  n=$((n - 1))
-done
+  n = n - 1
+end
 ```
 ```
 3
@@ -979,13 +1007,15 @@ at [10, 20, 30], 1       # 20 (zero-indexed)
 append [1, 2], 3          # [1, 2, 3]
 concat [1, 2], [3, 4]    # [1, 2, 3, 4]
 range 0, 5               # [0, 1, 2, 3, 4]
+sorted [3, 1, 2]         # [1, 2, 3]
+reverse [1, 2, 3]        # [3, 2, 1]
+enumerate ["a", "b"]     # [{0, "a"}, {1, "b"}]
 ```
 
-Transform with functions:
+Transform with lambdas:
 
 ```
-f = fn do x -> x * 2 end
-r = map [1, 2, 3], f
+r = map [1, 2, 3], \x -> x * 2
 echo $r
 ```
 ```
@@ -993,7 +1023,7 @@ echo $r
 ```
 
 ```
-r = filter [1, 2, 3, 4, 5], fn do x -> x >= 4 end
+r = filter [1, 2, 3, 4, 5], \x -> x >= 4
 echo $r
 ```
 ```
@@ -1001,17 +1031,26 @@ echo $r
 ```
 
 ```
-r = reduce [1, 2, 3, 4], 0, fn do acc, x -> acc + x end
+r = reduce [1, 2, 3, 4], 0, \acc, x -> acc + x
 echo $r
 ```
 ```
 10
 ```
 
+There are also `each` (like `map` but for side effects), `any`, `all`, and `first`:
+
+```
+each [1, 2, 3], \x -> echo $x    # prints 1, 2, 3 on separate lines
+any [0, 0, 1], \x -> x > 0       # :true
+all [1, 2, 3], \x -> x > 0       # :true
+first [1, 2, 3, 4], \x -> x > 2  # 3
+```
+
 These chain with `|>`:
 
 ```
-r = range 1, 11 |> filter fn do x -> x >= 6 end |> length
+r = range 1, 11 |> filter \x -> x >= 6 |> length
 echo $r
 ```
 ```
@@ -1044,6 +1083,8 @@ merge %{a: 1}, %{b: 2}     # %{a: 1, b: 2}
 keys %{x: 1, y: 2}         # ["x", "y"]
 values %{x: 1, y: 2}       # [1, 2]
 has_key %{x: 1}, "x"       # :true
+get %{x: 1, y: 2}, "x"    # 1
+pairs %{a: 1, b: 2}        # [{"a", 1}, {"b", 2}]
 ```
 
 **Format conversion (the bridge between `|` and `|>`):**
@@ -1058,6 +1099,14 @@ to_tsv list                # list of maps -> TSV string
 from_lines str             # string -> list of lines
 to_lines list              # list of strings -> newline-joined string
 ```
+
+**Utilities:**
+
+```
+delay 1000                 # pause for 1000 milliseconds
+```
+
+`delay` is named to avoid shadowing the Unix `sleep` command. Similarly, `sorted` avoids `sort` and `first` avoids `find`.
 
 *The fox picked up a string function and turned it over.*
 
@@ -1095,7 +1144,7 @@ fn read_services file do
   lines = $(cat $file)
   lines
     |> split "\n"
-    |> filter fn do line -> length line >= 1 end
+    |> filter \line -> length line >= 1
     |> map fn do line ->
       parts = split line, " "
       [name | rest] = parts
@@ -1121,7 +1170,7 @@ fn check service, reply_to do
 end
 
 me = self
-map services, fn do svc -> spawn fn do check svc, me end end
+map services, \svc -> spawn fn do check svc, me end
 
 # --- collect results ---
 
@@ -1141,25 +1190,14 @@ results = collect (length services)
 
 # --- report (the fox's part again) ---
 
-ok = filter results, fn do r ->
-  match r do
-    {:ok, _, _} -> true
-    _ -> false
-  end
-end
-
-failed = filter results, fn do r ->
-  match r do
-    {:ok, _, _} -> false
-    _ -> true
-  end
-end
+ok = filter results, \r -> match r do {:ok, _, _} -> :true; _ -> :false end
+failed = filter results, \r -> match r do {:ok, _, _} -> :false; _ -> :true end
 
 echo "=== Service Report ==="
 echo ""
 
-map ok, fn do {:ok, name, code} ->
-  printf "  %-12s %s\n" $name $code
+map ok, fn do
+  {:ok, name, code} -> printf "  %-12s %s\n" $name $code
 end
 
 map failed, fn do
@@ -1257,8 +1295,6 @@ Tab completes commands, paths, and variables. Type a few letters, press Tab. If 
 *The fox started the engine.*
 
 ---
-
-ish is designed to be an interface between you and an AI gateway daemon. The process model — spawn, send, receive — is the communication substrate. The shell and the daemon talk through messages, the same way two ish processes talk to each other.
 
 The Unix kernel already provides what Erlang discovered independently: process isolation, message passing through pipes and signals, and supervision through init and systemd. ish makes that analogy concrete and programmable.
 

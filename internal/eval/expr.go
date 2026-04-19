@@ -1,0 +1,290 @@
+package eval
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"strings"
+
+	"ish/internal/ast"
+	"ish/internal/core"
+	"ish/internal/lexer"
+	"ish/internal/parser"
+)
+
+func evalLit(node *ast.Node, env *core.Env) (core.Value, error) {
+	if node.Tok.Type == ast.TString && !node.Tok.Quoted {
+		return core.StringVal(env.Expand(node.Tok.Val)), nil
+	}
+	return litToValue(node)
+}
+
+func litToValue(node *ast.Node) (core.Value, error) {
+	switch node.Tok.Type {
+	case ast.TInt:
+		n, _ := strconv.ParseInt(node.Tok.Val, 10, 64)
+		return core.IntVal(n), nil
+	case ast.TString:
+		return core.StringVal(node.Tok.Val), nil
+	case ast.TAtom:
+		return core.AtomVal(node.Tok.Val), nil
+	default:
+		return core.StringVal(node.Tok.Val), nil
+	}
+}
+
+func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
+	name := node.Tok.Val
+	if name == "nil" {
+		return core.Nil, nil
+	}
+	if name == "true" {
+		return core.True, nil
+	}
+	if name == "false" {
+		return core.False, nil
+	}
+	if name == "self" {
+		if proc := env.GetProc(); proc != nil {
+			return core.Value{Kind: core.VPid, Pid: proc}, nil
+		}
+		return core.Nil, nil
+	}
+
+	if strings.HasPrefix(name, "~") {
+		return core.StringVal(env.ExpandTilde(name)), nil
+	}
+
+	if strings.HasPrefix(name, "$((") && strings.HasSuffix(name, "))") {
+		return evalArithExpansion(name, env)
+	}
+
+	if strings.HasPrefix(name, "$(") && strings.HasSuffix(name, ")") {
+		inner := name[2 : len(name)-1]
+		return evalCmdSub(inner, env)
+	}
+
+	if strings.Contains(name, "$") || strings.Contains(name, "#{") {
+		if env.HasFlag('u') {
+			if err := checkUnsetVars(name, env); err != nil {
+				return core.Nil, err
+			}
+		}
+		expanded := env.Expand(name)
+		return core.StringVal(expanded), nil
+	}
+
+	if v, ok := env.Get(name); ok {
+		return v, nil
+	}
+
+	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
+		objName := name[:dotIdx]
+		field := name[dotIdx+1:]
+		if obj, ok := env.Get(objName); ok && obj.Kind == core.VMap && obj.Map != nil {
+			if v, ok := obj.Map.Get(field); ok {
+				return v, nil
+			}
+		}
+	}
+
+	return core.StringVal(name), nil
+}
+
+func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
+	left, err := Eval(node.Children[0], env)
+	if err != nil {
+		return core.Nil, err
+	}
+	right, err := Eval(node.Children[1], env)
+	if err != nil {
+		return core.Nil, err
+	}
+
+	if left.Kind == core.VInt && right.Kind == core.VInt {
+		switch node.Tok.Type {
+		case ast.TPlus:
+			return core.IntVal(left.Int + right.Int), nil
+		case ast.TMinus:
+			return core.IntVal(left.Int - right.Int), nil
+		case ast.TMul:
+			return core.IntVal(left.Int * right.Int), nil
+		case ast.TDiv:
+			if right.Int == 0 {
+				return core.Nil, fmt.Errorf("division by zero")
+			}
+			return core.IntVal(left.Int / right.Int), nil
+		case ast.TEq:
+			return core.BoolVal(left.Int == right.Int), nil
+		case ast.TNe:
+			return core.BoolVal(left.Int != right.Int), nil
+		case ast.TRedirIn:
+			return core.BoolVal(left.Int < right.Int), nil
+		case ast.TRedirOut:
+			return core.BoolVal(left.Int > right.Int), nil
+		case ast.TLe:
+			return core.BoolVal(left.Int <= right.Int), nil
+		case ast.TGe:
+			return core.BoolVal(left.Int >= right.Int), nil
+		}
+	}
+
+	if node.Tok.Type == ast.TPlus && (left.Kind == core.VString || right.Kind == core.VString) {
+		return core.StringVal(left.ToStr() + right.ToStr()), nil
+	}
+
+	switch node.Tok.Type {
+	case ast.TEq:
+		return core.BoolVal(left.Equal(right)), nil
+	case ast.TNe:
+		return core.BoolVal(!left.Equal(right)), nil
+	}
+
+	return core.Nil, fmt.Errorf("unsupported operation: %s %s %s", left.Inspect(), node.Tok.Val, right.Inspect())
+}
+
+func evalUnary(node *ast.Node, env *core.Env) (core.Value, error) {
+	operand, err := Eval(node.Children[0], env)
+	if err != nil {
+		return core.Nil, err
+	}
+	switch node.Tok.Type {
+	case ast.TBang:
+		return core.BoolVal(!operand.Truthy()), nil
+	case ast.TMinus:
+		if operand.Kind == core.VInt {
+			return core.IntVal(-operand.Int), nil
+		}
+		return core.Nil, fmt.Errorf("cannot negate %s", operand.Inspect())
+	}
+	return core.Nil, fmt.Errorf("unknown unary op: %s", node.Tok.Val)
+}
+
+func evalTuple(node *ast.Node, env *core.Env) (core.Value, error) {
+	elems := make([]core.Value, len(node.Children))
+	for i, child := range node.Children {
+		v, err := Eval(child, env)
+		if err != nil {
+			return core.Nil, err
+		}
+		elems[i] = v
+	}
+	return core.TupleVal(elems...), nil
+}
+
+func evalList(node *ast.Node, env *core.Env) (core.Value, error) {
+	elems := make([]core.Value, len(node.Children))
+	for i, child := range node.Children {
+		v, err := Eval(child, env)
+		if err != nil {
+			return core.Nil, err
+		}
+		elems[i] = v
+	}
+	return core.ListVal(elems...), nil
+}
+
+func evalMap(node *ast.Node, env *core.Env) (core.Value, error) {
+	m := core.NewOrdMap()
+	for i := 0; i+1 < len(node.Children); i += 2 {
+		key := node.Children[i].Tok.Val
+		val, err := Eval(node.Children[i+1], env)
+		if err != nil {
+			return core.Nil, err
+		}
+		m.Set(key, val)
+	}
+	return core.Value{Kind: core.VMap, Map: m}, nil
+}
+
+func evalAccess(node *ast.Node, env *core.Env) (core.Value, error) {
+	obj, err := Eval(node.Children[0], env)
+	if err != nil {
+		return core.Nil, err
+	}
+	field := node.Tok.Val
+	if obj.Kind == core.VMap && obj.Map != nil {
+		if v, ok := obj.Map.Get(field); ok {
+			return v, nil
+		}
+	}
+	return core.Nil, fmt.Errorf("no field %s on %s", field, obj.Inspect())
+}
+
+func evalArithExpansion(name string, env *core.Env) (core.Value, error) {
+	inner := name[3 : len(name)-2]
+	inner = env.Expand(inner)
+	tokens := lexer.Lex(inner)
+	for i := range tokens {
+		if tokens[i].Type == ast.TWord {
+			if v, ok := env.Get(tokens[i].Val); ok {
+				tokens[i] = ast.Token{Type: ast.TInt, Val: v.ToStr(), Pos: tokens[i].Pos}
+			}
+		}
+	}
+	node, err := parser.Parse(tokens)
+	if err != nil {
+		return core.Nil, err
+	}
+	val, err := Eval(node, env)
+	if err != nil {
+		return core.Nil, err
+	}
+	return core.StringVal(val.ToStr()), nil
+}
+
+func evalCmdSub(cmdStr string, env *core.Env) (core.Value, error) {
+	tokens := lexer.Lex(cmdStr)
+	node, err := parser.Parse(tokens)
+	if err != nil {
+		return core.Nil, err
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		return core.Nil, fmt.Errorf("command substitution: %w", err)
+	}
+
+	childEnv := core.NewEnv(env)
+	childEnv.Stdout_ = w
+
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		io.Copy(&buf, r)
+		close(done)
+	}()
+
+	val, evalErr := Eval(node, childEnv)
+	if val.Kind != core.VNil && val.Kind != core.VString {
+		fmt.Fprint(w, val.String())
+	} else if val.Kind == core.VString && val.Str != "" {
+		fmt.Fprint(w, val.Str)
+	}
+	w.Close()
+	<-done
+	r.Close()
+
+	result := strings.TrimRight(buf.String(), "\n")
+	return core.StringVal(result), evalErr
+}
+
+func evalMatch(node *ast.Node, env *core.Env) (core.Value, error) {
+	if len(node.Children) != 2 {
+		return core.Nil, fmt.Errorf("invalid match node")
+	}
+	lhs := node.Children[0]
+	rhs := node.Children[1]
+
+	val, err := Eval(rhs, env)
+	if err != nil {
+		return core.Nil, err
+	}
+
+	if err := PatternBind(lhs, val, env); err != nil {
+		return core.Nil, err
+	}
+	return val, nil
+}

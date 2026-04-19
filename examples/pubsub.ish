@@ -1,0 +1,96 @@
+# Pub-sub broker: a process that manages subscriptions and broadcasts messages
+# Tests: process state management, list operations, message routing
+
+me = self
+
+# The broker loop: maintains a list of subscribers
+fn broker_loop subs do
+  receive do
+    {:subscribe, pid} ->
+      echo "broker: new subscriber"
+      broker_loop (concat subs, [pid])
+    {:publish, topic, msg} ->
+      echo "broker: publishing to #{length subs} subscribers"
+      map subs, \sub -> send sub, {:message, topic, msg}
+      broker_loop subs
+    {:unsubscribe, pid} ->
+      new_subs = filter subs, \s -> s != pid
+      echo "broker: subscriber removed, #{length new_subs} remaining"
+      broker_loop new_subs
+    :stop ->
+      map subs, \sub -> send sub, :broker_stopped
+      echo "broker: stopped"
+  end
+end
+
+broker = spawn fn do broker_loop [] end
+
+# Spawn 3 subscriber processes
+fn subscriber name, reply_to do
+  receive do
+    {:message, topic, msg} ->
+      echo "  $name received [$topic]: $msg"
+      send reply_to, {:ack, name}
+      subscriber name, reply_to
+    :broker_stopped ->
+      echo "  $name: broker stopped"
+      send reply_to, {:done, name}
+  end
+end
+
+s1 = spawn fn do subscriber "alice", me end
+s2 = spawn fn do subscriber "bob", me end
+s3 = spawn fn do subscriber "charlie", me end
+
+# Subscribe all three
+send broker, {:subscribe, s1}
+send broker, {:subscribe, s2}
+send broker, {:subscribe, s3}
+
+# Small delay to let subscribes process
+receive do _ -> :ok after 100 -> :ok end
+
+# Publish a message
+send broker, {:publish, "news", "hello world"}
+
+# Collect 3 acks
+fn collect_acks n do
+  if n == 0 do :ok
+  else
+    receive do
+      {:ack, name} ->
+        collect_acks (n - 1)
+    after 2000 ->
+      echo "timeout waiting for acks"
+    end
+  end
+end
+collect_acks 3
+
+# Unsubscribe bob
+send broker, {:unsubscribe, s2}
+receive do _ -> :ok after 100 -> :ok end
+
+# Publish another message (only alice and charlie should get it)
+send broker, {:publish, "alert", "important update"}
+collect_acks 2
+
+# Stop the broker
+send broker, :stop
+
+# Collect done messages
+fn collect_done n do
+  if n == 0 do :ok
+  else
+    receive do
+      {:done, name} ->
+        echo "  $name confirmed shutdown"
+        collect_done (n - 1)
+    after 2000 ->
+      echo "timeout waiting for shutdown"
+    end
+  end
+end
+collect_done 2
+
+echo "pubsub test complete"

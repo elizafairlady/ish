@@ -1,0 +1,32 @@
+# POSIX compatibility check
+# Demonstrates that traditional shell features still work
+# STATUS: PASS
+
+echo "=== Variables ==="
+NAME=world
+echo "hello $NAME"
+echo "${NAME} has ${#NAME} chars"
+
+echo "=== Control flow ==="
+for i in a b c; do
+  echo "  item: $i"
+done
+
+echo "=== Functions ==="
+greet() { echo "hi $1"; }
+greet world
+
+echo "=== Case ==="
+X=hello
+case $X in
+  hello) echo "matched hello" ;;
+  *) echo "default" ;;
+esac
+
+echo "=== Here string ==="
+cat <<< "here string works"
+
+echo "=== Test ==="
+if [ 5 -gt 3 ]; then
+  echo "5 > 3"
+fi

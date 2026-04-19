@@ -1,0 +1,12 @@
+# Fibonacci via multi-clause dispatch
+# Demonstrates recursive function with pattern matching on arguments
+# STATUS: PASS
+
+fn fib do
+  0 -> 0
+  1 -> 1
+  n -> fib (n - 1) + fib (n - 2)
+end
+
+results = map (range 0, 11), \n -> fib n
+echo $results

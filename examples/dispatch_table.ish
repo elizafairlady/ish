@@ -1,0 +1,14 @@
+# Dispatch table: mini calculator
+# Demonstrates using fn do as a dispatch table / mini interpreter
+
+calc = fn do
+  {:add, a, b} -> a + b
+  {:sub, a, b} -> a - b
+  {:mul, a, b} -> a * b
+  {:div, a, b} -> a / b
+end
+
+echo "3 + 4 = $(calc {:add, 3, 4})"
+echo "10 - 3 = $(calc {:sub, 10, 3})"
+echo "6 * 7 = $(calc {:mul, 6, 7})"
+echo "20 / 4 = $(calc {:div, 20, 4})"

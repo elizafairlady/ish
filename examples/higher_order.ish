@@ -1,0 +1,28 @@
+# Higher-order functions: passing and calling function values
+# Tests that variable-stored functions receive typed args, not strings
+
+fn double x do x * 2 end
+
+# Lambda stored in variable, called with variable arg
+f = \x -> x + 1
+y = 5
+echo "f(y) = $(f y)"
+
+# Lambda wrapping a named function
+d = \x -> double x
+echo "d(10) = $(d 10)"
+
+# Composing closures
+fn compose f, g do
+  \x -> f (g x)
+end
+
+inc = \x -> x + 1
+dbl = \x -> x * 2
+inc_then_dbl = compose dbl, inc
+echo "dbl(inc(3)) = $(inc_then_dbl 3)"
+
+# Passing function values to higher-order functions
+ops = [\x -> x + 1, \x -> x * 2, \x -> x * x]
+results = map ops, \op -> op 5
+echo "ops applied to 5: $results"

@@ -7,22 +7,17 @@
 fn fetch_worker url, interval do
   echo "[worker] checking $url"
   code = $(curl -s -o /dev/null -w "%{http_code}" --max-time 3 $url 2>/dev/null)
-  if [ "$code" = "200" ]; then
+  if code == "200" do
     echo "[worker] $url is up ($code)"
   else
     echo "[worker] $url returned $code — crashing to trigger restart"
-    # Return an error tuple — supervisor sees abnormal exit, restarts
     {:error, "bad status $code"}
-  fi
+  end
 end
 
 echo "=== Supervised URL Watcher ==="
 echo "Starting supervisor with one worker..."
 echo ""
-
-# The worker checks once and exits.
-# On success (200) it exits normally — supervisor lets it go.
-# On failure it returns {:error, ...} — supervisor restarts it.
 
 sup = supervise :one_for_one do
   worker :watcher fn do

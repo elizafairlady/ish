@@ -1,0 +1,46 @@
+# Comparison operators in various contexts
+# Tests that < and > work as comparisons in ish blocks, not as redirects
+
+fn max a, b do
+  if a > b do a else b end
+end
+
+fn min a, b do
+  if a < b do a else b end
+end
+
+echo "max(3,7) = $(max 3, 7)"
+echo "min(3,7) = $(min 3, 7)"
+
+# Comparison as return value from function body
+fn is_positive n do
+  n > 0
+end
+
+echo "is_positive(5) = $(is_positive 5)"
+echo "is_positive(-3) = $(is_positive (-3))"
+
+# Guards with comparisons
+fn classify do
+  n when n > 100 -> :large
+  n when n > 0 -> :positive
+  0 -> :zero
+  _ -> :negative
+end
+
+echo "classify(200) = $(classify 200)"
+echo "classify(42) = $(classify 42)"
+echo "classify(0) = $(classify 0)"
+echo "classify(-5) = $(classify (-5))"
+
+# Subtraction also works in dispatch bodies
+calc = fn do
+  {:add, a, b} -> a + b
+  {:sub, a, b} -> a - b
+end
+echo "10 - 3 = $(calc {:sub, 10, 3})"
+
+# Redirects still work at top level (POSIX context)
+echo "redirect test" > /tmp/ish_cmp_test
+cat /tmp/ish_cmp_test
+rm /tmp/ish_cmp_test

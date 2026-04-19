@@ -1,0 +1,35 @@
+# Closure test: lambdas capture their definition environment
+# Demonstrates higher-order functions that return functions
+
+fn make_greeter prefix do
+  \name -> "$prefix, $name!"
+end
+
+hello = make_greeter "Hello"
+hi = make_greeter "Hi"
+
+r1 = hello "world"
+r2 = hi "fox"
+
+if r1 != "Hello, world!" do
+  echo "FAIL: expected 'Hello, world!' got '$r1'"
+  exit 1
+end
+if r2 != "Hi, fox!" do
+  echo "FAIL: expected 'Hi, fox!' got '$r2'"
+  exit 1
+end
+
+echo $r1
+echo $r2
+
+# Also test make_adder pattern
+fn make_adder n do
+  \x -> x + n
+end
+
+add5 = make_adder 5
+add10 = make_adder 10
+
+echo "add5(3) = $(add5 3)"
+echo "add10(3) = $(add10 3)"

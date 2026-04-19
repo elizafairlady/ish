@@ -1,0 +1,48 @@
+# GenServer: Key-value store with get/put/delete
+# Demonstrates stateful process with request/response loop (GenServer pattern)
+# Uses maps for state with dynamic access via get()
+
+fn kv_loop state do
+  receive do
+    {:put, key, val, sender} ->
+      send sender, :ok
+      kv_loop (put state, key, val)
+    {:get, key, sender} ->
+      val = get state, key
+      send sender, {:ok, val}
+      kv_loop state
+    {:delete, key, sender} ->
+      send sender, :ok
+      kv_loop (delete state, key)
+    {:stop, sender} ->
+      send sender, {:stopped, state}
+  end
+end
+
+echo "Starting GenServer KV store..."
+pid = spawn fn do kv_loop %{} end
+me = self
+
+send pid, {:put, "name", "fox", me}
+receive do :ok -> echo "  put name=fox" end
+
+send pid, {:put, "age", 3, me}
+receive do :ok -> echo "  put age=3" end
+
+send pid, {:get, "name", me}
+receive do
+  {:ok, val} -> echo "  get name -> $val"
+end
+
+send pid, {:get, "age", me}
+receive do
+  {:ok, val} -> echo "  get age -> $val"
+end
+
+send pid, {:delete, "age", me}
+receive do :ok -> echo "  delete age" end
+
+send pid, {:stop, me}
+receive do
+  {:stopped, final_state} -> echo "Store stopped. Final state: $final_state"
+end

@@ -3,22 +3,15 @@
 # A process holds state via recursive message handling.
 # This is the Elixir GenServer pattern: loop(state) receives
 # messages and calls itself with updated state.
-#
-# State is a simple string of "key=val" pairs separated by spaces.
-# Real implementation would use a map, but this shows the pattern.
-
-fn kv_server do
-  kv_loop ""
-end
 
 fn kv_loop state do
   receive do
-    {:put, kv, sender} ->
+    {:put, key, val, sender} ->
       send sender, :ok
-      kv_loop "$state $kv"
+      kv_loop (put state, key, val)
 
     {:get, key, sender} ->
-      val = $(echo $state | tr ' ' '\n' | grep "^${key}=" | head -1 | cut -d= -f2)
+      val = get state, key
       send sender, {:ok, val}
       kv_loop state
 
@@ -33,16 +26,16 @@ end
 
 # --- Start the KV store ---
 echo "Starting key-value store..."
-store = spawn kv_server
+store = spawn fn do kv_loop %{} end
 
 # Put some values
-send store, {:put, "name=ish", self}
+send store, {:put, "name", "ish", self}
 receive do :ok -> echo "  put name=ish" end
 
-send store, {:put, "version=0.1", self}
+send store, {:put, "version", "0.1", self}
 receive do :ok -> echo "  put version=0.1" end
 
-send store, {:put, "lang=go", self}
+send store, {:put, "lang", "go", self}
 receive do :ok -> echo "  put lang=go" end
 
 # Get values back

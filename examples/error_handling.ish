@@ -1,0 +1,21 @@
+# Error handling
+# Demonstrates try/rescue patterns
+# STATUS: PASS
+
+fn safe_divide a, b do
+  try do
+    a / b
+  rescue
+    {:error, msg} -> {:error, msg}
+  end
+end
+
+echo $(safe_divide 10, 2)
+echo $(safe_divide 10, 0)
+
+# Pattern match errors
+r = try do
+  {:ok, val} = {:error, "bad data"}
+rescue
+  {:error, msg} -> echo "caught: $msg"
+end

@@ -45,8 +45,9 @@ const (
 	TEq    // ==
 	TNe    // !=
 	TLe    // <=
-	TGe    // >=
-	TBang  // !
+	TGe        // >=
+	TBang      // !
+	TBackslash // \ (lambda)
 )
 
 type Token struct {
@@ -105,6 +106,7 @@ const (
 	NList   // [a, b, c]
 	NMap    // %{k: v}
 	NAccess // expr.field
+	NLambda // \params -> expr
 )
 
 type Node struct {

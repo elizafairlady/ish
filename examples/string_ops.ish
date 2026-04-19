@@ -1,0 +1,17 @@
+# String operations
+# Demonstrates string function showcase
+# STATUS: PASS
+
+s = "Hello, World!"
+echo "original: $s"
+echo "upcase: $(upcase s)"
+echo "downcase: $(downcase s)"
+echo "trim: $(trim \"  hello  \")"
+echo "split: $(split s, \", \")"
+echo "replace: $(replace s, \"World\", \"Fox\")"
+echo "starts_with H: $(starts_with s, \"H\")"
+echo "ends_with !: $(ends_with s, \"!\")"
+echo "contains World: $(contains s, \"World\")"
+echo "substring 7,5: $(substring s, 7, 5)"
+echo "index_of World: $(index_of s, \"World\")"
+echo "join: $(join [\"a\", \"b\", \"c\"], \"-\")"

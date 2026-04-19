@@ -1,0 +1,32 @@
+# Nested spawn: chain of processes
+# Demonstrates processes spawning processes in a chain
+# STATUS: PASS
+
+me = self
+
+fn chain_link next, id do
+  receive do
+    {:msg, val} ->
+      echo "Process $id received: $val"
+      if next != :none do
+        send next, {:msg, val + 1}
+      else
+        send me, {:done, val + 1}
+      end
+  end
+end
+
+# Build a chain of 5 processes
+p5 = spawn fn do chain_link :none, 5 end
+p4 = spawn fn do chain_link p5, 4 end
+p3 = spawn fn do chain_link p4, 3 end
+p2 = spawn fn do chain_link p3, 2 end
+p1 = spawn fn do chain_link p2, 1 end
+
+send p1, {:msg, 0}
+
+receive do
+  {:done, final} -> echo "Final value after 5 hops: $final"
+after 3000 ->
+  echo "timeout"
+end

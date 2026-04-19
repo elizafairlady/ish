@@ -1,0 +1,16 @@
+# Supervisor restart demo
+# Demonstrates supervisor that restarts a crashing worker
+# STATUS: PASS
+
+sup = supervise :one_for_one do
+  worker :crasher fn do
+    echo "worker starting"
+    1 / 0
+  end
+end
+
+receive do
+  _ -> :ok
+after 6000 ->
+  echo "supervisor should have shut down by now"
+end

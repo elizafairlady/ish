@@ -1,0 +1,23 @@
+# Pattern matching depth test
+# Demonstrates nested pattern matching, head|tail, and guards
+# STATUS: PASS
+
+{:ok, {:data, [a, b]}} = {:ok, {:data, [10, 20]}}
+echo "a=$a b=$b"
+
+# Head | tail
+[first | rest] = [1, 2, 3, 4, 5]
+echo "first=$first rest=$rest"
+
+# Match expression with guards
+fn classify do
+  n when n > 100 -> :large
+  n when n > 0 -> :positive
+  0 -> :zero
+  _ -> :negative
+end
+
+echo $(classify 200)
+echo $(classify 42)
+echo $(classify 0)
+echo $(classify (-5))

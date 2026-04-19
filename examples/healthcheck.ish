@@ -5,11 +5,11 @@
 
 fn check url, reply_to do
   code = $(curl -s -o /dev/null -w "%{http_code}" --max-time 3 $url 2>/dev/null)
-  if [ "$code" = "200" ]; then
+  if code == "200" do
     send reply_to, {:ok, url, code}
   else
     send reply_to, {:error, url, code}
-  fi
+  end
 end
 
 fn report {:ok, url, code} do

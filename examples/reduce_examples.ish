@@ -1,0 +1,23 @@
+# Reduce patterns
+# Demonstrates various reduce/fold patterns
+# STATUS: PASS
+
+nums = [1, 2, 3, 4, 5]
+
+# Sum
+sum = reduce nums, 0, \acc, x -> acc + x
+echo "sum = $sum"
+
+# Product
+product = reduce nums, 1, \acc, x -> acc * x
+echo "product = $product"
+
+# Max
+fn max_of a, b when a > b do a end
+fn max_of a, b do b end
+maximum = reduce (tl nums), (hd nums), \acc, x -> max_of acc, x
+echo "max = $maximum"
+
+# Reverse via reduce
+reversed = reduce nums, [], \acc, x -> concat [x], acc
+echo "reversed = $reversed"

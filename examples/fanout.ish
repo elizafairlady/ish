@@ -1,0 +1,29 @@
+# Fan-out: spawn workers, collect results
+# Demonstrates fan-out/fan-in pattern: spawn N workers, collect results
+# STATUS: PASS
+
+me = self
+
+fn worker id, caller do
+  result = id * id
+  send caller, {:result, id, result}
+end
+
+map (range 1, 6), \i -> spawn fn do worker i, me end
+
+fn collect n, acc do
+  if n == 0 do
+    acc
+  else
+    receive do
+      {:result, id, val} ->
+        collect (n - 1), (concat acc, [{id, val}])
+    after 3000 ->
+      echo "timeout waiting for results"
+      acc
+    end
+  end
+end
+
+results = collect 5, []
+echo "Results: $results"

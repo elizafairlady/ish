@@ -1,0 +1,39 @@
+# Two processes bouncing messages
+# Demonstrates ping-pong message passing between processes
+# STATUS: PASS
+
+me = self
+
+fn pong_loop do
+  receive do
+    {:ping, sender, n} ->
+      echo "pong received ping #$n"
+      if n > 0 do
+        send sender, {:pong, self, (n - 1)}
+        pong_loop
+      end
+    :stop -> :done
+  end
+end
+
+pong_pid = spawn fn do pong_loop end
+
+send pong_pid, {:ping, me, 5}
+
+fn drive n do
+  if n > 0 do
+    receive do
+      {:pong, sender, count} ->
+        echo "ping received pong #$count"
+        if count > 0 do
+          send sender, {:ping, me, (count - 1)}
+        else
+          send sender, :stop
+        end
+    after 2000 ->
+      echo "timeout"
+    end
+    drive (n - 1)
+  end
+end
+drive 3

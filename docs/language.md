@@ -43,7 +43,7 @@ FOO=bar cmd args...    # FOO is set for the duration of cmd
 ### Quoting
 
 - **Single quotes:** literal text, no expansion whatsoever. `'$HOME'` stays `$HOME`.
-- **Double quotes:** `$var`, `${var}`, `$(cmd)`, `$((expr))`, and `#{expr}` are expanded. Backslash escapes `"`, `\`, `$`, `` ` ``, and newline. Other backslash sequences pass through literally (e.g. `\n` stays `\n`).
+- **Double quotes:** `$var`, `${var}`, and `#{expr}` are expanded. Backslash escapes `"`, `\`, `$`, `` ` ``, and newline. Other backslash sequences pass through literally (e.g. `\n` stays `\n`). Note: `$(cmd)` and `$((expr))` inside double-quoted strings do not currently substitute correctly; use `#{expr}` interpolation or unquoted `$(cmd)` instead.
 - **Backtick substitution:** `` `cmd` `` is equivalent to `$(cmd)`. Inside backticks, `\` before `$`, `` ` ``, `\`, or `"` strips the backslash (POSIX).
 - **Backslash:** outside quotes, escapes the next character.
 - Quotes can appear inside words: `FOO="hello world"` is a single assignment token. Mixed quoting is supported: `"hello"'world'` produces `helloworld`.
@@ -253,12 +253,13 @@ Arguments accessed via `$1`, `$2`, etc. inside the body. `$@` expands to all arg
 ### Command Substitution
 
 ```
-result=$(command)
-echo "today is $(date)"
-echo "old style: `command`"
+result = $(command)
+echo $(date)
 ```
 
-Captures stdout, strips trailing newlines. Nested `$()` is supported. The result of ish expressions is also captured (non-nil, non-string values are converted via `.String()`).
+Captures stdout, strips trailing newlines. The result of ish expressions is also captured (non-nil, non-string values are converted via `.String()`).
+
+**Note:** Use the ish binding form `result = $(command)` (spaces around `=`) to capture command output into a variable. Command substitution works in argument position (`echo $(date)`) and in ish binding right-hand sides, but not currently inside double-quoted strings (`"$(cmd)"` does not substitute correctly -- use `#{expr}` interpolation or unquoted `$(cmd)` instead).
 
 ### Arithmetic Expansion
 
@@ -399,7 +400,7 @@ A bare string operand is true if non-empty. Returns exit code 0 for true, 1 for 
 | List | Brackets with commas | `[1, 2, 3]`, `[]` |
 | Map | Percent-brace | `%{name: "alice", age: 30}` |
 | Pid | Process identifier | returned by `spawn`, displayed as `#PID<n>` |
-| Function | First-class value | returned by `fn`, displayed as `#Function<name/clauses>` |
+| Function | First-class value | returned by `fn` or `\`, displayed as `#Function<name/clauses>` |
 | `nil` | Null value | `nil` |
 | `true` | Boolean true | `:true` atom |
 | `false` | Boolean false | `:false` atom |
@@ -509,19 +510,21 @@ fn classify 0 do :zero end
 
 Guards appear after `when` and before `do`. They must evaluate to a truthy value. If a guard raises an error, the clause is skipped (as if the guard returned false).
 
-**Anonymous functions:**
+**Multi-clause dispatch in a single block:**
+
+All clauses can be written in one `fn name do ... end` block. Each clause is a pattern, an optional guard, an arrow, and a body:
 
 ```
-f = fn do
-  echo "hello"
+fn classify do
+  n when n > 0 -> :positive
+  0 -> :zero
+  _ -> :negative
 end
-
-g = fn -> 42
 ```
 
-`fn do body end` creates a no-argument anonymous function. `fn -> expr` creates a single-expression anonymous function.
+**Anonymous multi-clause dispatch:**
 
-**Multi-clause anonymous functions** in a single block:
+`fn do ... end` without a name creates an anonymous function value with dispatch clauses:
 
 ```
 f = fn do
@@ -531,26 +534,67 @@ f = fn do
 end
 ```
 
-When the body of a `fn name do ... end` contains no explicit parameters and the first line contains `->`, the parser treats each line as a `pattern [when guard] -> body` clause.
+### Lambdas
 
-**Inline anonymous functions as arguments:**
-
-Anonymous functions can be passed directly as arguments:
+The `\` (backslash) syntax creates anonymous function values:
 
 ```
-map [1, 2, 3], fn x do x * 2 end
-filter [1, 2, 3, 4], fn x do x > 2 end
+\x -> x * 2              # single parameter
+\a, b -> a + b           # multiple parameters
+\ -> 42                  # zero parameters
 ```
 
-**Calling functions:**
+Lambdas are single-expression: the body is everything after `->` on the same line. They are always values (never statements).
+
+Lambdas can be passed directly as arguments:
 
 ```
-result = add 3, 4       # call with two arguments
+map [1, 2, 3], \x -> x * 2
+filter [1, 2, 3, 4], \x -> x > 2
+reduce [1, 2, 3], 0, \acc, x -> acc + x
+```
+
+And used with the pipe operator:
+
+```
+result = [1, 2, 3] |> map \x -> x * 2    # [2, 4, 6]
+```
+
+**When to use which:**
+
+| Syntax | Use case |
+|--------|----------|
+| `fn name params do body end` | Named functions and recursive functions |
+| `fn name do clauses end` | Named multi-clause dispatch |
+| `fn do clauses end` | Anonymous multi-clause dispatch |
+| `\params -> expr` | Short anonymous functions (callbacks, transforms) |
+
+### Calling Functions
+
+```
+result = add 3, 4       # call named function with two arguments
 greet "world"            # call with one argument
 r = fib 10              # recursive call
 ```
 
 Functions are called like commands -- the function name followed by arguments. For user-defined and native functions, arguments are evaluated as ish expressions (variable lookup applies). For builtins and external commands, arguments are evaluated as command arguments (bare words are literal strings, no variable lookup).
+
+**Calling function values stored in variables:**
+
+Functions stored in variables (from lambdas or `fn do ... end`) can be called the same way as named functions:
+
+```
+doubled = \x -> x * 2
+doubled 5                # 10
+
+classify = fn do
+  0 -> :zero
+  _ -> :other
+end
+classify 0               # :zero
+```
+
+In command position, if a variable holds a function value, it is called with the provided arguments. In expression position (e.g., `x = f`), the function value is returned without calling it, allowing functions to be passed as values.
 
 **POSIX vs ish function argument evaluation:**
 
@@ -865,6 +909,13 @@ await sup    # blocks until all workers exit normally
 | `reduce` | `reduce list, acc, fn` | Left fold: `fn(acc, elem)` for each element. |
 | `range` | `range start, stop` | List of integers `[start, start+1, ..., stop-1]`. Empty if `start >= stop`. |
 | `at` | `at list, index` | Element at 0-based index. Error if out of bounds. |
+| `each` | `each list, fn` | Apply `fn` to each element for side effects. Returns `nil`. |
+| `sorted` | `sorted list` | New list with elements sorted (integers numerically, others by string representation). |
+| `reverse` | `reverse list` | New list with elements in reverse order. |
+| `any` | `any list, fn` | Returns `:true` if `fn` returns truthy for any element, `:false` otherwise. |
+| `all` | `all list, fn` | Returns `:true` if `fn` returns truthy for all elements, `:false` otherwise. |
+| `first` | `first list, fn` | Returns the first element where `fn` returns truthy, or `nil` if none. |
+| `enumerate` | `enumerate list` | List of `{index, value}` tuples. `enumerate ["a", "b"]` returns `[{0, "a"}, {1, "b"}]`. |
 
 ### String Functions
 
@@ -893,6 +944,8 @@ await sup    # blocks until all workers exit normally
 | `keys` | `keys map` | List of key strings (in insertion order). |
 | `values` | `values map` | List of values (in insertion order). |
 | `has_key` | `has_key map, key` | Returns `:true` or `:false`. |
+| `get` | `get map, key` | Value for `key`, or `nil` if the key does not exist. |
+| `pairs` | `pairs map` | List of `{key, value}` tuples (in insertion order). |
 
 All map operations return new maps (maps are immutable values).
 
@@ -922,6 +975,12 @@ echo $(to_json data) | jq .
 ```
 
 The border crossing between the two pipe worlds is `$()`.
+
+### Utility Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `delay` | `delay ms` | Pause for `ms` milliseconds. Returns `nil`. Named `delay` instead of `sleep` to avoid shadowing the Unix `sleep` command. |
 
 ## How Disambiguation Works
 
@@ -960,7 +1019,17 @@ The parser uses position and context to decide between POSIX shell syntax and is
 **`done` vs `end` for loops:**
 - Both `done` (POSIX) and `end` (ish) are accepted as block terminators for `for`, `while`, and `until`.
 
-**General rule:** ish extensions never use tokens that are valid in POSIX shell at the same position. Atoms (`:word`), tuples (`{a, b}`), maps (`%{}`), pipe arrows (`|>`), and the `fn`/`match`/`spawn`/`receive`/`supervise` keywords occupy syntactic positions that are unambiguous.
+**`\` (backslash) at token start:**
+- At the start of a token (after whitespace or an operator): lambda syntax. `\x -> x * 2` creates an anonymous function.
+- Inside a word or string: escape character (existing POSIX behavior). `echo hello\ world` escapes the space.
+- The lexer distinguishes these by position: `\` at a token boundary emits a `TBackslash` token; `\` mid-word is consumed by `lexWord` as an escape.
+
+**`fn` disambiguation:**
+- `fn do ... end` -- anonymous multi-clause dispatch (value). The `do` immediately after `fn` signals anonymous.
+- `fn name ... do ... end` -- named function definition (statement). The word after `fn` is always the function name.
+- Lambdas (`\params -> expr`) are the preferred syntax for simple anonymous functions.
+
+**General rule:** ish extensions never use tokens that are valid in POSIX shell at the same position. Atoms (`:word`), tuples (`{a, b}`), maps (`%{}`), pipe arrows (`|>`), lambdas (`\x -> expr`), and the `fn`/`match`/`spawn`/`receive`/`supervise` keywords occupy syntactic positions that are unambiguous.
 
 ## Prompt (PS1)
 
