@@ -122,6 +122,7 @@ type Node struct {
 	Redirs      []Redir  // attached redirections
 	Timeout     *Node    // for receive: after timeout expression
 	TimeoutBody *Node    // for receive: after timeout body
+	Tail        bool     // true when this node is in tail position (for TCO)
 }
 
 type Clause struct {

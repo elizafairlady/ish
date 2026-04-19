@@ -144,74 +144,102 @@ func syncExit(val core.Value, env *core.Env) {
 
 // CallFn calls a user-defined function with Value arguments.
 func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (core.Value, error) {
-	strArgs := make([]string, len(vals))
-	for i, v := range vals {
-		strArgs[i] = v.ToStr()
-	}
-
-	// Use closure environment as parent if available, otherwise caller's env
 	parentEnv := env
 	if fn.Env != nil {
 		parentEnv = fn.Env
 	}
 
-	for _, clause := range fn.Clauses {
-		if len(clause.Params) == 0 {
+	for {
+		strArgs := make([]string, len(vals))
+		for i, v := range vals {
+			strArgs[i] = v.ToStr()
+		}
+
+		matched := false
+		for _, clause := range fn.Clauses {
+			if len(clause.Params) == 0 {
+				fnEnv := core.NewEnv(parentEnv)
+				fnEnv.Args = strArgs
+				val, err := Eval(clause.Body, fnEnv)
+				if err == core.ErrReturn {
+					return val, nil
+				}
+				if err != nil {
+					return val, err
+				}
+				if val.Kind == core.VTailCall {
+					fn = val.TailFn
+					vals = val.TailArgs
+					if fn.Env != nil {
+						parentEnv = fn.Env
+					}
+					matched = true
+					break
+				}
+				return val, nil
+			}
+
+			if len(clause.Params) != len(vals) {
+				continue
+			}
+
+			matches := true
+			for i, param := range clause.Params {
+				if !PatternMatches(&param, vals[i], env) {
+					matches = false
+					break
+				}
+			}
+			if !matches {
+				continue
+			}
+
+			if clause.Guard != nil {
+				fnEnv := core.NewEnv(parentEnv)
+				for i, param := range clause.Params {
+					PatternBind(&param, vals[i], fnEnv)
+				}
+				guardVal, err := Eval(clause.Guard, fnEnv)
+				if err != nil {
+					continue
+				}
+				if !guardVal.Truthy() {
+					continue
+				}
+			}
+
 			fnEnv := core.NewEnv(parentEnv)
 			fnEnv.Args = strArgs
+			for i, param := range clause.Params {
+				PatternBind(&param, vals[i], fnEnv)
+			}
 			val, err := Eval(clause.Body, fnEnv)
 			if err == core.ErrReturn {
 				return val, nil
 			}
-			return val, err
-		}
-
-		if len(clause.Params) != len(vals) {
-			continue
-		}
-
-		matches := true
-		for i, param := range clause.Params {
-			if !PatternMatches(&param, vals[i], env) {
-				matches = false
+			if err != nil {
+				return val, err
+			}
+			if val.Kind == core.VTailCall {
+				fn = val.TailFn
+				vals = val.TailArgs
+				if fn.Env != nil {
+					parentEnv = fn.Env
+				}
+				matched = true
 				break
 			}
-		}
-		if !matches {
-			continue
-		}
-
-		if clause.Guard != nil {
-			fnEnv := core.NewEnv(parentEnv)
-			for i, param := range clause.Params {
-				PatternBind(&param, vals[i], fnEnv)
-			}
-			guardVal, err := Eval(clause.Guard, fnEnv)
-			if err != nil {
-				continue
-			}
-			if !guardVal.Truthy() {
-				continue
-			}
-		}
-
-		fnEnv := core.NewEnv(parentEnv)
-		fnEnv.Args = strArgs
-		for i, param := range clause.Params {
-			PatternBind(&param, vals[i], fnEnv)
-		}
-		val, err := Eval(clause.Body, fnEnv)
-		if err == core.ErrReturn {
 			return val, nil
 		}
-		return val, err
-	}
 
-	parts := make([]string, len(vals))
-	for i, v := range vals {
-		parts[i] = v.Inspect()
+		if !matched {
+			parts := make([]string, len(vals))
+			for i, v := range vals {
+				parts[i] = v.Inspect()
+			}
+			return core.Nil, fmt.Errorf("no matching clause for %s(%s)", fn.Name, strings.Join(parts, ", "))
+		}
 	}
-	return core.Nil, fmt.Errorf("no matching clause for %s(%s)", fn.Name, strings.Join(parts, ", "))
 }
 
 // RunSource parses and evaluates a source string. Exported for builtin/main use.

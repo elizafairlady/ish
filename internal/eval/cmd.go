@@ -78,6 +78,9 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 			}
 			argVals = append(argVals, v)
 		}
+		if node.Tail {
+			return core.TailCallVal(fn, argVals), nil
+		}
 		return CallFn(fn, argVals, env)
 	}
 

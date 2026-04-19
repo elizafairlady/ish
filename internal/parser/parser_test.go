@@ -1387,3 +1387,81 @@ func TestParseExprDepthLimit(t *testing.T) {
 		t.Errorf("expected 'too deeply nested' error, got: %s", err)
 	}
 }
+
+func TestTailPositionMarking(t *testing.T) {
+	t.Run("fn body last stmt", func(t *testing.T) {
+		node, err := parseStr("fn foo do\necho a\necho b\nend")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := node.Clauses[0].Body
+		if body.Kind != ast.NBlock {
+			t.Fatalf("expected NBlock, got %d", body.Kind)
+		}
+		if body.Children[0].Tail {
+			t.Error("first stmt should not be in tail position")
+		}
+		if !body.Children[1].Tail {
+			t.Error("last stmt should be in tail position")
+		}
+	})
+
+	t.Run("fn single stmt body", func(t *testing.T) {
+		node, err := parseStr("fn foo do\necho a\nend")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := node.Clauses[0].Body
+		if !body.Tail {
+			t.Error("single-stmt fn body should be in tail position")
+		}
+	})
+
+	t.Run("if/else both branches", func(t *testing.T) {
+		node, err := parseStr("fn foo do\nif true do\necho a\nelse\necho b\nend\nend")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := node.Clauses[0].Body
+		if !body.Tail {
+			t.Error("if in tail position should be marked")
+		}
+		if body.Kind != ast.NIf {
+			t.Fatalf("expected NIf, got %d", body.Kind)
+		}
+		thenBody := body.Clauses[0].Body
+		if !thenBody.Tail {
+			t.Error("then branch body should be in tail position")
+		}
+		elseBody := body.Clauses[1].Body
+		if !elseBody.Tail {
+			t.Error("else branch body should be in tail position")
+		}
+	})
+
+	t.Run("clause bodies in match", func(t *testing.T) {
+		node, err := parseStr("fn foo do\nmatch x do\n:a -> echo a\n:b -> echo b\nend\nend")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := node.Clauses[0].Body
+		if !body.Tail {
+			t.Error("match in tail position should be marked")
+		}
+	})
+
+	t.Run("lambda body", func(t *testing.T) {
+		node, err := parseStr("f = \\x -> x + 1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lambda := node.Children[1]
+		if lambda.Kind != ast.NLambda {
+			t.Fatalf("expected NLambda, got %d", lambda.Kind)
+		}
+		lambdaBody := lambda.Clauses[0].Body
+		if !lambdaBody.Tail {
+			t.Error("lambda body should be in tail position")
+		}
+	})
+}

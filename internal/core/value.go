@@ -20,17 +20,20 @@ const (
 	VPid
 	VFn
 	VNil
+	VTailCall
 )
 
 type Value struct {
-	Kind  ValueKind
-	Str   string
-	Int   int64
-	Float float64
-	Elems []Value
-	Map   *OrdMap
-	Pid   Pid
-	Fn    *FnValue
+	Kind     ValueKind
+	Str      string
+	Int      int64
+	Float    float64
+	Elems    []Value
+	Map      *OrdMap
+	Pid      Pid
+	Fn       *FnValue
+	TailFn   *FnValue
+	TailArgs []Value
 }
 
 type FnValue struct {
@@ -80,6 +83,10 @@ func FloatVal(f float64) Value     { return Value{Kind: VFloat, Float: f} }
 func AtomVal(s string) Value       { return Value{Kind: VAtom, Str: s} }
 func TupleVal(elems ...Value) Value { return Value{Kind: VTuple, Elems: elems} }
 func ListVal(elems ...Value) Value  { return Value{Kind: VList, Elems: elems} }
+
+func TailCallVal(fn *FnValue, args []Value) Value {
+	return Value{Kind: VTailCall, TailFn: fn, TailArgs: args}
+}
 
 func BoolVal(b bool) Value {
 	if b {
@@ -135,6 +142,8 @@ func (v Value) String() string {
 		return "#Function<>"
 	case VNil:
 		return "nil"
+	case VTailCall:
+		return "<tailcall>"
 	}
 	return "?"
 }

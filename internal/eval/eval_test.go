@@ -1208,3 +1208,64 @@ func TestAliasExpansion(t *testing.T) {
 		}
 	})
 }
+
+func TestTailCallOptimization(t *testing.T) {
+	t.Run("self-recursion does not overflow", func(t *testing.T) {
+		env := testEnv()
+		src := `
+fn countdown n do
+  if n == 0 do
+    :done
+  else
+    countdown (n - 1)
+  end
+end
+result = countdown 100000
+`
+		node, err := parser.Parse(lexer.New(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Eval(node, env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := env.Get("result")
+		if got.Kind != core.VAtom || got.Str != "done" {
+			t.Errorf("got %s, want :done", got.Inspect())
+		}
+	})
+
+	t.Run("mutual recursion", func(t *testing.T) {
+		env := testEnv()
+		src := `
+fn is_even n do
+  if n == 0 do
+    :true
+  else
+    is_odd (n - 1)
+  end
+end
+fn is_odd n do
+  if n == 0 do
+    :false
+  else
+    is_even (n - 1)
+  end
+end
+result = is_even 100000
+`
+		node, err := parser.Parse(lexer.New(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Eval(node, env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := env.Get("result")
+		if got.Kind != core.VAtom || got.Str != "true" {
+			t.Errorf("got %s, want :true", got.Inspect())
+		}
+	})
+}

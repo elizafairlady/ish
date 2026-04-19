@@ -354,6 +354,9 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 		}
 
 		if fn, ok := env.GetFn(name); ok {
+			if node.Tail {
+				return core.TailCallVal(fn, argVals), nil
+			}
 			return CallFn(fn, argVals, env)
 		}
 		if nfn, ok := env.GetNativeFn(name); ok {
@@ -377,6 +380,9 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 		name := right.Tok.Val
 		argVals := []core.Value{left}
 		if fn, ok := env.GetFn(name); ok {
+			if node.Tail {
+				return core.TailCallVal(fn, argVals), nil
+			}
 			return CallFn(fn, argVals, env)
 		}
 		if nfn, ok := env.GetNativeFn(name); ok {
