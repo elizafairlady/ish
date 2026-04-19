@@ -24,11 +24,11 @@ POSIX sh + Elixir-like extensions in the same session:
 - Pattern matching and destructuring
 - First-class functions with multi-clause dispatch and guards
 - Lambdas (`\x -> x * 2`)
-- Value pipes (`|>`) alongside Unix pipes (`|`)
+- Value pipes (`|>`) alongside Unix pipes (`|`) with transparent auto-coercion
 - `try`/`rescue` error handling
 - Lightweight processes with message passing (`spawn`, `send`, `receive`)
 - OTP-style supervision trees
-- JSON/CSV/TSV bridge functions between byte streams and typed values
+- JSON/CSV/TSV bridge functions for structured data
 
 Every POSIX sh script runs unmodified. The two syntaxes coexist without ambiguity.
 
@@ -68,6 +68,10 @@ fib 10                        # 55
 
 # value pipes
 range 1, 11 |> filter \x -> x > 5 |> length   # 5
+
+# pipes auto-coerce between bytes and values
+ls |> map \f -> upcase f | sort
+[3, 1, 2] | sort | cat
 
 # concurrency
 pid = spawn fn do

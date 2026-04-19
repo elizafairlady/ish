@@ -92,6 +92,15 @@ func TestTutorialExamples(t *testing.T) {
 		{"s12 reduce lambda", "r = reduce [1, 2, 3, 4], 0, \\acc, x -> acc + x\necho $r", "10\n"},
 		{"s12 range filter length", "r = range 1, 11 |> filter \\x -> x >= 6 |> length\necho $r", "5\n"},
 
+		// === Pipe auto-coercion ===
+		{"pipe value to cmd", "[1, 2, 3] | cat", "1\n2\n3\n"},
+		{"pipe scalar to cmd", "42 | cat", "42\n"},
+		{"pipe tuple to cmd", "{:ok, \"hi\"} | cat", "{:ok, \"hi\"}\n"},
+		{"pipe value chain to cmd", "range 1, 4 |> filter \\x -> x > 1 | cat", "2\n3\n"},
+		{"pipefn cmd to map", "r = printf \"a\\nb\\nc\\n\" |> map \\f -> upcase f\necho $r", "[\"A\", \"B\", \"C\"]\n"},
+		{"pipefn cmd to length", "r = printf \"a\\nb\\nc\\n\" |> length\necho $r", "3\n"},
+		{"pipefn explicit from_json", "r = echo \"{\\\"x\\\":1}\" |> from_json\necho $r", "%{x: 1}\n"},
+
 		// === Serialization (bridge) ===
 		{"s12 from_json map", "r = from_json \"{\\\"name\\\":\\\"fox\\\"}\";\necho $r", "%{name: \"fox\"}\n"},
 		{"s12 from_json list", "r = from_json \"[1,2,3]\"\necho $r", "[1, 2, 3]\n"},

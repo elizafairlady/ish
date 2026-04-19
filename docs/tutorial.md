@@ -638,30 +638,36 @@ echo $r
 11
 ```
 
-`|` connects stdin to stdout. `|>` connects return values to first arguments.
+`|` connects stdin to stdout. `|>` connects return values to first arguments. But the roads merge. When a value meets a byte pipe, ish converts automatically:
 
 ```
-# the fox's way: bytes through processes
-cat data.txt | grep error | sort | uniq -c
-
-# the AI's way: values through functions
-5 |> double |> inc
+# command output flows into value functions — auto from_lines
+ls |> map \f -> upcase f | sort
 ```
 
-Same direction. Same shape. Completely different machinery underneath.
-
-But the roads do cross. `from_json` and `to_json` convert between bytes and values. `from_csv`, `from_lines`, and their `to_` counterparts do the same for other formats:
+`ls` produces bytes. `|>` catches them, splits on newlines, and hands a list to `map`. `map` returns a list. `|` catches it, joins with newlines, and feeds it to `sort`. No bridge functions needed.
 
 ```
-# bytes become values
-data = $(curl -s https://api.example.com/items) |> from_json
-names = map data, \item -> item.name
-
-# values become bytes for a unix tool
-sorted = $(echo $(to_lines names) | sort)
+# values flow into unix commands — auto to_lines
+[3, 1, 2] | sort
+```
+```
+1
+2
+3
 ```
 
-You cross from one pipe to the other through `$()` — it's the border checkpoint between the two worlds.
+The default conversion is lines — the universal unix format. When your data isn't lines, you override with an explicit bridge:
+
+```
+# JSON: tell |> to use from_json instead of from_lines
+curl -s api.example.com |> from_json |> map \x -> x.name
+
+# CSV: same idea
+cat data.csv |> from_csv |> filter \row -> row.age > 30
+```
+
+The bridge functions (`from_json`, `from_csv`, `from_tsv`, `from_lines` and their `to_` counterparts) still exist for when you need them. But for the common case — line-oriented text flowing between unix and ish — the pipes handle it.
 
 *The dirt road turned out to be faster. The fox was annoyed about this.*
 
@@ -1158,7 +1164,9 @@ get %{x: 1, y: 2}, "x"    # 1
 pairs %{a: 1, b: 2}        # [{"a", 1}, {"b", 2}]
 ```
 
-**Format conversion (the bridge between `|` and `|>`):**
+**Format conversion (override auto-coercion for structured data):**
+
+The pipes auto-convert using lines by default. These functions handle other formats:
 
 ```
 from_json str              # JSON string -> value (map, list, etc.)
@@ -1167,7 +1175,7 @@ from_csv str               # CSV with headers -> list of maps
 to_csv list                # list of maps -> CSV string
 from_tsv str               # TSV with headers -> list of maps
 to_tsv list                # list of maps -> TSV string
-from_lines str             # string -> list of lines
+from_lines str             # string -> list of lines (what auto-coercion does)
 to_lines list              # list of strings -> newline-joined string
 ```
 

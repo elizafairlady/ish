@@ -115,6 +115,14 @@ cmd1 |& cmd2         # stdout + stderr of cmd1 to stdin of cmd2
 
 Pipelines can be chained: `cmd1 | cmd2 | cmd3`.
 
+**Auto-coercion:** if the left side of `|` produces a value (not bytes), it is automatically converted to lines and fed as stdin. Lists become one element per line; scalars become their string representation:
+
+```
+[1, 2, 3] | grep 2              # prints "2"
+range 1, 5 | wc -l              # prints "4"
+42 | cat                         # prints "42"
+```
+
 ### Operators
 
 ```
@@ -674,6 +682,20 @@ result = 3 |> inc |> double    # double(inc(3)) = 8
 
 The pipe operator works with user functions, native stdlib functions, builtins, and external commands. For builtins and external commands, the piped value is converted to a string.
 
+**Auto-coercion:** if the left side of `|>` is a command that produces bytes (an external command or builtin), its stdout is captured and automatically split into a list of lines (`from_lines`). This means you can pipe command output directly into value functions:
+
+```
+ls |> map \f -> upcase f         # list of uppercased filenames
+ls |> filter \f -> ends_with f, ".go" |> length  # count .go files
+```
+
+**Explicit bridge override:** if the right side of `|>` is a bridge function (`from_json`, `from_csv`, `from_tsv`, `from_lines`), the raw string is passed instead of auto-coercing to lines:
+
+```
+curl -s api.example.com |> from_json |> map \x -> x.name
+cat data.csv |> from_csv |> filter \row -> row.age > 30
+```
+
 ### ish if / do / end
 
 ```
@@ -986,7 +1008,7 @@ All map operations return new maps (maps are immutable values).
 
 ### Format Conversion (Bridge Functions)
 
-These functions convert between strings and structured ish values, bridging the gap between Unix byte streams (`|`) and ish value pipelines (`|>`).
+These functions convert between strings and structured ish values. They are used to override the default auto-coercion (which splits on newlines) when your data has a different format:
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -999,17 +1021,19 @@ These functions convert between strings and structured ish values, bridging the 
 | `from_lines` | `from_lines str` | Split a string on newlines into a list of strings. Trailing empty line is removed. |
 | `to_lines` | `to_lines list` | Join a list of strings with newlines. |
 
-Typical usage — crossing from `|` to `|>` and back:
+The pipes handle most conversions automatically. `|>` auto-applies `from_lines` when the left side is a command; `|` auto-converts values to lines when piping to a command. Use explicit bridge functions when you need a different format:
 
 ```
-# bytes -> values
-data = $(curl -s https://api.example.com) |> from_json
+# auto-coercion (default: lines)
+ls |> map \f -> upcase f | sort
 
-# values -> bytes
-echo $(to_json data) | jq .
+# explicit bridge for structured data
+curl -s api.example.com |> from_json |> map \x -> x.name
+cat data.csv |> from_csv |> filter \row -> row.age > 30
+
+# explicit bridge for output
+to_json data | jq .
 ```
-
-The border crossing between the two pipe worlds is `$()`.
 
 ### Utility Functions
 
@@ -1026,8 +1050,8 @@ The parser uses position and context to decide between POSIX shell syntax and is
 - `pattern = expr` (spaces around `=`) -- ish pattern match/bind. Parsed when `=` is a separate token following a word.
 
 **`|` vs `|>`:**
-- `|` -- Unix pipe. Connects stdout of the left command to stdin of the right command.
-- `|>` -- Functional pipe. Passes the ish *value* of the left expression as the first argument to the right function.
+- `|` -- Unix pipe. Connects stdout to stdin. If the left side produces a value instead of bytes, it is auto-converted to lines.
+- `|>` -- Functional pipe. Passes the left value as the first argument to the right function. If the left side is a command that produces bytes, its stdout is auto-converted to a list of lines (unless the right side is an explicit bridge function like `from_json`).
 
 **Command position vs argument position:**
 - In **command position** (first word of a statement): keywords (`if`, `for`, `while`, `fn`, `match`, `spawn`, etc.) trigger their respective parsers. A word followed by `()` is a POSIX function definition. A word followed by `=` (as a separate token) is an ish binding.

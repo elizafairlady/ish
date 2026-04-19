@@ -2,18 +2,108 @@ package eval
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"ish/internal/ast"
 	"ish/internal/builtin"
 	"ish/internal/core"
 )
 
+// isCommandNode returns true if the node produces bytes on stdout
+// rather than an ish value. Used to decide pipe coercion.
+// For NCmd, we check whether the command name resolves to a function
+// (value-producing) or external command/builtin (byte-producing).
+func isCommandNode(node *ast.Node, env *core.Env) bool {
+	switch node.Kind {
+	case ast.NPipe, ast.NSubshell, ast.NGroup,
+		ast.NIf, ast.NFor, ast.NWhile, ast.NUntil, ast.NCase:
+		return true
+	case ast.NCmd:
+		if len(node.Children) == 0 {
+			return true
+		}
+		name := ""
+		if node.Children[0].Kind == ast.NWord {
+			name = node.Children[0].Tok.Val
+		}
+		if name == "" {
+			return true
+		}
+		// User functions, native functions, and variable-stored functions produce values
+		if _, ok := env.GetFn(name); ok {
+			return false
+		}
+		if _, ok := env.GetNativeFn(name); ok {
+			return false
+		}
+		if v, ok := env.Get(name); ok && v.Kind == core.VFn {
+			return false
+		}
+		return true // builtin or external command
+	}
+	return false
+}
+
+// isBridgeFn returns true if the node is a call to an explicit bridge
+// function (from_json, from_csv, etc.) that should override auto-coercion.
+func isBridgeFn(node *ast.Node) bool {
+	var name string
+	switch node.Kind {
+	case ast.NCmd:
+		if len(node.Children) > 0 && node.Children[0].Kind == ast.NWord {
+			name = node.Children[0].Tok.Val
+		}
+	case ast.NWord:
+		name = node.Tok.Val
+	}
+	switch name {
+	case "from_json", "from_csv", "from_tsv", "from_lines":
+		return true
+	}
+	return false
+}
+
 func evalPipe(node *ast.Node, env *core.Env) (core.Value, error) {
 	left := node.Children[0]
 	right := node.Children[1]
 	pipeStderr := node.Tok.Val == "|&"
+
+	// Auto-coerce: if left produces a value (not bytes), convert to lines
+	if !isCommandNode(left, env) {
+		val, err := Eval(left, env)
+		if err != nil {
+			return core.Nil, err
+		}
+		var text string
+		if val.Kind == core.VList {
+			parts := make([]string, len(val.Elems))
+			for i, elem := range val.Elems {
+				parts[i] = elem.ToStr()
+			}
+			text = strings.Join(parts, "\n") + "\n"
+		} else {
+			text = val.ToStr() + "\n"
+		}
+
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return core.Nil, err
+		}
+		go func() {
+			io.WriteString(pw, text)
+			pw.Close()
+		}()
+		finalStdout := os.Stdout
+		if f, ok := env.Stdout().(*os.File); ok {
+			finalStdout = f
+		}
+		val2, err2 := evalWithIO(right, env, pr, finalStdout)
+		pr.Close()
+		return val2, err2
+	}
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -177,11 +267,66 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 }
 
 func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
-	left, err := Eval(node.Children[0], env)
-	if err != nil {
-		return core.Nil, err
-	}
+	leftNode := node.Children[0]
 	right := node.Children[1]
+
+	// Auto-coerce: if left is a command (produces bytes) and right is not
+	// an explicit bridge function, capture stdout and apply from_lines
+	var left core.Value
+	if isCommandNode(leftNode, env) && !isBridgeFn(right) {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return core.Nil, err
+		}
+		done := make(chan error, 1)
+		leftEnv := core.CopyEnv(env)
+		go func() {
+			_, err := evalWithIO(leftNode, leftEnv, os.Stdin, pw)
+			pw.Close()
+			done <- err
+		}()
+		output, _ := io.ReadAll(pr)
+		pr.Close()
+		<-done
+		// Apply from_lines: split on newlines, trim trailing empty
+		s := string(output)
+		if strings.HasSuffix(s, "\n") {
+			s = s[:len(s)-1]
+		}
+		if s == "" {
+			left = core.ListVal()
+		} else {
+			lines := strings.Split(s, "\n")
+			elems := make([]core.Value, len(lines))
+			for i, line := range lines {
+				elems[i] = core.StringVal(line)
+			}
+			left = core.ListVal(elems...)
+		}
+	} else if isCommandNode(leftNode, env) && isBridgeFn(right) {
+		// Explicit bridge: capture stdout as raw string, pass to bridge fn
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return core.Nil, err
+		}
+		done := make(chan error, 1)
+		leftEnv := core.CopyEnv(env)
+		go func() {
+			_, err := evalWithIO(leftNode, leftEnv, os.Stdin, pw)
+			pw.Close()
+			done <- err
+		}()
+		output, _ := io.ReadAll(pr)
+		pr.Close()
+		<-done
+		left = core.StringVal(string(output))
+	} else {
+		var err error
+		left, err = Eval(leftNode, env)
+		if err != nil {
+			return core.Nil, err
+		}
+	}
 
 	switch right.Kind {
 	case ast.NCmd:
