@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -14,6 +15,7 @@ import (
 
 	"ish/internal/builtin"
 	"ish/internal/core"
+	"ish/internal/debug"
 	"ish/internal/eval"
 	"ish/internal/jobs"
 	"ish/internal/lexer"
@@ -53,6 +55,8 @@ func main() {
 
 	// Detect login shell: argv[0] starts with '-' or -l/--login flag
 	loginShell := strings.HasPrefix(os.Args[0], "-")
+	debugMode := false
+	dumpAST := false
 	args := os.Args[1:]
 	var filteredArgs []string
 	for _, a := range args {
@@ -62,6 +66,10 @@ func main() {
 		case "--version":
 			fmt.Printf("ish %s\n", Version)
 			os.Exit(0)
+		case "-D", "--debugger":
+			debugMode = true
+		case "--dump-ast":
+			dumpAST = true
 		default:
 			filteredArgs = append(filteredArgs, a)
 		}
@@ -69,9 +77,60 @@ func main() {
 	args = filteredArgs
 	env.IsLoginShell = loginShell
 
+	// Set up debugger if requested
+	if debugMode {
+		d := debug.New()
+		env.Debugger = d
+	}
+
+	// --dump-ast mode: parse and print AST, then exit
+	if dumpAST {
+		var src, name string
+		if len(args) > 0 && args[0] == "-c" && len(args) > 1 {
+			src = args[1]
+			name = "<stdin>"
+		} else if len(args) > 0 {
+			data, err := os.ReadFile(args[0])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ish: %s\n", err)
+				os.Exit(1)
+			}
+			src = string(data)
+			name = args[0]
+		} else {
+			fmt.Fprintf(os.Stderr, "ish: --dump-ast requires a source (-c 'code' or filename)\n")
+			os.Exit(1)
+		}
+		pathCache := make(map[string]bool)
+		l := lexer.New(src)
+		node, err := parser.ParseWithCommands(l, func(name string) bool {
+			if _, ok := builtin.Builtins[name]; ok {
+				return true
+			}
+			if found, ok := pathCache[name]; ok {
+				return found
+			}
+			_, err := exec.LookPath(name)
+			pathCache[name] = err == nil
+			return err == nil
+		})
+		if l.Error() != "" {
+			fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
+			os.Exit(2)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ish: parse error: %s\n", err)
+			os.Exit(2)
+		}
+		sm := debug.NewSourceMap(name, src)
+		debug.DumpAST(node, sm, os.Stdout)
+		os.Exit(0)
+	}
+
 	// Non-interactive modes: -c command or script file
 	if len(args) > 0 {
 		if args[0] == "-c" && len(args) > 1 {
+			env.SourceName = "<stdin>"
 			eval.RunSource(args[1], env)
 			shellExit(env)
 			os.Exit(env.LastExit)
@@ -82,6 +141,7 @@ func main() {
 			os.Exit(1)
 		}
 		env.ShellName = args[0]
+		env.SourceName = args[0]
 		env.Args = args[1:]
 		eval.RunSource(string(data), env)
 		shellExit(env)
@@ -140,6 +200,7 @@ func main() {
 		os.Exit(129) // 128 + SIGHUP(1)
 	}()
 
+	env.SourceName = "<repl>"
 	repl(env)
 	shellExit(env)
 }

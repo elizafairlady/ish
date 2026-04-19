@@ -73,6 +73,7 @@ type Parser struct {
 	terminators     []string
 	mode            ParseMode
 	depth           int
+	IsCommand       func(name string) bool // if set, used to disambiguate commands from expressions
 }
 
 func (p *Parser) syncLexerMode() {
@@ -111,6 +112,13 @@ func (p *Parser) restoreMode(old ParseMode) {
 
 func Parse(l *lexer.Lexer) (*ast.Node, error) {
 	p := &Parser{lex: l}
+	return p.parseProgram()
+}
+
+// ParseWithCommands parses with a command-lookup callback for disambiguating
+// commands from expressions inside fn do...end bodies.
+func ParseWithCommands(l *lexer.Lexer, isCmd func(string) bool) (*ast.Node, error) {
+	p := &Parser{lex: l, IsCommand: isCmd}
 	return p.parseProgram()
 }
 
@@ -482,9 +490,23 @@ func (p *Parser) dispatchKeyword() (*ast.Node, error) {
 				return p.parseCmdLine()
 			}
 		}
+		// If the word is a known command, parse as command not expression.
+		// This lets `head -5 file` work inside fn do...end bodies.
+		if p.IsCommand != nil && p.IsCommand(cur.Val) {
+			old := p.withMode(ModeCommand)
+			node, err := p.parseCmdLine()
+			p.restoreMode(old)
+			return node, err
+		}
 		return p.parseExpression()
 	}
 	if (p.peek().Type == ast.TRedirIn || p.peek().Type == ast.TRedirOut) && p.mode == ModeExpr {
+		if p.IsCommand != nil && p.IsCommand(cur.Val) {
+			old := p.withMode(ModeCommand)
+			node, err := p.parseCmdLine()
+			p.restoreMode(old)
+			return node, err
+		}
 		return p.parseExpression()
 	}
 	p.fillTo(p.pos + 2)

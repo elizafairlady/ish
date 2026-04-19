@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 
 	"ish/internal/ast"
+	"ish/internal/builtin"
 	"ish/internal/core"
+	"ish/internal/debug"
 	"ish/internal/lexer"
 	"ish/internal/parser"
 )
@@ -17,9 +20,42 @@ import (
 // osMu protects process-global OS state (cwd, umask) during subshell execution.
 var osMu sync.Mutex
 
+// makeIsCommand builds a callback for the parser that identifies known commands
+// (builtins, PATH executables, user-defined functions, stdlib).
+// PATH lookups are cached per callback instance to avoid repeated filesystem scans.
+func makeIsCommand(env *core.Env) func(string) bool {
+	pathCache := make(map[string]bool)
+	return func(name string) bool {
+		if _, ok := builtin.Builtins[name]; ok {
+			return true
+		}
+		if env != nil {
+			if _, ok := env.GetFn(name); ok {
+				return true
+			}
+			if _, ok := env.GetNativeFn(name); ok {
+				return true
+			}
+		}
+		if found, ok := pathCache[name]; ok {
+			return found
+		}
+		_, err := exec.LookPath(name)
+		pathCache[name] = err == nil
+		return err == nil
+	}
+}
+
 func Eval(node *ast.Node, env *core.Env) (core.Value, error) {
 	if node == nil {
 		return core.Nil, nil
+	}
+
+	if d, ok := env.Debugger.(*debug.Debugger); ok {
+		d.SetNode(node.Pos)
+		if d.TraceAll {
+			d.TraceNode(node)
+		}
 	}
 
 	switch node.Kind {
@@ -143,7 +179,22 @@ func syncExit(val core.Value, env *core.Env) {
 }
 
 // CallFn calls a user-defined function with Value arguments.
-func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (core.Value, error) {
+func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Value, retErr error) {
+	dbg, hasDbg := env.Debugger.(*debug.Debugger)
+	var tcoDepth int
+	if hasDbg {
+		dbg.PushFrame(fn.Name, len(vals))
+		defer func() {
+			if retErr != nil {
+				retErr = dbg.WrapError(retErr)
+			}
+			for i := 0; i < tcoDepth; i++ {
+				dbg.PopFrame()
+			}
+			dbg.PopFrame()
+		}()
+	}
+
 	parentEnv := env
 	if fn.Env != nil {
 		parentEnv = fn.Env
@@ -173,6 +224,10 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (core.Value, err
 					vals = val.TailArgs
 					if fn.Env != nil {
 						parentEnv = fn.Env
+					}
+					if hasDbg {
+						dbg.PushFrame(fn.Name, len(vals))
+						tcoDepth++
 					}
 					matched = true
 					break
@@ -230,6 +285,10 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (core.Value, err
 				if fn.Env != nil {
 					parentEnv = fn.Env
 				}
+				if hasDbg {
+					dbg.PushFrame(fn.Name, len(vals))
+					tcoDepth++
+				}
 				matched = true
 				break
 			}
@@ -269,13 +328,25 @@ func RunCmdSub(cmd string, env *core.Env) (string, error) {
 	var buf bytes.Buffer
 	io.Copy(&buf, r)
 	r.Close()
+	// Propagate the child's exit code to the parent environment.
+	env.SetExit(subEnv.ExitCode())
 	result := strings.TrimRight(buf.String(), "\n")
 	return result, nil
 }
 
 func RunSource(src string, env *core.Env) core.Value {
+	env.Source = src
+	if d, ok := env.Debugger.(*debug.Debugger); ok {
+		name := env.SourceName
+		if name == "" {
+			name = "<eval>"
+		}
+		sm := debug.NewSourceMap(name, src)
+		d.PushSource(sm)
+		defer d.PopSource()
+	}
 	l := lexer.New(src)
-	node, err := parser.Parse(l)
+	node, err := parser.ParseWithCommands(l, makeIsCommand(env))
 	if l.Error() != "" {
 		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 		env.SetExit(2)
@@ -302,8 +373,18 @@ func RunSource(src string, env *core.Env) core.Value {
 
 // RunSourceErr is like RunSource but returns ErrExit if exit was called.
 func RunSourceErr(src string, env *core.Env) (core.Value, error) {
+	env.Source = src
+	if d, ok := env.Debugger.(*debug.Debugger); ok {
+		name := env.SourceName
+		if name == "" {
+			name = "<eval>"
+		}
+		sm := debug.NewSourceMap(name, src)
+		d.PushSource(sm)
+		defer d.PopSource()
+	}
 	l := lexer.New(src)
-	node, err := parser.Parse(l)
+	node, err := parser.ParseWithCommands(l, makeIsCommand(env))
 	if l.Error() != "" {
 		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 		env.SetExit(2)

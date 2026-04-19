@@ -29,6 +29,9 @@ func TestExamples(t *testing.T) {
 
 	for _, script := range scripts {
 		name := filepath.Base(script)
+		if name == "run_all.ish" {
+			continue
+		}
 		t.Run(name, func(t *testing.T) {
 			expectFail := scriptExpectsFail(script)
 

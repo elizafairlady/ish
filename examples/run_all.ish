@@ -1,0 +1,64 @@
+#!/usr/bin/env ish
+# Run all ish example scripts and report results.
+# Scripts with "STATUS: FAILS" in their header are expected to fail.
+
+ISH=./ish
+
+fn expects_failure script do
+  head -5 "$script" | grep -q "STATUS: FAILS"
+end
+
+fn run_script script do
+  output=$(timeout 10 "$ISH" "$script" 2>&1)
+  exit_code=$?
+  xfail=$(expects_failure "$script"; echo $?)
+  match {$exit_code, $xfail} do
+    {0, _}    -> {:pass, "$output"}
+    {124, 0}  -> {:xfail, "hangs"}
+    {124, _}  -> {:hang, "$output"}
+    {_, 0}    -> {:xfail, "expected"}
+    {_, _}    -> {:fail, "$output"}
+  end
+end
+
+fn report {:pass, _}, name do
+  echo "PASS  $name"
+  :pass
+end
+
+fn report {:xfail, reason}, name do
+  echo "XFAIL $name ($reason)"
+  :xfail
+end
+
+fn report {:hang, _}, name do
+  echo "HANG  $name (killed after 10s)"
+  :fail
+end
+
+fn report {:fail, output}, name do
+  echo "FAIL  $name"
+  echo "$output" | head -3 | sed 's/^/      /'
+  :fail
+end
+
+pass=0
+fail=0
+xfail=0
+
+for script in examples/*.ish do
+  name=$(basename "$script")
+  test "$name" = "run_all.ish" && continue
+
+  result = run_script "$script"
+  status = report $result, "$name"
+
+  match $status do
+    :pass  -> pass=$((pass + 1))
+    :xfail -> xfail=$((xfail + 1))
+    :fail  -> fail=$((fail + 1))
+  end
+done
+
+echo ""
+echo "Results: $pass passed, $fail failed, $xfail expected failures"

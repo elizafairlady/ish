@@ -76,6 +76,14 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 				return core.Nil, err
 			}
 		}
+		// Simple $var reference: preserve the value type instead of stringifying.
+		// Only stringify when $ is part of a larger interpolation.
+		if len(name) > 1 && name[0] == '$' && !strings.ContainsAny(name[1:], "$#{") {
+			varName := name[1:]
+			if v, ok := env.Get(varName); ok {
+				return v, nil
+			}
+		}
 		expanded := env.Expand(name)
 		return core.StringVal(expanded), nil
 	}
@@ -331,7 +339,7 @@ func evalArithExpansion(name string, env *core.Env) (core.Value, error) {
 }
 
 func evalCmdSub(cmdStr string, env *core.Env) (core.Value, error) {
-	node, err := parser.Parse(lexer.New(cmdStr))
+	node, err := parser.ParseWithCommands(lexer.New(cmdStr), makeIsCommand(env))
 	if err != nil {
 		return core.Nil, err
 	}

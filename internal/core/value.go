@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"ish/internal/ast"
@@ -182,6 +183,20 @@ func (v Value) Equal(other Value) bool {
 	}
 	if v.Kind == VFloat && other.Kind == VInt {
 		return v.Float == float64(other.Int)
+	}
+	// Cross-kind int/string coercion: shell variables are strings,
+	// but pattern matching on integer literals should still work.
+	if v.Kind == VInt && other.Kind == VString {
+		if n, err := strconv.ParseInt(other.Str, 10, 64); err == nil {
+			return v.Int == n
+		}
+		return false
+	}
+	if v.Kind == VString && other.Kind == VInt {
+		if n, err := strconv.ParseInt(v.Str, 10, 64); err == nil {
+			return n == other.Int
+		}
+		return false
 	}
 	if v.Kind != other.Kind {
 		return false

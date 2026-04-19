@@ -1269,3 +1269,107 @@ result = is_even 100000
 		}
 	})
 }
+
+func captureStderr(fn func()) string {
+	old := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+	fn()
+	w.Close()
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	r.Close()
+	os.Stderr = old
+	return buf.String()
+}
+
+func TestSetXTracesExternalCommands(t *testing.T) {
+	env := testEnv()
+	stderr := captureStderr(func() {
+		RunSource(`set -x; echo hello`, env)
+	})
+	if !strings.Contains(stderr, "+ echo hello") {
+		t.Errorf("set -x should trace external commands, got: %q", stderr)
+	}
+	// set -x should NOT produce [file:line:col] trace lines
+	if strings.Contains(stderr, "[") {
+		t.Errorf("set -x should not produce ish-level traces, got: %q", stderr)
+	}
+}
+
+func TestSetXUpperTracesEverything(t *testing.T) {
+	env := testEnv()
+	stderr := captureStderr(func() {
+		RunSource(`set -X; echo hello`, env)
+	})
+	// Should include ish-level trace with position
+	if !strings.Contains(stderr, "echo hello") {
+		t.Errorf("set -X should trace ish nodes, got: %q", stderr)
+	}
+	// Should also include POSIX-level expanded command (implies -x)
+	if !strings.Contains(stderr, "+ echo hello") {
+		t.Errorf("set -X should imply -x for external commands, got: %q", stderr)
+	}
+}
+
+func TestSetXUpperShowsFunctionDispatch(t *testing.T) {
+	env := testEnv()
+	stderr := captureStderr(func() {
+		RunSource("fn greet name do\n  echo \"hello $name\"\nend\nset -X\ngreet world", env)
+	})
+	// Should show the ish function call
+	if !strings.Contains(stderr, "greet world") {
+		t.Errorf("set -X should show function dispatch, got: %q", stderr)
+	}
+	// Should show the expanded echo command (via implied -x)
+	if !strings.Contains(stderr, "+ echo hello world") {
+		t.Errorf("set -X should show expanded shell command, got: %q", stderr)
+	}
+}
+
+func TestSetXDoesNotImplyX(t *testing.T) {
+	// set -x alone should not produce position-tagged traces
+	env := testEnv()
+	stderr := captureStderr(func() {
+		RunSource("fn greet name do\n  echo \"hello $name\"\nend\nset -x\ngreet world", env)
+	})
+	// Should show the expanded command
+	if !strings.Contains(stderr, "+ echo hello world") {
+		t.Errorf("set -x should trace echo, got: %q", stderr)
+	}
+	// Should NOT show ish-level function dispatch
+	if strings.Contains(stderr, "greet world") && strings.Contains(stderr, "[") {
+		t.Errorf("set -x should not produce ish-level traces, got: %q", stderr)
+	}
+}
+
+func TestDebuggerStackTrace(t *testing.T) {
+	env := testEnv()
+	stderr := captureStderr(func() {
+		RunSource("set -D\nfn add a b do\n  a + b\nend\nadd 1 :bad", env)
+	})
+	if !strings.Contains(stderr, "add/2") {
+		t.Errorf("stack trace should show add/2, got: %q", stderr)
+	}
+}
+
+func TestCommandVsExprInFnBody(t *testing.T) {
+	env := testEnv()
+
+	// head -1 should work as a command inside fn body
+	out := captureOutput(env, func() {
+		RunSource("fn first_line f do\n  head -1 \"$f\"\nend\nfirst_line ../../examples/closures.ish", env)
+	})
+	if !strings.Contains(out, "Closures") {
+		t.Errorf("head -1 inside fn body should work as command, got: %q", out)
+	}
+
+	// x - 5 should work as expression inside fn body
+	env2 := testEnv()
+	out2 := captureOutput(env2, func() {
+		RunSource("fn sub x do\n  x - 5\nend\necho $(sub 10)", env2)
+	})
+	if !strings.Contains(out2, "5") {
+		t.Errorf("x - 5 inside fn body should work as expression, got: %q", out2)
+	}
+}

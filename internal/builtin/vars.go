@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"ish/internal/core"
+	"ish/internal/debug"
 )
 
 func builtinExport(args []string, env *core.Env) (int, error) {
@@ -83,6 +84,16 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 				switch ch {
 				case 'e', 'u', 'x':
 					env.SetFlag(byte(ch), true)
+				case 'D':
+					ensureDebugger(env)
+					env.SetFlag('D', true)
+				case 'X':
+					ensureDebugger(env)
+					env.SetFlag('X', true)
+					env.SetFlag('x', true)
+					if d, ok := env.Debugger.(*debug.Debugger); ok {
+						d.TraceAll = true
+					}
 				default:
 					return 1, fmt.Errorf("set: invalid option: -%c", ch)
 				}
@@ -95,6 +106,14 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 				switch ch {
 				case 'e', 'u', 'x':
 					env.SetFlag(byte(ch), false)
+				case 'D':
+					env.SetFlag('D', false)
+				case 'X':
+					env.SetFlag('X', false)
+					env.SetFlag('x', false)
+					if d, ok := env.Debugger.(*debug.Debugger); ok {
+						d.TraceAll = false
+					}
 				default:
 					return 1, fmt.Errorf("set: invalid option: +%c", ch)
 				}
@@ -105,6 +124,24 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 		break
 	}
 	return 0, nil
+}
+
+// ensureDebugger lazily creates a Debugger if one doesn't exist yet.
+func ensureDebugger(env *core.Env) {
+	if env.Debugger != nil {
+		return
+	}
+	d := debug.New()
+	env.Debugger = d
+	// Build source map from current source if available
+	if env.Source != "" {
+		name := env.SourceName
+		if name == "" {
+			name = "<eval>"
+		}
+		sm := debug.NewSourceMap(name, env.Source)
+		d.PushSource(sm)
+	}
 }
 
 func builtinShift(args []string, env *core.Env) (int, error) {

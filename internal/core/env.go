@@ -13,6 +13,11 @@ import (
 // CmdSubFunc is a callback for command substitution inside string expansion.
 type CmdSubFunc func(cmd string, env *Env) (string, error)
 
+// DebuggerCopier is implemented by the debugger to support spawn.
+type DebuggerCopier interface {
+	CopyForSpawn() interface{}
+}
+
 // Env is a lexical scope. Each scope has bindings and a parent.
 type Env struct {
 	Bindings    map[string]Value
@@ -30,6 +35,14 @@ type Env struct {
 
 	// CallFn is set by eval to allow stdlib/process to call user functions.
 	CallFn func(fn *FnValue, args []Value, env *Env) (Value, error)
+
+	// Debugger holds a *debug.Debugger when active, nil otherwise.
+	// Uses interface{} to avoid circular import between core and debug.
+	Debugger interface{}
+
+	// Source and SourceName track the current source text for lazy debugger creation.
+	Source     string // current source text
+	SourceName string // filename, "<repl>", or "<stdin>"
 
 	ExprMode int // >0 when evaluating ish expressions (not POSIX commands)
 
@@ -60,9 +73,10 @@ func NewEnv(parent *Env) *Env {
 		Fns:      make(map[string]*FnValue),
 		Parent:   parent,
 	}
-	// Inherit CallFn from parent
+	// Inherit CallFn and Debugger from parent
 	if parent != nil {
 		env.CallFn = parent.CallFn
+		env.Debugger = parent.Debugger
 	}
 	return env
 }
@@ -163,6 +177,10 @@ func CopyEnv(src *Env) *Env {
 	}
 	e.SetExit(src.ExitCode())
 	e.Args = src.PosArgs()
+	// Copy debugger for spawned processes (fresh stack, shared source maps)
+	if dc, ok := src.Debugger.(DebuggerCopier); ok {
+		e.Debugger = dc.CopyForSpawn()
+	}
 	return e
 }
 
