@@ -279,6 +279,30 @@ func TestLexPathVsDivision(t *testing.T) {
 			[]ast.TokenType{ast.TWord, ast.TDiv, ast.TWord},
 			[]string{"a", "/", "b"})
 	})
+
+	t.Run("dotdot is word", func(t *testing.T) {
+		assertTokens(t, "cd ..",
+			[]ast.TokenType{ast.TWord, ast.TWord},
+			[]string{"cd", ".."})
+	})
+
+	t.Run("dot-slash is word", func(t *testing.T) {
+		assertTokens(t, "./script",
+			[]ast.TokenType{ast.TWord},
+			[]string{"./script"})
+	})
+
+	t.Run("dotfile is word", func(t *testing.T) {
+		assertTokens(t, ".hidden",
+			[]ast.TokenType{ast.TWord},
+			[]string{".hidden"})
+	})
+
+	t.Run("trailing dot is TDot", func(t *testing.T) {
+		assertTokens(t, "a .",
+			[]ast.TokenType{ast.TWord, ast.TDot},
+			[]string{"a", "."})
+	})
 }
 
 func TestLexComments(t *testing.T) {

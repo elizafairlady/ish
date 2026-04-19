@@ -133,8 +133,13 @@ func (l *Lexer) lex() {
 				l.lexWord()
 			}
 		case ch == '.':
-			l.emit(ast.TDot, ".")
-			l.pos++
+			next := l.peek(1)
+			if next == '.' || next == '/' || (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || next == '_' {
+				l.lexWord()
+			} else {
+				l.emit(ast.TDot, ".")
+				l.pos++
+			}
 		case ch == '%':
 			next := l.peek(1)
 			if next >= '0' && next <= '9' {

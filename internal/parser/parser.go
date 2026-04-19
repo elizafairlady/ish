@@ -133,10 +133,30 @@ func (p *Parser) skipNewlines() {
 	}
 }
 
-func (p *Parser) parseProgram() (*ast.Node, error) {
-	var stmts []*ast.Node
+func (p *Parser) ishBlock(body func() error) error {
+	if p.cur().Type != ast.TWord || p.cur().Val != "do" {
+		return fmt.Errorf("expected 'do' at pos %d", p.cur().Pos)
+	}
+	p.advance()
 	p.skipNewlines()
+	defer p.restoreMode(p.withMode(ModeExpr))
+	defer p.restoreTerminators(p.pushTerminators("end"))
+	if err := body(); err != nil {
+		return err
+	}
+	if p.cur().Type == ast.TWord && p.cur().Val == "end" {
+		p.advance()
+		return nil
+	}
+	return fmt.Errorf("expected 'end' at pos %d", p.cur().Pos)
+}
+
+func (p *Parser) parseBlock() ([]*ast.Node, error) {
+	var stmts []*ast.Node
 	for p.cur().Type != ast.TEOF {
+		if p.cur().Type == ast.TWord && p.isBlockEnd(p.cur().Val) {
+			break
+		}
 		stmt, err := p.parseList()
 		if err != nil {
 			return nil, err
@@ -144,9 +164,18 @@ func (p *Parser) parseProgram() (*ast.Node, error) {
 		if stmt != nil {
 			stmts = append(stmts, stmt)
 		}
-		for p.cur().Type == ast.TNewline || p.cur().Type == ast.TSemicolon {
+		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
 			p.pos++
 		}
+	}
+	return stmts, nil
+}
+
+func (p *Parser) parseProgram() (*ast.Node, error) {
+	p.skipNewlines()
+	stmts, err := p.parseBlock()
+	if err != nil {
+		return nil, err
 	}
 	return ast.BlockNode(stmts), nil
 }
@@ -578,9 +607,8 @@ func (p *Parser) parseIshBind() (*ast.Node, error) {
 	nameTok := p.advance()
 	p.advance()
 
-	oldMode := p.withMode(ModeExpr)
+	defer p.restoreMode(p.withMode(ModeExpr))
 	rhs, err := p.parsePipeline()
-	p.restoreMode(oldMode)
 	if err != nil {
 		return nil, err
 	}
@@ -667,24 +695,11 @@ func (p *Parser) parsePosixIf(cond *ast.Node, node *ast.Node) (*ast.Node, error)
 	oldMode := p.withMode(ModeCommand)
 	defer p.restoreMode(oldMode)
 	old := p.pushTerminators("elif", "else", "fi")
-	var bodyStmts []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && (p.cur().Val == "elif" || p.cur().Val == "else" || p.cur().Val == "fi") {
-			break
-		}
-		stmt, err := p.parseList()
-		if err != nil {
-			p.restoreTerminators(old)
-			return nil, err
-		}
-		if stmt != nil {
-			bodyStmts = append(bodyStmts, stmt)
-		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
-	}
+	bodyStmts, err := p.parseBlock()
 	p.restoreTerminators(old)
+	if err != nil {
+		return nil, err
+	}
 
 	node.Clauses = append(node.Clauses, ast.Clause{
 		Pattern: cond,
@@ -707,24 +722,11 @@ func (p *Parser) parsePosixIf(cond *ast.Node, node *ast.Node) (*ast.Node, error)
 		}
 		p.skipNewlines()
 		old = p.pushTerminators("elif", "else", "fi")
-		var elifBody []*ast.Node
-		for p.cur().Type != ast.TEOF {
-			if p.cur().Type == ast.TWord && (p.cur().Val == "elif" || p.cur().Val == "else" || p.cur().Val == "fi") {
-				break
-			}
-			stmt, err := p.parseList()
-			if err != nil {
-				p.restoreTerminators(old)
-				return nil, err
-			}
-			if stmt != nil {
-				elifBody = append(elifBody, stmt)
-			}
-			for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-				p.pos++
-			}
-		}
+		elifBody, err := p.parseBlock()
 		p.restoreTerminators(old)
+		if err != nil {
+			return nil, err
+		}
 		node.Clauses = append(node.Clauses, ast.Clause{
 			Pattern: elifCond,
 			Body:    ast.BlockNode(elifBody),
@@ -735,24 +737,11 @@ func (p *Parser) parsePosixIf(cond *ast.Node, node *ast.Node) (*ast.Node, error)
 		p.advance()
 		p.skipNewlines()
 		old = p.pushTerminators("fi")
-		var elseBody []*ast.Node
-		for p.cur().Type != ast.TEOF {
-			if p.cur().Type == ast.TWord && p.cur().Val == "fi" {
-				break
-			}
-			stmt, err := p.parseList()
-			if err != nil {
-				p.restoreTerminators(old)
-				return nil, err
-			}
-			if stmt != nil {
-				elseBody = append(elseBody, stmt)
-			}
-			for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-				p.pos++
-			}
-		}
+		elseBody, err := p.parseBlock()
 		p.restoreTerminators(old)
+		if err != nil {
+			return nil, err
+		}
 		node.Clauses = append(node.Clauses, ast.Clause{
 			Body: ast.BlockNode(elseBody),
 		})
@@ -767,69 +756,31 @@ func (p *Parser) parsePosixIf(cond *ast.Node, node *ast.Node) (*ast.Node, error)
 }
 
 func (p *Parser) parseIshIf(cond *ast.Node, node *ast.Node) (*ast.Node, error) {
-	p.advance()
-	p.skipNewlines()
-
-	oldMode := p.withMode(ModeExpr)
-	old := p.pushTerminators("else", "end")
-	var bodyStmts []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && (p.cur().Val == "else" || p.cur().Val == "end") {
-			break
-		}
-		stmt, err := p.parseList()
-		if err != nil {
-			p.restoreTerminators(old)
-			p.restoreMode(oldMode)
-			return nil, err
-		}
-		if stmt != nil {
-			bodyStmts = append(bodyStmts, stmt)
-		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
-	}
-	p.restoreTerminators(old)
-
-	node.Clauses = append(node.Clauses, ast.Clause{
-		Pattern: cond,
-		Body:    ast.BlockNode(bodyStmts),
-	})
-
-	if p.cur().Type == ast.TWord && p.cur().Val == "else" {
-		p.advance()
-		p.skipNewlines()
-		old = p.pushTerminators("end")
-		var elseBody []*ast.Node
-		for p.cur().Type != ast.TEOF {
-			if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-				break
-			}
-			stmt, err := p.parseList()
-			if err != nil {
-				p.restoreTerminators(old)
-				p.restoreMode(oldMode)
-				return nil, err
-			}
-			if stmt != nil {
-				elseBody = append(elseBody, stmt)
-			}
-			for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-				p.pos++
-			}
-		}
+	if err := p.ishBlock(func() error {
+		old := p.pushTerminators("else")
+		bodyStmts, err := p.parseBlock()
 		p.restoreTerminators(old)
+		if err != nil {
+			return err
+		}
 		node.Clauses = append(node.Clauses, ast.Clause{
-			Body: ast.BlockNode(elseBody),
+			Pattern: cond,
+			Body:    ast.BlockNode(bodyStmts),
 		})
-	}
-	p.restoreMode(oldMode)
-
-	if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-		p.advance()
-	} else {
-		return nil, fmt.Errorf("expected 'end' at pos %d", p.cur().Pos)
+		if p.cur().Type == ast.TWord && p.cur().Val == "else" {
+			p.advance()
+			p.skipNewlines()
+			elseBody, err := p.parseBlock()
+			if err != nil {
+				return err
+			}
+			node.Clauses = append(node.Clauses, ast.Clause{
+				Body: ast.BlockNode(elseBody),
+			})
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return node, nil
 }
@@ -880,23 +831,11 @@ func (p *Parser) parseFor() (*ast.Node, error) {
 
 	p.skipNewlines()
 	old = p.pushTerminators("done", "end")
-	var bodyStmts []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && (p.cur().Val == "done" || p.cur().Val == "end") {
-			break
-		}
-		stmt, err := p.parseList()
-		if err != nil {
-			return nil, err
-		}
-		if stmt != nil {
-			bodyStmts = append(bodyStmts, stmt)
-		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
-	}
+	bodyStmts, err := p.parseBlock()
 	p.restoreTerminators(old)
+	if err != nil {
+		return nil, err
+	}
 	if p.cur().Type == ast.TWord && (p.cur().Val == "done" || p.cur().Val == "end") {
 		p.advance()
 	} else {
@@ -936,23 +875,11 @@ func (p *Parser) parseWhileUntil(kind ast.NodeKind) (*ast.Node, error) {
 
 	p.skipNewlines()
 	old = p.pushTerminators("done", "end")
-	var bodyStmts []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && (p.cur().Val == "done" || p.cur().Val == "end") {
-			break
-		}
-		stmt, err := p.parseList()
-		if err != nil {
-			return nil, err
-		}
-		if stmt != nil {
-			bodyStmts = append(bodyStmts, stmt)
-		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
-	}
+	bodyStmts, err := p.parseBlock()
 	p.restoreTerminators(old)
+	if err != nil {
+		return nil, err
+	}
 	if p.cur().Type == ast.TWord && (p.cur().Val == "done" || p.cur().Val == "end") {
 		p.advance()
 	} else if p.cur().Type == ast.TEOF {
@@ -1132,128 +1059,56 @@ func (p *Parser) parseIshFn() (*ast.Node, error) {
 		}
 	}
 
-	if p.cur().Type != ast.TWord || p.cur().Val != "do" {
-		return nil, fmt.Errorf("expected 'do' in fn definition at pos %d", p.cur().Pos)
-	}
-	p.advance()
-	p.skipNewlines()
-
-	oldMode := p.withMode(ModeExpr)
-	old := p.pushTerminators("end")
-
-	if len(params) == 0 && guard == nil && p.looksLikeClauseStart() {
-		var clauses []ast.Clause
-		for p.cur().Type != ast.TEOF {
-			if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-				break
-			}
-			var clauseParams []*ast.Node
-			for p.cur().Type != ast.TEOF {
-				if p.cur().Type == ast.TArrow {
-					break
+	var fnNode *ast.Node
+	if err := p.ishBlock(func() error {
+		if len(params) == 0 && guard == nil && p.looksLikeClauseStart() {
+			clauses, err := p.parseClauses(func() (*ast.Node, error) {
+				var clauseParams []*ast.Node
+				for p.cur().Type != ast.TEOF {
+					if p.cur().Type == ast.TArrow || (p.cur().Type == ast.TWord && p.cur().Val == "when") {
+						break
+					}
+					if p.cur().Type == ast.TComma {
+						p.advance()
+						continue
+					}
+					param, err := p.parsePattern()
+					if err != nil {
+						return nil, err
+					}
+					clauseParams = append(clauseParams, param)
 				}
-				if p.cur().Type == ast.TWord && p.cur().Val == "when" {
-					break
-				}
-				if p.cur().Type == ast.TComma {
-					p.advance()
-					continue
-				}
-				param, err := p.parsePattern()
-				if err != nil {
-					p.restoreTerminators(old)
-					p.restoreMode(oldMode)
-					return nil, err
-				}
-				clauseParams = append(clauseParams, param)
-			}
-			var clauseGuard *ast.Node
-			if p.cur().Type == ast.TWord && p.cur().Val == "when" {
-				p.advance()
-				var err error
-				clauseGuard, err = p.parseExpr(0)
-				if err != nil {
-					p.restoreTerminators(old)
-					p.restoreMode(oldMode)
-					return nil, err
-				}
-			}
-			if p.cur().Type != ast.TArrow {
-				p.restoreTerminators(old)
-				p.restoreMode(oldMode)
-				return nil, fmt.Errorf("expected '->' in fn clause at pos %d", p.cur().Pos)
-			}
-			p.advance()
-			p.skipNewlines()
-
-			body, err := p.parseClauseBody()
-			if err != nil {
-				p.restoreTerminators(old)
-				p.restoreMode(oldMode)
-				return nil, err
-			}
-			for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-				p.pos++
-			}
-
-			clauses = append(clauses, ast.Clause{
-				Pattern: ast.BlockNode(clauseParams),
-				Guard:   clauseGuard,
-				Body:    body,
+				return ast.BlockNode(clauseParams), nil
 			})
-		}
-		p.restoreTerminators(old)
-		p.restoreMode(oldMode)
-		if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-			p.advance()
-		} else {
-			return nil, fmt.Errorf("expected 'end' at pos %d", p.cur().Pos)
+			if err != nil {
+				return err
+			}
+			fnNode = &ast.Node{Kind: ast.NIshFn, Tok: nameTok, Clauses: clauses}
+			return nil
 		}
 
-		node := &ast.Node{Kind: ast.NIshFn, Tok: nameTok, Clauses: clauses}
-		return node, nil
-	}
-
-	var bodyStmts []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-			break
-		}
-		stmt, err := p.parseList()
+		bodyStmts, err := p.parseBlock()
 		if err != nil {
-			p.restoreTerminators(old)
-			p.restoreMode(oldMode)
-			return nil, err
+			return err
 		}
-		if stmt != nil {
-			bodyStmts = append(bodyStmts, stmt)
+		fnNode = &ast.Node{
+			Kind: ast.NIshFn,
+			Tok:  nameTok,
+			Clauses: []ast.Clause{{
+				Body:  ast.BlockNode(bodyStmts),
+				Guard: guard,
+			}},
+			Children: params,
 		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	p.restoreTerminators(old)
-	p.restoreMode(oldMode)
-	if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-		p.advance()
-	} else {
-		return nil, fmt.Errorf("expected 'end' at pos %d", p.cur().Pos)
-	}
-
-	node := &ast.Node{
-		Kind: ast.NIshFn,
-		Tok:  nameTok,
-		Clauses: []ast.Clause{{
-			Body:  ast.BlockNode(bodyStmts),
-			Guard: guard,
-		}},
-		Children: params,
-	}
-	return node, nil
+	return fnNode, nil
 }
 
 func (p *Parser) parseClauseBody() (*ast.Node, error) {
-	old := p.pushTerminators("end")
+	defer p.restoreTerminators(p.pushTerminators("end"))
 	var stmts []*ast.Node
 	for p.cur().Type != ast.TEOF {
 		if p.cur().Type == ast.TWord && (p.cur().Val == "end" || p.cur().Val == "after") {
@@ -1273,7 +1128,6 @@ func (p *Parser) parseClauseBody() (*ast.Node, error) {
 			p.pos++
 		}
 	}
-	p.restoreTerminators(old)
 	return ast.BlockNode(stmts), nil
 }
 
@@ -1366,6 +1220,41 @@ func (p *Parser) looksLikeListLiteral() bool {
 	return false
 }
 
+func (p *Parser) parseClauses(parsePattern func() (*ast.Node, error)) ([]ast.Clause, error) {
+	var clauses []ast.Clause
+	for p.cur().Type != ast.TEOF {
+		if p.cur().Type == ast.TWord && p.isBlockEnd(p.cur().Val) {
+			break
+		}
+		pat, err := parsePattern()
+		if err != nil {
+			return nil, err
+		}
+		var guard *ast.Node
+		if p.cur().Type == ast.TWord && p.cur().Val == "when" {
+			p.advance()
+			guard, err = p.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if p.cur().Type != ast.TArrow {
+			return nil, fmt.Errorf("expected '->' in clause at pos %d", p.cur().Pos)
+		}
+		p.advance()
+		p.skipNewlines()
+		body, err := p.parseClauseBody()
+		if err != nil {
+			return nil, err
+		}
+		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
+			p.pos++
+		}
+		clauses = append(clauses, ast.Clause{Pattern: pat, Guard: guard, Body: body})
+	}
+	return clauses, nil
+}
+
 func (p *Parser) parseIshMatchExpr() (*ast.Node, error) {
 	p.advance()
 
@@ -1377,50 +1266,13 @@ func (p *Parser) parseIshMatchExpr() (*ast.Node, error) {
 	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
 		p.pos++
 	}
-	if p.cur().Type != ast.TWord || p.cur().Val != "do" {
-		return nil, fmt.Errorf("expected 'do' after match expression at pos %d", p.cur().Pos)
-	}
-	p.advance()
-	p.skipNewlines()
-
-	oldMode := p.withMode(ModeExpr)
-	old := p.pushTerminators("end")
 	var clauses []ast.Clause
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-			break
-		}
-
-		pat, err := p.parsePattern()
-		if err != nil {
-			p.restoreMode(oldMode)
-			return nil, err
-		}
-
-		if p.cur().Type != ast.TArrow {
-			p.restoreTerminators(old)
-			p.restoreMode(oldMode)
-			return nil, fmt.Errorf("expected '->' in match clause at pos %d", p.cur().Pos)
-		}
-		p.advance()
-		p.skipNewlines()
-
-		body, err := p.parseClauseBody()
-		if err != nil {
-			p.restoreTerminators(old)
-			p.restoreMode(oldMode)
-			return nil, err
-		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
-
-		clauses = append(clauses, ast.Clause{Pattern: pat, Body: body})
-	}
-	p.restoreTerminators(old)
-	p.restoreMode(oldMode)
-	if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-		p.advance()
+	if err := p.ishBlock(func() error {
+		var err error
+		clauses, err = p.parseClauses(p.parsePattern)
+		return err
+	}); err != nil {
+		return nil, err
 	}
 
 	return &ast.Node{Kind: ast.NIshMatch, Children: []*ast.Node{subject}, Clauses: clauses}, nil
@@ -1472,52 +1324,42 @@ func (p *Parser) parseIshSupervise() (*ast.Node, error) {
 	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
 		p.pos++
 	}
-	if p.cur().Type != ast.TWord || p.cur().Val != "do" {
-		return nil, fmt.Errorf("expected 'do' after supervise strategy at pos %d", p.cur().Pos)
-	}
-	p.advance()
-	p.skipNewlines()
-
-	oldMode := p.withMode(ModeExpr)
-	old := p.pushTerminators("end")
 	var workers []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-			break
+	if err := p.ishBlock(func() error {
+		for p.cur().Type != ast.TEOF {
+			if p.cur().Type == ast.TWord && p.isBlockEnd(p.cur().Val) {
+				break
+			}
+			if p.cur().Type == ast.TWord && p.cur().Val == "worker" {
+				p.advance()
+				workerName, err := p.parseExpr(0)
+				if err != nil {
+					return err
+				}
+				fnExpr, err := p.parseCommand()
+				if err != nil {
+					return err
+				}
+				workers = append(workers, &ast.Node{
+					Kind:     ast.NCmd,
+					Children: []*ast.Node{workerName, fnExpr},
+				})
+			} else {
+				stmt, err := p.parseList()
+				if err != nil {
+					return err
+				}
+				if stmt != nil {
+					workers = append(workers, stmt)
+				}
+			}
+			for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
+				p.pos++
+			}
 		}
-		if p.cur().Type == ast.TWord && p.cur().Val == "worker" {
-			p.advance()
-			workerName, err := p.parseExpr(0)
-			if err != nil {
-				return nil, err
-			}
-			fnExpr, err := p.parseCommand()
-			if err != nil {
-				return nil, err
-			}
-			workers = append(workers, &ast.Node{
-				Kind:     ast.NCmd,
-				Children: []*ast.Node{workerName, fnExpr},
-			})
-		} else {
-			stmt, err := p.parseList()
-			if err != nil {
-				return nil, err
-			}
-			if stmt != nil {
-				workers = append(workers, stmt)
-			}
-		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
-	}
-	p.restoreTerminators(old)
-	p.restoreMode(oldMode)
-	if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-		p.advance()
-	} else {
-		return nil, fmt.Errorf("expected 'end' in supervise at pos %d", p.cur().Pos)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	node := &ast.Node{Kind: ast.NIshSupervise, Children: append([]*ast.Node{strategy}, workers...)}
@@ -1545,87 +1387,38 @@ func (p *Parser) parseIshReceive() (*ast.Node, error) {
 	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
 		p.pos++
 	}
-	if p.cur().Type != ast.TWord || p.cur().Val != "do" {
-		return nil, fmt.Errorf("expected 'do' after receive at pos %d", p.cur().Pos)
-	}
-	p.advance()
-	p.skipNewlines()
 
-	oldMode := p.withMode(ModeExpr)
-	old := p.pushTerminators("end", "after")
-	var clauses []ast.Clause
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && (p.cur().Val == "end" || p.cur().Val == "after") {
-			break
-		}
-		pat, err := p.parsePattern()
+	node := &ast.Node{Kind: ast.NIshReceive}
+	if err := p.ishBlock(func() error {
+		old := p.pushTerminators("after")
+		clauses, err := p.parseClauses(p.parsePattern)
+		p.restoreTerminators(old)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if p.cur().Type != ast.TArrow {
-			p.restoreTerminators(old)
-			p.restoreMode(oldMode)
-			return nil, fmt.Errorf("expected '->' in receive clause at pos %d", p.cur().Pos)
-		}
-		p.advance()
-		p.skipNewlines()
-		body, err := p.parseClauseBody()
-		if err != nil {
-			p.restoreTerminators(old)
-			p.restoreMode(oldMode)
-			return nil, err
-		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
-		clauses = append(clauses, ast.Clause{Pattern: pat, Body: body})
-	}
-	p.restoreTerminators(old)
+		node.Clauses = clauses
 
-	node := &ast.Node{Kind: ast.NIshReceive, Clauses: clauses}
-
-	if p.cur().Type == ast.TWord && p.cur().Val == "after" {
-		p.advance()
-		timeoutExpr, err := p.parseExpr(0)
-		if err != nil {
-			p.restoreMode(oldMode)
-			return nil, err
-		}
-		node.Timeout = timeoutExpr
-
-		if p.cur().Type != ast.TArrow {
-			p.restoreMode(oldMode)
-			return nil, fmt.Errorf("expected '->' after timeout expression at pos %d", p.cur().Pos)
-		}
-		p.advance()
-		p.skipNewlines()
-
-		old2 := p.pushTerminators("end")
-		var bodyStmts []*ast.Node
-		for p.cur().Type != ast.TEOF {
-			if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-				break
-			}
-			stmt, err := p.parseList()
+		if p.cur().Type == ast.TWord && p.cur().Val == "after" {
+			p.advance()
+			timeoutExpr, err := p.parseExpr(0)
 			if err != nil {
-				p.restoreTerminators(old2)
-				p.restoreMode(oldMode)
-				return nil, err
+				return err
 			}
-			if stmt != nil {
-				bodyStmts = append(bodyStmts, stmt)
+			node.Timeout = timeoutExpr
+			if p.cur().Type != ast.TArrow {
+				return fmt.Errorf("expected '->' after timeout expression at pos %d", p.cur().Pos)
 			}
-			for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-				p.pos++
+			p.advance()
+			p.skipNewlines()
+			bodyStmts, err := p.parseBlock()
+			if err != nil {
+				return err
 			}
+			node.TimeoutBody = ast.BlockNode(bodyStmts)
 		}
-		p.restoreTerminators(old2)
-		node.TimeoutBody = ast.BlockNode(bodyStmts)
-	}
-	p.restoreMode(oldMode)
-
-	if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-		p.advance()
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return node, nil
@@ -1633,81 +1426,32 @@ func (p *Parser) parseIshReceive() (*ast.Node, error) {
 
 func (p *Parser) parseIshTry() (*ast.Node, error) {
 	p.advance()
-
 	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
 		p.pos++
 	}
-	if p.cur().Type == ast.TWord && p.cur().Val == "do" {
-		p.advance()
-	}
-	p.skipNewlines()
 
-	oldMode := p.withMode(ModeExpr)
-	old := p.pushTerminators("rescue", "end")
-	var bodyStmts []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && (p.cur().Val == "rescue" || p.cur().Val == "end") {
-			break
-		}
-		stmt, err := p.parseList()
+	node := &ast.Node{Kind: ast.NIshTry}
+	if err := p.ishBlock(func() error {
+		old := p.pushTerminators("rescue")
+		bodyStmts, err := p.parseBlock()
+		p.restoreTerminators(old)
 		if err != nil {
-			p.restoreTerminators(old)
-			p.restoreMode(oldMode)
-			return nil, err
+			return err
 		}
-		if stmt != nil {
-			bodyStmts = append(bodyStmts, stmt)
-		}
-		for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-			p.pos++
-		}
-	}
-	p.restoreTerminators(old)
+		node.Children = []*ast.Node{ast.BlockNode(bodyStmts)}
 
-	node := &ast.Node{Kind: ast.NIshTry, Children: []*ast.Node{ast.BlockNode(bodyStmts)}}
-
-	if p.cur().Type == ast.TWord && p.cur().Val == "rescue" {
-		p.advance()
-		p.skipNewlines()
-		old = p.pushTerminators("end")
-		var clauses []ast.Clause
-		for p.cur().Type != ast.TEOF {
-			if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-				break
-			}
-			pat, err := p.parsePattern()
-			if err != nil {
-				p.restoreTerminators(old)
-				p.restoreMode(oldMode)
-				return nil, err
-			}
-			if p.cur().Type != ast.TArrow {
-				p.restoreTerminators(old)
-				p.restoreMode(oldMode)
-				return nil, fmt.Errorf("expected '->' in rescue clause at pos %d", p.cur().Pos)
-			}
+		if p.cur().Type == ast.TWord && p.cur().Val == "rescue" {
 			p.advance()
 			p.skipNewlines()
-			body, err := p.parseClauseBody()
+			clauses, err := p.parseClauses(p.parsePattern)
 			if err != nil {
-				p.restoreTerminators(old)
-				p.restoreMode(oldMode)
-				return nil, err
+				return err
 			}
-			for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-				p.pos++
-			}
-			clauses = append(clauses, ast.Clause{Pattern: pat, Body: body})
+			node.Clauses = clauses
 		}
-		p.restoreTerminators(old)
-		node.Clauses = clauses
-	}
-	p.restoreMode(oldMode)
-
-	if p.cur().Type == ast.TWord && p.cur().Val == "end" {
-		p.advance()
-	} else {
-		return nil, fmt.Errorf("expected 'end' at pos %d", p.cur().Pos)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return node, nil
 }
@@ -1765,11 +1509,9 @@ func (p *Parser) parseLambda() (*ast.Node, error) {
 	// Push "end" terminator and switch to expression mode so the body
 	// is parsed in expression context (comparisons work instead of
 	// being treated as redirects)
-	oldMode := p.withMode(ModeExpr)
-	old := p.pushTerminators("end")
+	defer p.restoreMode(p.withMode(ModeExpr))
+	defer p.restoreTerminators(p.pushTerminators("end"))
 	body, err := p.parseCommand()
-	p.restoreTerminators(old)
-	p.restoreMode(oldMode)
 	if err != nil {
 		return nil, err
 	}
@@ -1789,9 +1531,8 @@ func (p *Parser) parseExpression() (*ast.Node, error) {
 
 	if p.cur().Type == ast.TEquals {
 		p.advance()
-		oldMode := p.withMode(ModeExpr)
+		defer p.restoreMode(p.withMode(ModeExpr))
 		rhs, err := p.parsePipeline()
-		p.restoreMode(oldMode)
 		if err != nil {
 			return nil, err
 		}
