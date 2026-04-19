@@ -3,6 +3,7 @@ package jobs
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -26,14 +27,34 @@ type Job struct {
 var jobTable []*Job
 var jobMu sync.Mutex
 var nextJobID int
+var jobSigChan chan os.Signal
+
+// SetSignalChan sets the channel used for job control signal handling.
+func SetSignalChan(ch chan os.Signal) {
+	jobSigChan = ch
+}
 
 // AddJob adds a job to the table and returns its ID.
 func AddJob(pid int, cmd string, proc *os.Process) int {
 	jobMu.Lock()
 	defer jobMu.Unlock()
-	nextJobID++
+	// Find lowest unused job ID
+	id := 1
+	for {
+		used := false
+		for _, j := range jobTable {
+			if j.ID == id {
+				used = true
+				break
+			}
+		}
+		if !used {
+			break
+		}
+		id++
+	}
 	j := &Job{
-		ID:      nextJobID,
+		ID:      id,
 		Pid:     pid,
 		Pgid:    pid,
 		Command: cmd,
@@ -81,6 +102,16 @@ func RemoveJob(id int) {
 	}
 }
 
+// LastJob returns the most recently added job, or nil.
+func LastJob() *Job {
+	jobMu.Lock()
+	defer jobMu.Unlock()
+	if len(jobTable) == 0 {
+		return nil
+	}
+	return jobTable[len(jobTable)-1]
+}
+
 // ListJobs returns a copy of all jobs.
 func ListJobs() []*Job {
 	jobMu.Lock()
@@ -120,30 +151,26 @@ func BuiltinJobs(args []string, env *core.Env) (int, error) {
 
 // BuiltinFg brings a job to the foreground.
 func BuiltinFg(args []string, env *core.Env) (int, error) {
+	var j *Job
 	if len(args) == 0 {
-		return 1, fmt.Errorf("fg: no current job")
+		j = LastJob()
+	} else {
+		j = ResolveJob(args[0])
 	}
-	j := ResolveJob(args[0])
 	if j == nil {
 		return 1, fmt.Errorf("fg: %s: no such job", args[0])
 	}
 
-	// Give the job's process group the terminal
 	ttyFd := int(os.Stdin.Fd())
-	tcsetpgrp(ttyFd, j.Pgid)
+	GiveTerm(ttyFd, j.Pgid)
 
-	// Send SIGCONT to resume
 	syscall.Kill(-j.Pgid, syscall.SIGCONT)
 	j.Mu.Lock()
 	j.Status = "Running"
 	j.Mu.Unlock()
 
-	// Wait for process to finish or stop again
-	var ws syscall.WaitStatus
-	_, err := syscall.Wait4(j.Pid, &ws, syscall.WUNTRACED, nil)
-
-	// Reclaim terminal
-	tcsetpgrp(ttyFd, os.Getpid())
+	ws, err := WaitFg(j.Pid)
+	ReclaimTerm(ttyFd)
 
 	if err != nil {
 		RemoveJob(j.ID)
@@ -161,13 +188,39 @@ func BuiltinFg(args []string, env *core.Env) (int, error) {
 	j.ExitCode = ws.ExitStatus()
 	j.Mu.Unlock()
 	close(j.Done)
-	code := ws.ExitStatus()
 	RemoveJob(j.ID)
-	return code, nil
+	return ws.ExitStatus(), nil
 }
 
 func tcsetpgrp(fd int, pgid int) {
 	syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TIOCSPGRP), uintptr(unsafe.Pointer(&pgid)))
+}
+
+// GiveTerm gives the terminal to a process group, protecting the shell
+// from SIGTTOU. Must be paired with ReclaimTerm.
+func GiveTerm(ttyFd int, pgid int) {
+	signal.Ignore(syscall.SIGTTOU)
+	tcsetpgrp(ttyFd, pgid)
+	if jobSigChan != nil {
+		signal.Notify(jobSigChan, syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIGTTOU)
+	}
+}
+
+// ReclaimTerm takes the terminal back for the shell's process group.
+func ReclaimTerm(ttyFd int) {
+	signal.Ignore(syscall.SIGTTOU)
+	tcsetpgrp(ttyFd, syscall.Getpgrp())
+	if jobSigChan != nil {
+		signal.Notify(jobSigChan, syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIGTTOU)
+	}
+}
+
+// WaitFg waits for a foreground process, handling stop and exit.
+// Returns the WaitStatus and any error from Wait4.
+func WaitFg(pid int) (syscall.WaitStatus, error) {
+	var ws syscall.WaitStatus
+	_, err := syscall.Wait4(pid, &ws, syscall.WUNTRACED, nil)
+	return ws, err
 }
 
 // BuiltinBg resumes a stopped job in the background.

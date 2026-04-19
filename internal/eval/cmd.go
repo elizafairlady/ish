@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"golang.org/x/term"
 
@@ -402,6 +402,9 @@ func evalExternalCmd(name string, args []string, redirs []ast.Redir, env *core.E
 	cmd.Stderr = os.Stderr
 	cmd.Env = env.BuildEnv()
 
+	ttyFd := int(os.Stdin.Fd())
+	isTTY := term.IsTerminal(ttyFd)
+
 	// Put child in its own process group for job control
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -411,29 +414,30 @@ func evalExternalCmd(name string, args []string, redirs []ast.Redir, env *core.E
 	}
 	defer cleanup()
 
+	// Reset job control signals to SIG_DFL so the child inherits default
+	// disposition through exec. Go issue #20479.
+	signal.Reset(syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIGTTOU)
+
 	if err := cmd.Start(); err != nil {
+		renotifyJobSignals()
 		env.SetExit(127)
 		fmt.Fprintf(os.Stderr, "ish: %s: %s\n", name, err)
 		return core.Nil, nil
 	}
 
 	pid := cmd.Process.Pid
-	ttyFd := int(os.Stdin.Fd())
-	isTTY := term.IsTerminal(ttyFd)
 
-	// Give the child's process group the terminal
+	// Give the child the terminal, wait, reclaim
 	if isTTY {
-		tcsetpgrp(ttyFd, pid)
+		jobs.GiveTerm(ttyFd, pid)
+	} else {
+		renotifyJobSignals()
 	}
 
-	// Use raw Wait4 with WUNTRACED so we detect stopped (ctrl-z) processes.
-	// Go's cmd.Process.Wait() does not support this.
-	var ws syscall.WaitStatus
-	_, waitErr := syscall.Wait4(pid, &ws, syscall.WUNTRACED, nil)
+	ws, waitErr := jobs.WaitFg(pid)
 
-	// Reclaim the terminal for the shell
 	if isTTY {
-		tcsetpgrp(ttyFd, os.Getpid())
+		jobs.ReclaimTerm(ttyFd)
 	}
 
 	if waitErr != nil {
@@ -458,9 +462,27 @@ func evalExternalCmd(name string, args []string, redirs []ast.Redir, env *core.E
 	return core.Nil, nil
 }
 
-func tcsetpgrp(fd int, pgid int) {
-	syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TIOCSPGRP), uintptr(unsafe.Pointer(&pgid)))
+// jobSignalChan is the channel used to catch job control signals for the shell.
+var jobSignalChan chan os.Signal
+
+// InitJobSignals sets up job control signal handling. Called from main.
+func InitJobSignals() {
+	jobSignalChan = make(chan os.Signal, 1)
+	signal.Notify(jobSignalChan, syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIGTTOU)
+	go func() {
+		for range jobSignalChan {
+		}
+	}()
+	jobs.SetSignalChan(jobSignalChan)
 }
+
+// renotifyJobSignals re-establishes signal.Notify after a temporary Reset.
+func renotifyJobSignals() {
+	if jobSignalChan != nil {
+		signal.Notify(jobSignalChan, syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIGTTOU)
+	}
+}
+
 
 func stripAssignQuotes(s string) string {
 	var buf strings.Builder

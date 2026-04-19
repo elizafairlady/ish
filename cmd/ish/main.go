@@ -9,13 +9,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"golang.org/x/term"
 
 	"ish/internal/builtin"
 	"ish/internal/core"
 	"ish/internal/eval"
+	"ish/internal/jobs"
 	"ish/internal/lexer"
 	"ish/internal/parser"
 	"ish/internal/process"
@@ -82,15 +82,20 @@ func main() {
 		os.Exit(env.LastExit)
 	}
 
-	// Job control: ignore signals that should only affect child processes
-	signal.Ignore(syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIGTTOU)
+	// Job control signal handling — catch SIGTSTP/SIGTTIN/SIGTTOU so the
+	// shell doesn't stop, but use signal.Reset before launching children
+	// so they inherit SIG_DFL (not SIG_IGN). See eval.InitJobSignals.
+	eval.InitJobSignals()
 
 	// Put the shell in its own process group and take the terminal
-	pgid := os.Getpid()
-	syscall.Setpgid(0, pgid)
+	shellPid := os.Getpid()
+	if err := syscall.Setpgid(0, shellPid); err != nil {
+		// Already a process group leader — that's fine
+		_ = err
+	}
 	ttyFd := int(os.Stdin.Fd())
 	if term.IsTerminal(ttyFd) {
-		syscall.Syscall(syscall.SYS_IOCTL, uintptr(ttyFd), uintptr(syscall.TIOCSPGRP), uintptr(unsafe.Pointer(&pgid)))
+		jobs.GiveTerm(ttyFd, shellPid)
 	}
 
 	// Signal handling
