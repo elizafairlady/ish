@@ -110,9 +110,21 @@ func evalBlock(node *ast.Node, env *core.Env) (core.Value, error) {
 			return v, err
 		}
 		last = v
-		if env.ShouldExitOnError() {
-			if child.Kind != ast.NIf && child.Kind != ast.NWhile && child.Kind != ast.NUntil &&
-				child.Kind != ast.NAndList && child.Kind != ast.NOrList {
+
+		// set -e and trap ERR exemptions: if, while, until, &&, ||, ! negation
+		exempt := child.Kind == ast.NIf || child.Kind == ast.NWhile ||
+			child.Kind == ast.NUntil || child.Kind == ast.NAndList ||
+			child.Kind == ast.NOrList ||
+			(child.Kind == ast.NUnary && child.Tok.Type == ast.TBang)
+
+		if !exempt {
+			// trap ERR: fire if last command failed
+			if env.ExitCode() != 0 {
+				if cmd, ok := env.GetTrap("ERR"); ok && cmd != "" {
+					RunSource(cmd, env)
+				}
+			}
+			if env.ShouldExitOnError() {
 				return last, core.ErrSetE
 			}
 		}

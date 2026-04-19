@@ -92,6 +92,16 @@ func TestTutorialExamples(t *testing.T) {
 		{"s12 reduce lambda", "r = reduce [1, 2, 3, 4], 0, \\acc, x -> acc + x\necho $r", "10\n"},
 		{"s12 range filter length", "r = range 1, 11 |> filter \\x -> x >= 6 |> length\necho $r", "5\n"},
 
+		// === Script safety ===
+		{"pipefail catches left failure", "set -o pipefail\nfalse | true\necho $?", "1\n"},
+		{"no pipefail ignores left", "false | true\necho $?", "0\n"},
+		{"set -e stops on failure", "set -e\ntrue\necho ok", "ok\n"},
+		{"set -e if exempt", "set -e\nif false; then echo y; fi\necho ok", "ok\n"},
+		{"set -e or exempt", "set -e\nfalse || echo swerved\necho ok", "swerved\nok\n"},
+		{"set -e bang exempt", "set -e\n! false\necho ok", "ok\n"},
+		{"trap ERR fires", "trap 'echo trapped' ERR\nfalse\necho after", "trapped\nafter\n"},
+		{"trap ERR not on success", "trap 'echo trapped' ERR\ntrue\necho after", "after\n"},
+
 		// === $() in strings ===
 		{"cmdsub in string", "echo \"hello $(echo world)\"", "hello world\n"},
 		{"cmdsub date", "echo \"year: $(date +%Y)\"", "year: 2026\n"},

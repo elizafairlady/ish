@@ -129,6 +129,11 @@ func evalPipe(node *ast.Node, env *core.Env) (core.Value, error) {
 	pr.Close()
 	<-done
 
+	// pipefail: if any stage failed, use the first non-zero exit code
+	if env.HasFlag('P') && leftEnv.ExitCode() != 0 && env.ExitCode() == 0 {
+		env.SetExit(leftEnv.ExitCode())
+	}
+
 	return val, err2
 }
 
