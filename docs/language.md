@@ -9,8 +9,18 @@ ish is a POSIX-compatible shell combined with a functional programming language 
 - **Interactive REPL:** `ish`
 - **Script file:** `ish script.ish`
 - **One-liner:** `ish -c 'command'`
-- **Startup file:** `~/.ishrc` is sourced on every launch (interactive and script modes)
-- **`$SHELL`** is set to the ish binary path automatically
+- **Login shell:** `ish -l` or `ish --login`, or when `argv[0]` starts with `-`
+- **`--version`:** prints `ish X.Y.Z` and exits
+- **`-D` / `--debugger`:** enables the debugger (stack traces on errors)
+- **`--dump-ast`:** parses source and prints the AST tree, then exits
+
+**Startup files:**
+
+- **Login shell:** sources `/etc/profile`, then `~/.ish_profile` (falling back to `~/.profile` if absent). On exit, sources `~/.ish_logout`.
+- **Interactive non-login shell:** sources `~/.ishrc`.
+- **Non-interactive** (`-c` or script): no startup files are sourced.
+
+**`$SHELL`** is set to the ish binary path automatically.
 
 In interactive mode, expression results that are not `nil` are printed automatically.
 
@@ -46,6 +56,7 @@ FOO=bar cmd args...    # FOO is set for the duration of cmd
 - **Double quotes:** `$var`, `${var}`, and `#{expr}` are expanded. Backslash escapes `"`, `\`, `$`, `` ` ``, and newline. Other backslash sequences pass through literally (e.g. `\n` stays `\n`). Note: `$(cmd)` and `$((expr))` inside double-quoted strings do not currently substitute correctly; use `#{expr}` interpolation or unquoted `$(cmd)` instead.
 - **Backtick substitution:** `` `cmd` `` is equivalent to `$(cmd)`. Inside backticks, `\` before `$`, `` ` ``, `\`, or `"` strips the backslash (POSIX).
 - **Backslash:** outside quotes, escapes the next character.
+- **Line continuation:** `\` immediately before a newline joins the next line to the current one (the backslash and newline are both removed). This works outside quotes and in unquoted heredocs.
 - Quotes can appear inside words: `FOO="hello world"` is a single assignment token. Mixed quoting is supported: `"hello"'world'` produces `helloworld`.
 
 ### Comments
@@ -362,9 +373,10 @@ A bare string operand is true if non-empty. Returns exit code 0 for true, 1 for 
 | `echo [-neE] args...` | Print arguments separated by spaces. `-n` suppresses trailing newline. `-e` enables backslash escape interpretation (`\n`, `\t`, `\r`, `\a`, `\b`, `\f`, `\v`, `\\`, `\0NNN` octal, `\c` stop output). `-E` disables escapes (default). Flags can be combined (e.g. `-ne`). |
 | `cd [dir]` | Change directory. No argument goes to `$HOME`. `cd -` goes to `$OLDPWD`. Sets `PWD` and `OLDPWD` (both exported). |
 | `exit [code]` | Exit the shell with the given code (default 0). |
+| `logout [code]` | Exit a login shell with the given code (default 0). Errors if the current shell is not a login shell. |
 | `export [NAME=value] [NAME]...` | With `NAME=value`, set and export a variable to child processes. With bare `NAME`, export an existing variable without changing its value. |
 | `unset [-f] [-v] name...` | Remove variables (`-v`, default) or functions (`-f`) from the environment. |
-| `set [flags] [-- args...]` | No arguments: print all variables in the current scope. `set -- a b c` sets positional parameters. Flags: `-e` (exit on error), `-u` (error on unset variables), `-x` (print commands before execution), `-o pipefail`. Prefix with `+` to disable (e.g. `+e`). |
+| `set [flags] [-- args...]` | No arguments: print all variables in the current scope. `set -- a b c` sets positional parameters. Flags: `-e` (exit on error), `-u` (error on unset variables), `-x` (print commands before execution), `-o pipefail`, `-X` (Elixir-style tracing: prints each executed node with source location, implies `-x`, lazily enables the debugger). Prefix with `+` to disable (e.g. `+e`, `+X`). |
 | `shift [n]` | Shift positional parameters left by n (default 1). |
 | `return [code]` | Return from a function with exit code (default 0). |
 | `break` | Break out of a `for`, `while`, or `until` loop. |
@@ -402,6 +414,7 @@ A bare string operand is true if non-empty. Returns exit code 0 for true, 1 for 
 | Type | Syntax | Example |
 |------|--------|---------|
 | Integer | Bare digits | `42`, `-3` |
+| Float | Digits with decimal point | `3.14`, `0.5`, `100.0` |
 | String | Quoted text | `"hello"`, `'literal'` |
 | Atom | Colon-prefixed identifier | `:ok`, `:error`, `:timeout` |
 | Tuple | Braces with commas | `{:ok, "data"}`, `{1, 2, 3}` |
@@ -419,9 +432,10 @@ A bare string operand is true if non-empty. Returns exit code 0 for true, 1 for 
 - `:false` and `:nil` atoms are falsy
 - Empty string `""` is falsy
 - Integer `0` is falsy
+- Float `0.0` is falsy
 - Everything else is truthy (including empty tuples, lists, and maps)
 
-**Structural equality:** Values are compared by kind and content. Tuples, lists, and maps compare element-by-element. Maps compare by key set and values (order-independent for equality). Different kinds are never equal (e.g., `"3"` does not equal `3`).
+**Structural equality:** Values are compared by kind and content. Tuples, lists, and maps compare element-by-element. Maps compare by key set and values (order-independent for equality). Cross-kind int/float comparison is supported: `5 == 5.0` is true (the integer is promoted to float). In pattern matching, cross-kind int/string coercion applies: the string `"3"` matches the integer `3`. Other cross-kind comparisons return false.
 
 **Display:** `.String()` converts values to their display form. `.Inspect()` is like `.String()` but quotes strings. `.ToStr()` converts any value to a plain string (strings return their raw content, other types return their `.String()` form).
 
@@ -435,7 +449,18 @@ name = "world"                   # bind name
 result = 2 + 3                   # bind to expression result
 ```
 
-The right-hand side is evaluated as an expression (supporting pipelines, function calls, and all ish expressions). Pattern matching destructures complex values:
+The right-hand side is evaluated as an expression (supporting pipelines, function calls, and all ish expressions).
+
+Keywords (`if`, `for`, `while`, `fn`, `match`, etc.) can be used as variable names when followed by `=`:
+
+```
+if = 42
+for = "loop"
+```
+
+The parser checks for `=` after a keyword before dispatching to the keyword's parser.
+
+Pattern matching destructures complex values:
 
 ```
 {:ok, val} = {:ok, "data"}       # destructure tuple, bind val to "data"
@@ -747,7 +772,7 @@ Operators (in order of increasing precedence):
 | 1 | `==` `!=` | Equality / inequality |
 | 2 | `<` `>` `<=` `>=` | Comparison |
 | 3 | `+` `-` | Addition / subtraction |
-| 4 | `*` `/` | Multiplication / integer division |
+| 4 | `*` `/` `%` | Multiplication / division / modulo |
 
 Parentheses override precedence:
 
@@ -767,6 +792,31 @@ r = 20 / 4          # 5 (integer division)
 
 Division by zero raises an error.
 
+**Float arithmetic:**
+
+```
+r = 3.14 + 1.0       # 4.14
+r = 10.0 - 2.5       # 7.5
+r = 3.0 * 2.0        # 6.0
+r = 7.0 / 2.0        # 3.5
+r = 7.5 % 2.0        # 1.5
+```
+
+If either operand is a float, the other is promoted to float and the result is a float: `3 + 1.5` evaluates to `4.5`. Float division returns a float (not integer division). Negation (`-3.14`) works on floats.
+
+**Modulo operator:**
+
+```
+r = 10 % 3            # 1
+r = 7.5 % 2.0         # 1.5
+```
+
+`%` returns the remainder. For integers, it uses Go's `%` operator. For floats, it uses `math.Mod`. Division or modulo by zero raises an error.
+
+**Integer overflow detection:**
+
+Arithmetic operations on integers detect overflow instead of silently wrapping. If the result of `+`, `-`, `*`, or `/` would overflow a 64-bit integer, an error is raised.
+
 **Comparisons** return `:true` or `:false`:
 
 ```
@@ -777,6 +827,17 @@ r = 5 > 3           # :true
 r = 3 <= 3          # :true
 r = 5 >= 5          # :true
 ```
+
+**String comparisons** use lexicographic ordering:
+
+```
+r = "apple" < "banana"    # :true
+r = "zebra" > "ant"       # :true
+r = "abc" <= "abd"        # :true
+r = "hello" >= "hello"    # :true
+```
+
+**Cross-kind comparisons:** `==` and `!=` support int/float cross-comparison (`5 == 5.0` is `:true`). For `<`, `>`, `<=`, `>=`, both operands must be the same kind (both integers, both floats, or both strings).
 
 **General equality** works on all value types (not just integers). Structural comparison for tuples, lists, and maps.
 
@@ -797,7 +858,28 @@ r = !true           # :false (logical not)
 r = !false          # :true
 ```
 
-`!` returns `:true` or `:false` based on the operand's truthiness. `-` negates integers (error on non-integers).
+`!` returns `:true` or `:false` based on the operand's truthiness. `-` negates integers and floats.
+
+### Tail Call Optimization
+
+When a function call is the last expression in a function body (tail position), ish reuses the current call frame instead of creating a new one. Recursive functions in tail position do not grow the stack, enabling unbounded recursion:
+
+```
+fn counter state do
+  receive do
+    {:inc, sender} ->
+      send sender, state + 1
+      counter (state + 1)          # tail call -- no stack growth
+    {:get, sender} ->
+      send sender, state
+      counter state                # tail call -- no stack growth
+  end
+end
+```
+
+Without TCO, the `counter` pattern would overflow the stack after enough messages. With TCO, it runs indefinitely.
+
+Tail position is recognized in the last expression of function bodies, each branch of `if`/`else`, each clause of `match` and `receive`, and the body of `try`. Both self-recursion and mutual recursion are optimized.
 
 ### try / rescue / end
 
@@ -1063,6 +1145,10 @@ The parser uses position and context to decide between POSIX shell syntax and is
 - After a word followed by whitespace: treated as division.
 - Otherwise: treated as part of a path (word character).
 
+**`%` disambiguation:**
+- In expression context: modulo operator.
+- `%{` is the map literal opener -- the lexer emits it as a single token, so there is no ambiguity.
+
 **`[` disambiguation:**
 - At command position: the `[` test builtin.
 - At expression position: if the content contains `,`, `|`, or is immediately `]` (empty list), it is a list literal. Otherwise falls back to the `[` builtin.
@@ -1145,6 +1231,33 @@ Default prompt (when PS1 is not set): `~/current/dir $ `
 - Multiple matches: the longest common prefix is filled in, and all candidates are displayed below the prompt.
 
 Command history is saved to `~/.ish_history` (up to 1000 entries). Consecutive duplicate entries are not recorded. History is loaded on shell startup and saved after each new entry.
+
+## Debugging
+
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `-D` / `--debugger` | Enable the debugger at startup. Errors include full stack traces showing function name, arity, and source location. |
+| `--dump-ast` | Parse source (from `-c 'code'` or a filename) and print the AST as an indented tree, then exit. Useful for understanding how ish parses ambiguous syntax. |
+
+### Runtime Flags
+
+| Flag | Description |
+|------|-------------|
+| `set -X` | Enable Elixir-style tracing. Implies `set -x`. Each executed AST node is printed to stderr with source location. If no debugger exists yet, one is created automatically. Disable with `set +X`. |
+
+### Stack Traces
+
+When the debugger is enabled (`ish -D` or implicitly via `set -X`), errors include a stack trace:
+
+```
+ish: division by zero
+    inner/1      script.ish:5:3
+    outer/1      script.ish:8:3
+```
+
+Each frame shows `function_name/arity` and `file:line:col`. Frames are printed from innermost (top) to outermost (bottom).
 
 ## Multi-line Input
 

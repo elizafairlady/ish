@@ -84,9 +84,6 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 				switch ch {
 				case 'e', 'u', 'x':
 					env.SetFlag(byte(ch), true)
-				case 'D':
-					ensureDebugger(env)
-					env.SetFlag('D', true)
 				case 'X':
 					ensureDebugger(env)
 					env.SetFlag('X', true)
@@ -106,8 +103,6 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 				switch ch {
 				case 'e', 'u', 'x':
 					env.SetFlag(byte(ch), false)
-				case 'D':
-					env.SetFlag('D', false)
 				case 'X':
 					env.SetFlag('X', false)
 					env.SetFlag('x', false)

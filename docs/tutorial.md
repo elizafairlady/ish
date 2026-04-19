@@ -254,6 +254,36 @@ echo $r
 20
 ```
 
+Decimals work too:
+
+```
+r = 3.14 * 2.0
+echo $r
+```
+```
+6.28
+```
+
+If either side has a decimal point, the result does too. Integers and floats mix freely — the integer gets promoted:
+
+```
+r = 3 + 0.5
+echo $r
+```
+```
+3.5
+```
+
+And the remainder operator:
+
+```
+r = 10 % 3
+echo $r
+```
+```
+1
+```
+
 Multiplication and division happen before addition and subtraction. Parentheses have the final word. Dividing by zero is an error.
 
 The fox doesn't care about holding onto results. The fox puts math in a sentence and keeps moving:
@@ -970,6 +1000,8 @@ receive do n -> echo $n end
 ```
 
 The function calls itself with the new state after each message. No mutable variables, no locks. Every receive ends with a recursive call that becomes the next receive. This is how you build stateful services — a key-value store, a rate limiter, a session manager. The function *is* the loop.
+
+One thing worth knowing: that recursive call at the end of each branch — `counter (state + 1)` and `counter state` — doesn't grow the stack. ish recognizes when a function call is the last thing a function does (the "tail position") and reuses the current frame instead of piling on a new one. This means the counter can handle millions of messages without running out of memory. It's the same trick Erlang uses, and it's why this pattern works for long-running services instead of being a polite way to crash.
 
 *The fox had been quiet for a while.*
 

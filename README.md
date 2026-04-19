@@ -20,7 +20,7 @@ That being said; you have been warned.
 
 POSIX sh + Elixir-like extensions in the same session:
 
-- Atoms, tuples, lists, maps
+- Atoms, tuples, lists, maps, floats
 - Pattern matching and destructuring
 - First-class functions with multi-clause dispatch and guards
 - Lambdas (`\x -> x * 2`)
@@ -29,6 +29,9 @@ POSIX sh + Elixir-like extensions in the same session:
 - Lightweight processes with message passing (`spawn`, `send`, `receive`)
 - OTP-style supervision trees
 - JSON/CSV/TSV bridge functions for structured data
+- Tail call optimization for unbounded process loops
+- Debugger with stack traces (`-D`) and Elixir-style tracing (`set -X`)
+- Login shell support with profile sourcing
 
 Every POSIX sh script runs unmodified. The two syntaxes coexist without ambiguity.
 
@@ -46,6 +49,9 @@ Requires Go 1.21+.
 ./ish                        # interactive REPL
 ./ish script.ish             # run a script
 ./ish -c 'echo hello'        # one-liner
+./ish --version              # print version
+./ish -l                     # login shell mode
+./ish -D script.ish          # run with debugger enabled
 ```
 
 ## Quick taste

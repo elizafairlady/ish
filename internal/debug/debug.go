@@ -29,7 +29,7 @@ type Debugger struct {
 	current    *SourceMap   // active source map
 	currentPos int          // updated by Eval on each node
 	TraceAll   bool         // enhanced set -X
-	StackTrace bool         // set -D: enrich errors with stack traces
+	StackTrace bool         // ish -D: enrich errors with stack traces
 }
 
 // New creates a new Debugger.

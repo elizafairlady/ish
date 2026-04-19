@@ -10,6 +10,7 @@ import (
 	"ish/internal/ast"
 	"ish/internal/builtin"
 	"ish/internal/core"
+	"ish/internal/debug"
 	"ish/internal/lexer"
 	"ish/internal/parser"
 	"ish/internal/process"
@@ -1345,8 +1346,9 @@ func TestSetXDoesNotImplyX(t *testing.T) {
 
 func TestDebuggerStackTrace(t *testing.T) {
 	env := testEnv()
+	env.Debugger = debug.New()
 	stderr := captureStderr(func() {
-		RunSource("set -D\nfn add a b do\n  a + b\nend\nadd 1 :bad", env)
+		RunSource("fn add a b do\n  a + b\nend\nadd 1 :bad", env)
 	})
 	if !strings.Contains(stderr, "add/2") {
 		t.Errorf("stack trace should show add/2, got: %q", stderr)
