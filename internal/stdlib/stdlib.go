@@ -5,9 +5,20 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ish/internal/core"
 )
+
+// mapKey converts a Value to a map key string.
+// Atoms use their bare name (without colon prefix) so that
+// get(m, :foo) matches the key "foo" from %{foo: 1}.
+func mapKey(v core.Value) string {
+	if v.Kind == core.VAtom {
+		return v.Str
+	}
+	return v.ToStr()
+}
 
 // hd list -> first element (error on empty)
 func stdlibHd(args []core.Value, env *core.Env) (core.Value, error) {
@@ -49,7 +60,7 @@ func stdlibLength(args []core.Value, env *core.Env) (core.Value, error) {
 	case core.VTuple:
 		return core.IntVal(int64(len(v.Elems))), nil
 	case core.VString:
-		return core.IntVal(int64(len(v.Str))), nil
+		return core.IntVal(int64(utf8.RuneCountInString(v.Str))), nil
 	case core.VMap:
 		if v.Map == nil {
 			return core.IntVal(0), nil
@@ -313,7 +324,7 @@ func stdlibSubstring(args []core.Value, env *core.Env) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("substring: expected 3 arguments, got %d", len(args))
 	}
-	s := args[0].ToStr()
+	runes := []rune(args[0].ToStr())
 	if args[1].Kind != core.VInt {
 		return core.Nil, fmt.Errorf("substring: start must be an integer, got %s", args[1].Inspect())
 	}
@@ -325,22 +336,26 @@ func stdlibSubstring(args []core.Value, env *core.Env) (core.Value, error) {
 	if start < 0 {
 		start = 0
 	}
-	if start >= len(s) {
+	if start >= len(runes) {
 		return core.StringVal(""), nil
 	}
 	end := start + length
-	if end > len(s) {
-		end = len(s)
+	if end > len(runes) {
+		end = len(runes)
 	}
-	return core.StringVal(s[start:end]), nil
+	return core.StringVal(string(runes[start:end])), nil
 }
 
 func stdlibIndexOf(args []core.Value, env *core.Env) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("index_of: expected 2 arguments, got %d", len(args))
 	}
-	idx := strings.Index(args[0].ToStr(), args[1].ToStr())
-	return core.IntVal(int64(idx)), nil
+	s := args[0].ToStr()
+	byteIdx := strings.Index(s, args[1].ToStr())
+	if byteIdx < 0 {
+		return core.IntVal(-1), nil
+	}
+	return core.IntVal(int64(utf8.RuneCountInString(s[:byteIdx]))), nil
 }
 
 // Map operations
@@ -358,7 +373,7 @@ func stdlibPut(args []core.Value, env *core.Env) (core.Value, error) {
 			m.Set(k, args[0].Map.Vals[k])
 		}
 	}
-	m.Set(args[1].ToStr(), args[2])
+	m.Set(mapKey(args[1]), args[2])
 	return core.Value{Kind: core.VMap, Map: m}, nil
 }
 
@@ -369,7 +384,7 @@ func stdlibDelete(args []core.Value, env *core.Env) (core.Value, error) {
 	if args[0].Kind != core.VMap {
 		return core.Nil, fmt.Errorf("delete: first argument must be a map, got %s", args[0].Inspect())
 	}
-	key := args[1].ToStr()
+	key := mapKey(args[1])
 	m := core.NewOrdMap()
 	if args[0].Map != nil {
 		for _, k := range args[0].Map.Keys {
@@ -446,7 +461,7 @@ func stdlibHasKey(args []core.Value, env *core.Env) (core.Value, error) {
 	if args[0].Kind != core.VMap {
 		return core.Nil, fmt.Errorf("has_key: first argument must be a map, got %s", args[0].Inspect())
 	}
-	key := args[1].ToStr()
+	key := mapKey(args[1])
 	if args[0].Map != nil {
 		if _, ok := args[0].Map.Get(key); ok {
 			return core.True, nil
@@ -466,7 +481,7 @@ func stdlibGet(args []core.Value, env *core.Env) (core.Value, error) {
 	if args[0].Map == nil {
 		return core.Nil, nil
 	}
-	val, ok := args[0].Map.Get(args[1].ToStr())
+	val, ok := args[0].Map.Get(mapKey(args[1]))
 	if !ok {
 		return core.Nil, nil
 	}

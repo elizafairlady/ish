@@ -156,6 +156,7 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (core.Value, err
 		}
 
 		matched := false
+		var guardErr error
 		for _, clause := range fn.Clauses {
 			if len(clause.Params) == 0 {
 				fnEnv := core.NewEnv(parentEnv)
@@ -201,6 +202,9 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (core.Value, err
 				}
 				guardVal, err := Eval(clause.Guard, fnEnv)
 				if err != nil {
+					if guardErr == nil {
+						guardErr = err
+					}
 					continue
 				}
 				if !guardVal.Truthy() {
@@ -233,6 +237,9 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (core.Value, err
 		}
 
 		if !matched {
+			if guardErr != nil {
+				return core.Nil, fmt.Errorf("guard error in %s: %w", fn.Name, guardErr)
+			}
 			parts := make([]string, len(vals))
 			for i, v := range vals {
 				parts[i] = v.Inspect()

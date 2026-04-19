@@ -52,7 +52,8 @@ func evalIshFn(node *ast.Node, env *core.Env) (core.Value, error) {
 			fnVal.Env = env
 			return core.Value{Kind: core.VFn, Fn: fnVal}, nil
 		}
-		env.SetFn(name, fnVal)
+		// Arrow-clause form provides a complete dispatch table — replace.
+		env.ReplaceFn(name, fnVal)
 		return core.Nil, nil
 	}
 

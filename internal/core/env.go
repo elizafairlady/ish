@@ -31,6 +31,8 @@ type Env struct {
 	// CallFn is set by eval to allow stdlib/process to call user functions.
 	CallFn func(fn *FnValue, args []Value, env *Env) (Value, error)
 
+	ExprMode int // >0 when evaluating ish expressions (not POSIX commands)
+
 	// Shell state (ExitMu protects LastExit/HasExit for concurrent pipe access)
 	ExitMu   sync.Mutex
 	LastExit int    // $?
@@ -270,6 +272,16 @@ func (e *Env) SetFlag(flag byte, on bool) {
 	e.SetFlags[flag] = on
 }
 
+// EnterExprMode increments the expression mode counter and returns a
+// function that restores it. Use: defer env.EnterExprMode()()
+func (e *Env) EnterExprMode() func() {
+	e.ExprMode++
+	return func() { e.ExprMode-- }
+}
+
+// InExprMode reports whether we are inside an expression evaluation.
+func (e *Env) InExprMode() bool { return e.ExprMode > 0 }
+
 func (e *Env) GetTrap(sig string) (string, bool) {
 	for c := e; c != nil; c = c.Parent {
 		if c.Traps != nil {
@@ -324,12 +336,19 @@ func (e *Env) SetNativeFn(name string, fn NativeFn) {
 	e.NativeFns[name] = fn
 }
 
+// SetFn appends clauses to an existing function (for multi-definition
+// single-clause dispatch like fn fib 0 do...end; fn fib 1 do...end).
 func (e *Env) SetFn(name string, f *FnValue) {
-	// If fn already exists in this scope, append clause
 	if existing, ok := e.Fns[name]; ok {
 		existing.Clauses = append(existing.Clauses, f.Clauses...)
 		return
 	}
+	e.Fns[name] = f
+}
+
+// ReplaceFn fully replaces a function definition (for arrow-clause
+// dispatch tables like fn name do pattern -> body ... end).
+func (e *Env) ReplaceFn(name string, f *FnValue) {
 	e.Fns[name] = f
 }
 

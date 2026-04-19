@@ -342,6 +342,23 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 		if err != nil {
 			return core.Nil, err
 		}
+
+		// If the name evaluated to a function value directly, call it
+		if nameVal.Kind == core.VFn && nameVal.Fn != nil {
+			argVals := []core.Value{left}
+			for _, child := range right.Children[1:] {
+				v, err := Eval(child, env)
+				if err != nil {
+					return core.Nil, err
+				}
+				argVals = append(argVals, v)
+			}
+			if node.Tail {
+				return core.TailCallVal(nameVal.Fn, argVals), nil
+			}
+			return CallFn(nameVal.Fn, argVals, env)
+		}
+
 		name := nameVal.ToStr()
 
 		argVals := []core.Value{left}
@@ -387,6 +404,13 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 		}
 		if nfn, ok := env.GetNativeFn(name); ok {
 			return nfn(argVals, env)
+		}
+		// Check for variable-stored functions
+		if v, ok := env.Get(name); ok && v.Kind == core.VFn && v.Fn != nil {
+			if node.Tail {
+				return core.TailCallVal(v.Fn, argVals), nil
+			}
+			return CallFn(v.Fn, argVals, env)
 		}
 		strArgs := []string{left.ToStr()}
 		if b, ok := builtin.Builtins[name]; ok {

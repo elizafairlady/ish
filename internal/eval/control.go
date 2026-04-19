@@ -42,7 +42,6 @@ func evalOrList(node *ast.Node, env *core.Env) (core.Value, error) {
 }
 
 func evalSubshell(node *ast.Node, env *core.Env) (core.Value, error) {
-	osMu.Lock()
 	origCwd, _ := os.Getwd()
 	origMask := syscall.Umask(0)
 	syscall.Umask(origMask)
@@ -50,6 +49,7 @@ func evalSubshell(node *ast.Node, env *core.Env) (core.Value, error) {
 	subEnv := core.CopyEnv(env)
 	val, err := Eval(node.Children[0], subEnv)
 
+	osMu.Lock()
 	os.Chdir(origCwd)
 	syscall.Umask(origMask)
 	osMu.Unlock()

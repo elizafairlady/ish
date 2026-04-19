@@ -206,6 +206,19 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 			var files []*os.File
 			for _, r := range node.Redirs {
 				target := env.Expand(r.Target)
+				// Handle fd duplication: >&2, 2>&1, etc.
+				if strings.HasPrefix(target, "&") {
+					fdStr := target[1:]
+					switch fdStr {
+					case "2":
+						if r.Fd == 1 || r.Fd == 0 {
+							env.Stdout_ = os.Stderr
+						}
+					case "1":
+						// fd 2 -> stdout not directly supported for builtins
+					}
+					continue
+				}
 				switch r.Op {
 				case ast.TRedirOut:
 					f, ferr := os.Create(target)

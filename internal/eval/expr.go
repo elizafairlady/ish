@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -87,6 +88,10 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 		return core.Value{Kind: core.VFn, Fn: fn}, nil
 	}
 
+	if _, ok := env.GetNativeFn(name); ok {
+		return core.StringVal(name), nil
+	}
+
 	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
 		objName := name[:dotIdx]
 		field := name[dotIdx+1:]
@@ -97,10 +102,14 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 		}
 	}
 
+	if env.InExprMode() {
+		fmt.Fprintf(os.Stderr, "ish: warning: undefined variable '%s' used as string\n", name)
+	}
 	return core.StringVal(name), nil
 }
 
 func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
+	defer env.EnterExprMode()()
 	left, err := Eval(node.Children[0], env)
 	if err != nil {
 		return core.Nil, err
@@ -113,16 +122,36 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 	if left.Kind == core.VInt && right.Kind == core.VInt {
 		switch node.Tok.Type {
 		case ast.TPlus:
-			return core.IntVal(left.Int + right.Int), nil
+			result := left.Int + right.Int
+			if (right.Int > 0 && result < left.Int) || (right.Int < 0 && result > left.Int) {
+				return core.Nil, fmt.Errorf("integer overflow: %d + %d", left.Int, right.Int)
+			}
+			return core.IntVal(result), nil
 		case ast.TMinus:
-			return core.IntVal(left.Int - right.Int), nil
+			result := left.Int - right.Int
+			if (right.Int > 0 && result > left.Int) || (right.Int < 0 && result < left.Int) {
+				return core.Nil, fmt.Errorf("integer overflow: %d - %d", left.Int, right.Int)
+			}
+			return core.IntVal(result), nil
 		case ast.TMul:
-			return core.IntVal(left.Int * right.Int), nil
+			result := left.Int * right.Int
+			if left.Int != 0 && right.Int != 0 && result/left.Int != right.Int {
+				return core.Nil, fmt.Errorf("integer overflow: %d * %d", left.Int, right.Int)
+			}
+			return core.IntVal(result), nil
 		case ast.TDiv:
 			if right.Int == 0 {
 				return core.Nil, fmt.Errorf("division by zero")
 			}
+			if left.Int == math.MinInt64 && right.Int == -1 {
+				return core.Nil, fmt.Errorf("integer overflow: %d / %d", left.Int, right.Int)
+			}
 			return core.IntVal(left.Int / right.Int), nil
+		case ast.TPercent:
+			if right.Int == 0 {
+				return core.Nil, fmt.Errorf("modulo by zero")
+			}
+			return core.IntVal(left.Int % right.Int), nil
 		case ast.TEq:
 			return core.BoolVal(left.Int == right.Int), nil
 		case ast.TNe:
@@ -160,6 +189,11 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 				return core.Nil, fmt.Errorf("division by zero")
 			}
 			return core.FloatVal(lf / rf), nil
+		case ast.TPercent:
+			if rf == 0 {
+				return core.Nil, fmt.Errorf("modulo by zero")
+			}
+			return core.FloatVal(math.Mod(lf, rf)), nil
 		case ast.TEq:
 			return core.BoolVal(lf == rf), nil
 		case ast.TNe:
@@ -172,6 +206,20 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 			return core.BoolVal(lf <= rf), nil
 		case ast.TGe:
 			return core.BoolVal(lf >= rf), nil
+		}
+	}
+
+	// String comparison
+	if left.Kind == core.VString && right.Kind == core.VString {
+		switch node.Tok.Type {
+		case ast.TRedirIn:
+			return core.BoolVal(left.Str < right.Str), nil
+		case ast.TRedirOut:
+			return core.BoolVal(left.Str > right.Str), nil
+		case ast.TLe:
+			return core.BoolVal(left.Str <= right.Str), nil
+		case ast.TGe:
+			return core.BoolVal(left.Str >= right.Str), nil
 		}
 	}
 
@@ -324,6 +372,7 @@ func evalMatch(node *ast.Node, env *core.Env) (core.Value, error) {
 	lhs := node.Children[0]
 	rhs := node.Children[1]
 
+	defer env.EnterExprMode()()
 	val, err := Eval(rhs, env)
 	if err != nil {
 		return core.Nil, err

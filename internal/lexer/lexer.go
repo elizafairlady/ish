@@ -444,7 +444,10 @@ func (l *Lexer) lexWord() {
 			}
 			if ch == '|' || ch == '&' || ch == ';' || ch == '(' || ch == ')' ||
 				ch == '{' || ch == '}' || ch == '[' || ch == ']' ||
-				ch == '<' || ch == '>' || ch == ',' || ch == '#' {
+				ch == '<' || ch == '>' || ch == ',' {
+				break
+			}
+			if ch == '#' && !(l.pos+1 < len(l.src) && l.src[l.pos+1] == '{') {
 				break
 			}
 		}
@@ -484,6 +487,11 @@ func (l *Lexer) lexWord() {
 			continue
 		}
 		if ch == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
+			braceDepth++
+			l.pos += 2
+			continue
+		}
+		if ch == '#' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
 			braceDepth++
 			l.pos += 2
 			continue

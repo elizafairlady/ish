@@ -49,7 +49,7 @@ func (p *Parser) restoreTerminators(old []string) {
 
 func isExprOperator(tt ast.TokenType) bool {
 	switch tt {
-	case ast.TPlus, ast.TMinus, ast.TMul, ast.TDiv, ast.TEq, ast.TNe, ast.TLe, ast.TGe, ast.TDot:
+	case ast.TPlus, ast.TMinus, ast.TMul, ast.TDiv, ast.TPercent, ast.TEq, ast.TNe, ast.TLe, ast.TGe, ast.TDot:
 		return true
 	}
 	return false
@@ -437,6 +437,10 @@ func (p *Parser) dispatchKeyword() (*ast.Node, error) {
 	if IsAssignment(cur) {
 		return p.parsePosixAssign()
 	}
+	// Allow keywords as variable names when followed by =
+	if p.peek().Type == ast.TEquals {
+		return p.parseIshBind()
+	}
 	switch cur.Val {
 	case "if":
 		return p.parseIf()
@@ -469,10 +473,15 @@ func (p *Parser) dispatchKeyword() (*ast.Node, error) {
 	case "try":
 		return p.parseIshTry()
 	}
-	if p.peek().Type == ast.TEquals {
-		return p.parseIshBind()
-	}
 	if isExprOperator(p.peek().Type) && p.mode == ModeExpr {
+		// Don't treat % as modulo when followed by { (that's a map literal: %{...})
+		if p.peek().Type == ast.TPercent {
+			p.fillTo(p.pos + 2)
+			idx := p.pos + 2 - p.base
+			if idx < len(p.tokens) && p.tokens[idx].Type == ast.TLBrace {
+				return p.parseCmdLine()
+			}
+		}
 		return p.parseExpression()
 	}
 	if (p.peek().Type == ast.TRedirIn || p.peek().Type == ast.TRedirOut) && p.mode == ModeExpr {
@@ -1628,7 +1637,7 @@ func (p *Parser) precedence(tt ast.TokenType) int {
 		return 0
 	case ast.TPlus, ast.TMinus:
 		return 3
-	case ast.TMul, ast.TDiv:
+	case ast.TMul, ast.TDiv, ast.TPercent:
 		return 4
 	default:
 		return 0
