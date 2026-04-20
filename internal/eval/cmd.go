@@ -622,7 +622,7 @@ func evalPosixFnDef(node *ast.Node, env *core.Env) (core.Value, error) {
 			Body: node.Children[0],
 		}},
 	}
-	env.SetFn(name, fnVal)
+	env.SetFnClauses(name, fnVal)
 	return core.Nil, nil
 }
 

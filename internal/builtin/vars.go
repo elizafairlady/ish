@@ -92,7 +92,6 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 				case 'X':
 					ensureDebugger(env)
 					env.SetFlag('X', true)
-					env.SetFlag('x', true)
 					if d, ok := env.Debugger.(*debug.Debugger); ok {
 						d.TraceAll = true
 					}
@@ -110,7 +109,6 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 					env.SetFlag(byte(ch), false)
 				case 'X':
 					env.SetFlag('X', false)
-					env.SetFlag('x', false)
 					if d, ok := env.Debugger.(*debug.Debugger); ok {
 						d.TraceAll = false
 					}
@@ -173,6 +171,17 @@ func builtinLocal(args []string, env *core.Env) (int, error) {
 		} else {
 			env.SetLocal(arg, core.StringVal(""))
 		}
+	}
+	return 0, nil
+}
+
+func builtinDeleteFn(args []string, env *core.Env) (int, error) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "delete_fn: usage: delete_fn name [name ...]")
+		return 1, nil
+	}
+	for _, name := range args {
+		env.DeleteFn(name)
 	}
 	return 0, nil
 }

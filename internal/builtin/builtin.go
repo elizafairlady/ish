@@ -68,9 +68,10 @@ func init() {
 		"ulimit":  builtinUlimit,
 		"getopts": builtinGetopts,
 		// alias.go
-		"alias":   builtinAlias,
-		"unalias": builtinUnalias,
-		"command": builtinCommand,
+		"alias":     builtinAlias,
+		"unalias":   builtinUnalias,
+		"command":   builtinCommand,
+		"delete_fn": builtinDeleteFn,
 		// jobs (from jobs package)
 		"jobs": jobs.BuiltinJobs,
 		"fg":   jobs.BuiltinFg,

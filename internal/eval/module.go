@@ -51,7 +51,7 @@ func evalUse(node *ast.Node, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("use: module %s not found", modName)
 	}
 	for name, fn := range mod.Fns {
-		env.SetFn(name, fn)
+		env.SetFnClauses(name, fn)
 	}
 	for name, nfn := range mod.NativeFns {
 		env.SetNativeFn(name, nfn)

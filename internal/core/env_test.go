@@ -98,7 +98,7 @@ func TestEnvGetSetFn(t *testing.T) {
 	t.Run("set and get fn", func(t *testing.T) {
 		e := NewEnv(nil)
 		fn := &FnValue{Name: "add", Clauses: []FnClause{{}}}
-		e.SetFn("add", fn)
+		e.AddFnClauses("add", fn)
 
 		got, ok := e.GetFn("add")
 		if !ok {
@@ -114,8 +114,8 @@ func TestEnvGetSetFn(t *testing.T) {
 		fn1 := &FnValue{Name: "fib", Clauses: []FnClause{{}}}
 		fn2 := &FnValue{Name: "fib", Clauses: []FnClause{{}, {}}}
 
-		e.SetFn("fib", fn1)
-		e.SetFn("fib", fn2) // should append clauses
+		e.AddFnClauses("fib", fn1)
+		e.AddFnClauses("fib", fn2) // should append clauses
 
 		got, _ := e.GetFn("fib")
 		if len(got.Clauses) != 3 {
@@ -125,7 +125,7 @@ func TestEnvGetSetFn(t *testing.T) {
 
 	t.Run("child inherits parent fn", func(t *testing.T) {
 		parent := NewEnv(nil)
-		parent.SetFn("greet", &FnValue{Name: "greet", Clauses: []FnClause{{}}})
+		parent.AddFnClauses("greet", &FnValue{Name: "greet", Clauses: []FnClause{{}}})
 		child := NewEnv(parent)
 
 		got, ok := child.GetFn("greet")
@@ -376,7 +376,7 @@ func TestEnvDeleteVar(t *testing.T) {
 
 func TestEnvDeleteFn(t *testing.T) {
 	parent := NewEnv(nil)
-	parent.SetFn("f", &FnValue{Name: "f"})
+	parent.AddFnClauses("f", &FnValue{Name: "f"})
 	child := NewEnv(parent)
 
 	child.DeleteFn("f")

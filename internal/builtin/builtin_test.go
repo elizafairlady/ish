@@ -235,7 +235,7 @@ func TestBuiltinUnset(t *testing.T) {
 
 func TestBuiltinUnsetFn(t *testing.T) {
 	env := testutil.TestEnv()
-	env.SetFn("myfunc", &core.FnValue{Name: "myfunc", Clauses: []core.FnClause{{}}})
+	env.AddFnClauses("myfunc", &core.FnValue{Name: "myfunc", Clauses: []core.FnClause{{}}})
 
 	if _, ok := env.GetFn("myfunc"); !ok {
 		t.Fatal("myfunc should exist before unset")
@@ -477,7 +477,7 @@ func TestBuiltinTypeBuiltin(t *testing.T) {
 
 func TestBuiltinTypeFunction(t *testing.T) {
 	env := testutil.TestEnv()
-	env.SetFn("myfunc", &core.FnValue{Name: "myfunc", Clauses: []core.FnClause{{}}})
+	env.AddFnClauses("myfunc", &core.FnValue{Name: "myfunc", Clauses: []core.FnClause{{}}})
 	got := testutil.CaptureOutput(env, func() {
 		b := builtin.Builtins["type"]
 		b([]string{"myfunc"}, env)

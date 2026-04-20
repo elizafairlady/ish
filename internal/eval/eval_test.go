@@ -1303,13 +1303,16 @@ func TestSetXUpperTracesEverything(t *testing.T) {
 	stderr := captureStderr(func() {
 		RunSource(`set -X; echo hello`, env)
 	})
-	// Should include ish-level trace with position
+	// Should include ish-level position-tagged trace
 	if !strings.Contains(stderr, "echo hello") {
 		t.Errorf("set -X should trace ish nodes, got: %q", stderr)
 	}
-	// Should also include POSIX-level expanded command (implies -x)
-	if !strings.Contains(stderr, "+ echo hello") {
-		t.Errorf("set -X should imply -x for external commands, got: %q", stderr)
+	// Should NOT produce POSIX xtrace output (no implied -x)
+	lines := strings.Split(stderr, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "+ ") && !strings.Contains(line, "[") {
+			t.Errorf("set -X should not produce POSIX xtrace output; use set -xX for both; got line: %q", line)
+		}
 	}
 }
 
@@ -1318,13 +1321,38 @@ func TestSetXUpperShowsFunctionDispatch(t *testing.T) {
 	stderr := captureStderr(func() {
 		RunSource("fn greet name do\n  echo \"hello $name\"\nend\nset -X\ngreet world", env)
 	})
-	// Should show the ish function call
+	// Should show the ish function call as a position-tagged trace
 	if !strings.Contains(stderr, "greet world") {
 		t.Errorf("set -X should show function dispatch, got: %q", stderr)
 	}
-	// Should show the expanded echo command (via implied -x)
-	if !strings.Contains(stderr, "+ echo hello world") {
-		t.Errorf("set -X should show expanded shell command, got: %q", stderr)
+	// Should NOT produce POSIX xtrace lines (no implied -x)
+	lines := strings.Split(stderr, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "+ ") && !strings.Contains(line, "[") {
+			t.Errorf("set -X alone should not produce POSIX xtrace; use set -xX for both; got line: %q", line)
+		}
+	}
+}
+
+func TestSetXLowerAndUpperProducesBoth(t *testing.T) {
+	env := testEnv()
+	stderr := captureStderr(func() {
+		RunSource(`set -xX; echo hello`, env)
+	})
+	// Should have ish-level position-tagged trace
+	if !strings.Contains(stderr, "[") {
+		t.Errorf("set -xX should produce ish-level traces, got: %q", stderr)
+	}
+	// Should also have POSIX xtrace output
+	hasPosix := false
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.HasPrefix(line, "+ ") && !strings.Contains(line, "[") {
+			hasPosix = true
+			break
+		}
+	}
+	if !hasPosix {
+		t.Errorf("set -xX should produce POSIX xtrace output, got: %q", stderr)
 	}
 }
 

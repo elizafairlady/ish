@@ -364,9 +364,10 @@ func (e *Env) SetNativeFn(name string, fn NativeFn) {
 	e.NativeFns[name] = fn
 }
 
-// SetFn appends clauses to an existing function (for multi-definition
-// single-clause dispatch like fn fib 0 do...end; fn fib 1 do...end).
-func (e *Env) SetFn(name string, f *FnValue) {
+// AddFnClauses appends clauses to an existing function, or registers it
+// fresh if no function with that name exists yet. Use this for sequential
+// single-clause definitions (fn fib 0 do...end; fn fib 1 do...end).
+func (e *Env) AddFnClauses(name string, f *FnValue) {
 	if existing, ok := e.Fns[name]; ok {
 		existing.Clauses = append(existing.Clauses, f.Clauses...)
 		return
@@ -374,9 +375,11 @@ func (e *Env) SetFn(name string, f *FnValue) {
 	e.Fns[name] = f
 }
 
-// ReplaceFn fully replaces a function definition (for arrow-clause
-// dispatch tables like fn name do pattern -> body ... end).
-func (e *Env) ReplaceFn(name string, f *FnValue) {
+// SetFnClauses unconditionally replaces a function's complete clause list.
+// Use this for dispatch-table definitions (fn name do pattern -> body end)
+// and for POSIX function redefinitions (name() { ... }), where a new
+// definition should fully replace the old one.
+func (e *Env) SetFnClauses(name string, f *FnValue) {
 	e.Fns[name] = f
 }
 
