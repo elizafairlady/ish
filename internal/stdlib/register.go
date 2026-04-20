@@ -92,4 +92,11 @@ func Register(env *core.Env) {
 			"sleep": stdlibSleep,
 		},
 	})
+
+	env.SetModule("Enum", &core.Module{
+		Name: "Enum",
+		NativeFns: map[string]core.NativeFn{
+			"each": stdlibEnumEach,
+		},
+	})
 }

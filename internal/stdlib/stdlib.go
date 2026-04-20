@@ -513,6 +513,31 @@ func stdlibEach(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.Nil, nil
 }
 
+// Enum.each list, fn -> :ok
+func stdlibEnumEach(args []core.Value, env *core.Env) (core.Value, error) {
+	if len(args) != 2 {
+		return core.Nil, fmt.Errorf("Enum.each: expected 2 arguments, got %d", len(args))
+	}
+	list := args[0]
+	if list.Kind != core.VList {
+		return core.Nil, fmt.Errorf("Enum.each: first argument must be a list, got %s", list.Inspect())
+	}
+	fn := args[1]
+	if fn.Kind != core.VFn || fn.Fn == nil {
+		return core.Nil, fmt.Errorf("Enum.each: second argument must be a function, got %s", fn.Inspect())
+	}
+	if env.CallFn == nil {
+		return core.Nil, fmt.Errorf("Enum.each: CallFn not set")
+	}
+	for _, elem := range list.Elems {
+		_, err := env.CallFn(fn.Fn, []core.Value{elem}, env)
+		if err != nil {
+			return core.Nil, fmt.Errorf("Enum.each: %w", err)
+		}
+	}
+	return core.AtomVal("ok"), nil
+}
+
 // sort list -> sorted list
 func stdlibSort(args []core.Value, env *core.Env) (core.Value, error) {
 	if len(args) != 1 {

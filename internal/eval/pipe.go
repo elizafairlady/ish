@@ -76,6 +76,9 @@ func isBridgeFn(node *ast.Node) bool {
 func evalPipe(node *ast.Node, env *core.Env) (core.Value, error) {
 	left := node.Children[0]
 	right := node.Children[1]
+	if right == nil {
+		return core.Nil, fmt.Errorf("pipe: missing right-hand side")
+	}
 	pipeStderr := node.Tok.Val == "|&"
 
 	// Auto-coerce: if left produces a value (not bytes), convert to lines
@@ -281,6 +284,9 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 	leftNode := node.Children[0]
 	right := node.Children[1]
+	if right == nil {
+		return core.Nil, fmt.Errorf("pipe arrow: missing right-hand side")
+	}
 
 	// Auto-coerce: if left is a command (produces bytes) and right is not
 	// an explicit bridge function, capture stdout and apply from_lines
@@ -447,6 +453,16 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 		return evalExternalCmd(name, strArgs, nil, env)
 
 	default:
+		val, err := Eval(right, env)
+		if err != nil {
+			return core.Nil, err
+		}
+		if val.Kind == core.VFn && val.Fn != nil {
+			if node.Tail {
+				return core.TailCallVal(val.Fn, []core.Value{left}), nil
+			}
+			return CallFn(val.Fn, []core.Value{left}, env)
+		}
 		return core.Nil, fmt.Errorf("pipe arrow: right side must be a function or command")
 	}
 }

@@ -135,6 +135,38 @@ func TestIntegration(t *testing.T) {
 
 		// Heredoc backslash-newline continuation
 		{"heredoc backslash-newline continuation", "cat <<EOF\nhello \\\nworld\nEOF", "hello world"},
+
+		// === Adversarial testing: wrong results now fixed ===
+		// Pipe arrow into lambda
+		{"pipe arrow lambda", "r = 42 |> \\x -> x + 1\necho $r", "43\n"},
+		// Chained dot access
+		{"chained dot access", "m = %{a: %{b: 42}}\necho $m.a.b", "42\n"},
+		// Zero-arity auto-call
+		{"zero-arity auto-call", "fn greet do \"hello\" end\nx = greet\necho $x", "hello\n"},
+		{"zero-arity module fn", "defmodule Math do\nfn pi do 3 end\nend\nx = Math.pi\necho $x", "3\n"},
+		// Function capture with &
+		{"fn capture with &", "fn greet do \"hello\" end\nf = &greet\necho $f", "#Function<greet/1>\n"},
+		// Expression-mode fn body args
+		{"fn body arithmetic arg", "fn countdown 0 do echo done end\nfn countdown n do countdown n - 1 end\ncountdown 3", "done\n"},
+		// For-in native list iteration
+		{"for-in list iteration", "xs = [10, 20, 30]\nfor x in $xs do\necho $x\nend", "10\n20\n30\n"},
+		// Map patterns
+		{"map pattern match", "m = %{name: \"alice\", age: 30}\nmatch m do\n%{name: n} -> echo $n\nend", "alice\n"},
+		// Comparison chaining
+		{"comparison chaining true", "x = 1 < 2 < 3\necho $x", ":true\n"},
+		{"comparison chaining false", "x = 1 < 2 > 3\necho $x", ":false\n"},
+		// $"..." strings
+		{"dollar-string tab escape", `echo $"a\tb"`, "a\tb\n"},
+		{"dollar-string newline escape", `echo $"a\nb"`, "a\nb\n"},
+		{"regular string no escape", `echo "a\tb"`, "a\\tb\n"},
+		// Module self-reference
+		{"module self-reference", "defmodule M do\nfn bar do 42 end\nfn foo do M.bar end\nend\necho $(M.foo)", "42\n"},
+		// Module redefinition extends
+		{"module redefinition extends", "defmodule M do\nfn a do 1 end\nend\ndefmodule M do\nfn b do 2 end\nend\necho $(M.a) $(M.b)", "1 2\n"},
+		// If-do with nil condition
+		{"if nil do skips body", "if nil do\necho yes\nend\necho after", "after\n"},
+		{"if true do runs body", "if :true do\necho yes\nend", "yes\n"},
+		{"if false do skips body", "if :false do\necho no\nend\necho after", "after\n"},
 	}
 
 	for _, tt := range tests {
@@ -147,6 +179,82 @@ func TestIntegration(t *testing.T) {
 				t.Errorf("script:\n%s\ngot:  %q\nwant: %q", tt.script, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestAdversarialErrors verifies that previously-crashing or hanging inputs
+// now produce clean errors and terminate within a reasonable time.
+func TestAdversarialErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+	}{
+		// Former crashes (nil dereference)
+		{"crash: pipe with empty RHS", "echo hello |"},
+		{"crash: pipe arrow with empty RHS", "[1,2,3] |>"},
+		{"crash: double pipe arrow", "x = [1,2,3] |> |> List.length"},
+
+		// Former hangs (parser infinite loop)
+		{"hang: standalone arrow", "->"},
+		{"hang: standalone pipe", "|"},
+		{"hang: standalone pipe arrow", "|>"},
+		{"hang: standalone or", "||"},
+		{"hang: standalone and", "&&"},
+		{"hang: standalone rparen", ")"},
+		{"hang: standalone rbrace", "}"},
+
+		// Large integer overflow
+		{"error: large integer overflow", "echo 99999999999999999999"},
+
+		// Atom starting with digit
+		{"error: atom starts with digit", ":123abc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				env := testutil.TestEnv()
+				testutil.CaptureOutput(env, func() {
+					testutil.RunSource(tt.script, env)
+				})
+			}()
+
+			select {
+			case <-done:
+				// Terminated without hanging — success
+			case <-time.After(3 * time.Second):
+				t.Fatalf("script hung (did not terminate within 3s):\n%s", tt.script)
+			}
+		})
+	}
+}
+
+// TestAdversarialBreakContinue verifies break/continue outside loop produce errors.
+func TestAdversarialBreakContinue(t *testing.T) {
+	for _, kw := range []string{"break", "continue"} {
+		t.Run(kw+" outside loop", func(t *testing.T) {
+			env := testutil.TestEnv()
+			testutil.CaptureOutput(env, func() {
+				testutil.RunSource(kw, env)
+			})
+			if env.ExitCode() == 0 {
+				t.Errorf("%s outside loop should set non-zero exit code", kw)
+			}
+		})
+	}
+}
+
+// TestAdversarialReadonlyUnset verifies that readonly vars can't be unset.
+func TestAdversarialReadonlyUnset(t *testing.T) {
+	env := testutil.TestEnv()
+	testutil.CaptureOutput(env, func() {
+		testutil.RunSource("readonly FOO=bar\nunset FOO", env)
+	})
+	v, ok := env.Get("FOO")
+	if !ok || v.ToStr() != "bar" {
+		t.Errorf("readonly variable FOO should not be unset, got %v (exists: %v)", v, ok)
 	}
 }
 

@@ -278,12 +278,15 @@ func (p *Parser) parseBlock() ([]*ast.Node, error) {
 		if p.cur().Type == ast.TWord && p.isBlockEnd(p.cur().Val) {
 			break
 		}
+		posBefore := p.pos
 		stmt, err := p.parseList()
 		if err != nil {
 			return nil, err
 		}
 		if stmt != nil {
 			stmts = append(stmts, stmt)
+		} else if p.pos == posBefore {
+			return nil, fmt.Errorf("unexpected token %q at position %d", p.cur().Val, p.cur().Pos)
 		}
 		p.skipSeparators()
 	}
@@ -346,6 +349,9 @@ func (p *Parser) parsePipeline() (*ast.Node, error) {
 			if err != nil {
 				return nil, err
 			}
+			if right == nil {
+				return nil, fmt.Errorf("expected command after '|'")
+			}
 			left = &ast.Node{Kind: ast.NPipe, Tok: tok, Children: []*ast.Node{left, right}}
 		} else if p.cur().Type == ast.TPipeArrow {
 			p.advance()
@@ -353,6 +359,9 @@ func (p *Parser) parsePipeline() (*ast.Node, error) {
 			right, err := p.parseStmtWithOps()
 			if err != nil {
 				return nil, err
+			}
+			if right == nil {
+				return nil, fmt.Errorf("expected expression after '|>'")
 			}
 			left = &ast.Node{Kind: ast.NPipeFn, Children: []*ast.Node{left, right}}
 		} else {
@@ -434,6 +443,12 @@ func (p *Parser) parseStmt() (*ast.Node, error) {
 		return p.dispatchKeyword()
 	case ast.TMinus:
 		return p.parseExpression()
+	case ast.TAmpersand:
+		if p.isExprContext() && p.peek().Type == ast.TWord {
+			p.advance() // consume &
+			tok := p.advance() // consume name
+			return &ast.Node{Kind: ast.NCapture, Tok: tok}, nil
+		}
 	}
 
 	return p.parseCmdLine()
@@ -680,6 +695,7 @@ func (p *Parser) parseCmdLine() (*ast.Node, error) {
 	assigns := p.collectAssigns()
 	var children []*ast.Node
 	var redirs []ast.Redir
+	exprCtx := p.isExprContext()
 
 	for {
 		cur := p.cur()
@@ -700,6 +716,30 @@ func (p *Parser) parseCmdLine() (*ast.Node, error) {
 		if cur.Type == ast.TLBracket && len(children) == 0 && !cur.ExprHint && p.mode != ModeExpr {
 			p.advance()
 			children = append(children, ast.WordNode(ast.Token{Type: ast.TWord, Val: "[", Pos: cur.Pos}))
+			continue
+		}
+		// In expression context, after the command name (first child),
+		// parse arguments as full expressions separated by commas.
+		// Exception: parenthesized args parse as single values so that
+		// operators after the closing paren stay at the statement level
+		// (e.g. `fib (n - 1) + fib (n - 2)` works correctly).
+		if exprCtx && len(children) > 0 {
+			var arg *ast.Node
+			var err error
+			if p.cur().Type == ast.TLParen {
+				arg, err = p.parseValue(true)
+			} else {
+				arg, err = p.parseExpression()
+			}
+			if err != nil {
+				return nil, err
+			}
+			if arg != nil {
+				children = append(children, arg)
+			}
+			if p.cur().Type == ast.TComma {
+				p.advance()
+			}
 			continue
 		}
 		arg, err := p.parseValue(true)
@@ -838,6 +878,16 @@ func (p *Parser) parseIf() (*ast.Node, error) {
 	if p.isWord("then") {
 		return p.parsePosixIf(cond, node)
 	} else if p.isWord("do") {
+		// Mark as ish-style so evaluator checks value truthiness, not exit code
+		node.Tok.Val = "ish"
+		// Convert bare value-keyword commands (nil, true, false) to word nodes
+		// so the evaluator treats them as values, not commands
+		if cond.Kind == ast.NCmd && len(cond.Children) == 1 {
+			name := cond.Children[0].Tok.Val
+			if name == "nil" || name == "true" || name == "false" {
+				cond = ast.WordNode(cond.Children[0].Tok)
+			}
+		}
 		return p.parseIshIf(cond, node)
 	}
 	return nil, fmt.Errorf("expected 'then' or 'do' after if condition at pos %d", p.cur().Pos)
@@ -1697,9 +1747,44 @@ func (p *Parser) parsePattern() (*ast.Node, error) {
 		return p.parseTupleExpr()
 	case ast.TLBracket:
 		return p.parseListExpr()
+	case ast.TPercent:
+		if p.peek().Type == ast.TLBrace {
+			return p.parseMapPattern()
+		}
+		return nil, fmt.Errorf("unexpected token in pattern: %%")
 	default:
 		return nil, fmt.Errorf("unexpected token in pattern: %q at pos %d", cur.Val, cur.Pos)
 	}
+}
+
+func (p *Parser) parseMapPattern() (*ast.Node, error) {
+	p.advance() // skip %
+	p.advance() // skip {
+	node := &ast.Node{Kind: ast.NMap}
+	p.skipNewlines()
+	for p.cur().Type != ast.TRBrace && p.cur().Type != ast.TEOF {
+		key := p.advance()
+		keyName := key.Val
+		if strings.HasSuffix(keyName, ":") {
+			keyName = keyName[:len(keyName)-1]
+		} else if p.isWord(":") {
+			p.advance()
+		}
+		key.Val = keyName
+		val, err := p.parsePattern()
+		if err != nil {
+			return nil, err
+		}
+		node.Children = append(node.Children, &ast.Node{Kind: ast.NLit, Tok: key}, val)
+		if p.cur().Type == ast.TComma {
+			p.advance()
+			p.skipNewlines()
+		}
+	}
+	if _, err := p.expect(ast.TRBrace); err != nil {
+		return nil, err
+	}
+	return node, nil
 }
 
 func (p *Parser) parseLambda() (*ast.Node, error) {
@@ -1785,6 +1870,20 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 			return nil, err
 		}
 		left = &ast.Node{Kind: ast.NBinOp, Tok: op, Children: []*ast.Node{left, right}}
+
+		// Comparison chaining: desugar a < b < c into (a < b) && (b < c)
+		if p.isComparisonOp(op.Type) {
+			for p.isComparisonOp(p.cur().Type) {
+				nextOp := p.advance()
+				nextRight, err := p.parseExpr(p.precedence(nextOp.Type))
+				if err != nil {
+					return nil, err
+				}
+				cmp := &ast.Node{Kind: ast.NBinOp, Tok: nextOp, Children: []*ast.Node{right, nextRight}}
+				left = &ast.Node{Kind: ast.NAndList, Children: []*ast.Node{left, cmp}}
+				right = nextRight
+			}
+		}
 	}
 
 	for p.cur().Type == ast.TDot {
@@ -1840,6 +1939,16 @@ func isValueStart(tt ast.TokenType) bool {
 		ast.TLParen, ast.TLBracket, ast.TLBrace, ast.TPercent,
 		ast.TBackslash:
 		return true
+	}
+	return false
+}
+
+func (p *Parser) isComparisonOp(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TEq, ast.TNe, ast.TLe, ast.TGe:
+		return true
+	case ast.TRedirIn, ast.TRedirOut:
+		return p.mode == ModeExpr
 	}
 	return false
 }

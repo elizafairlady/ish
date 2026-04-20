@@ -59,6 +59,21 @@ func PatternBind(pat *ast.Node, val core.Value, env *core.Env) error {
 			}
 		}
 		return nil
+	case ast.NMap:
+		if val.Kind != core.VMap || val.Map == nil {
+			return fmt.Errorf("match error: expected map, got %s", val.Inspect())
+		}
+		for i := 0; i+1 < len(pat.Children); i += 2 {
+			key := pat.Children[i].Tok.Val
+			mapVal, ok := val.Map.Get(key)
+			if !ok {
+				return fmt.Errorf("match error: key %q not found in map", key)
+			}
+			if err := PatternBind(pat.Children[i+1], mapVal, env); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	return fmt.Errorf("unsupported pattern kind: %d", pat.Kind)
 }
@@ -100,6 +115,21 @@ func PatternMatches(pat *ast.Node, val core.Value, env *core.Env) bool {
 		}
 		for i, child := range pat.Children {
 			if !PatternMatches(child, val.Elems[i], env) {
+				return false
+			}
+		}
+		return true
+	case ast.NMap:
+		if val.Kind != core.VMap || val.Map == nil {
+			return false
+		}
+		for i := 0; i+1 < len(pat.Children); i += 2 {
+			key := pat.Children[i].Tok.Val
+			mapVal, ok := val.Map.Get(key)
+			if !ok {
+				return false
+			}
+			if !PatternMatches(pat.Children[i+1], mapVal, env) {
 				return false
 			}
 		}

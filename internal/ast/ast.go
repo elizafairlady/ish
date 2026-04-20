@@ -111,6 +111,7 @@ const (
 	NLambda    // \params -> expr
 	NDefModule // defmodule Name do defs end
 	NUse       // use Module
+	NCapture   // &name — capture function value without calling
 )
 
 type Node struct {

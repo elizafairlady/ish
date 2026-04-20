@@ -322,6 +322,18 @@ func evalCmdArg(node *ast.Node, env *core.Env) (core.Value, error) {
 			return evalCmdSub(name[2:len(name)-1], env)
 		}
 		if strings.Contains(name, "$") || strings.Contains(name, "#{") {
+			// Simple $var reference: try type-preserving resolution
+			// including dot-access for $map.field.subfield
+			if len(name) > 1 && name[0] == '$' && !strings.ContainsAny(name[1:], "$#{") {
+				varName := name[1:]
+				if v, ok := env.Get(varName); ok {
+					return v, nil
+				}
+				if strings.ContainsRune(varName, '.') {
+					varNode := &ast.Node{Kind: ast.NWord, Tok: ast.Token{Type: ast.TWord, Val: varName}}
+					return evalWord(varNode, env)
+				}
+			}
 			return core.StringVal(env.Expand(name)), nil
 		}
 		if strings.ContainsAny(name, "'\"") {

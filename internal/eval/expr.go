@@ -25,10 +25,16 @@ func evalLit(node *ast.Node, env *core.Env) (core.Value, error) {
 func litToValue(node *ast.Node) (core.Value, error) {
 	switch node.Tok.Type {
 	case ast.TInt:
-		n, _ := strconv.ParseInt(node.Tok.Val, 10, 64)
+		n, err := strconv.ParseInt(node.Tok.Val, 10, 64)
+		if err != nil {
+			return core.Nil, fmt.Errorf("integer literal out of range: %s", node.Tok.Val)
+		}
 		return core.IntVal(n), nil
 	case ast.TFloat:
-		f, _ := strconv.ParseFloat(node.Tok.Val, 64)
+		f, err := strconv.ParseFloat(node.Tok.Val, 64)
+		if err != nil {
+			return core.Nil, fmt.Errorf("float literal out of range: %s", node.Tok.Val)
+		}
 		return core.FloatVal(f), nil
 	case ast.TString:
 		return core.StringVal(node.Tok.Val), nil
@@ -83,6 +89,11 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 			if v, ok := env.Get(varName); ok {
 				return v, nil
 			}
+			// Try dot-access resolution for $map.field.subfield
+			if strings.ContainsRune(varName, '.') {
+				varNode := &ast.Node{Kind: ast.NWord, Tok: ast.Token{Type: ast.TWord, Val: varName}}
+				return evalWord(varNode, env)
+			}
 		}
 		expanded := env.Expand(name)
 		return core.StringVal(expanded), nil
@@ -93,6 +104,9 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	if fn, ok := env.GetFn(name); ok {
+		if env.InExprMode() && isZeroArity(fn) {
+			return CallFn(fn, nil, env)
+		}
 		return core.Value{Kind: core.VFn, Fn: fn}, nil
 	}
 
@@ -105,6 +119,9 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 		fnName := name[dotIdx+1:]
 		if mod, ok := env.GetModule(modName); ok {
 			if fn, ok := mod.Fns[fnName]; ok {
+				if env.InExprMode() && isZeroArity(fn) {
+					return CallFn(fn, nil, env)
+				}
 				return core.Value{Kind: core.VFn, Fn: fn}, nil
 			}
 			if nfn, ok := mod.NativeFns[fnName]; ok {
@@ -119,12 +136,69 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 				return v, nil
 			}
 		}
+		// Recursive dot resolution for chained access like m.a.b
+		if lastDot := strings.LastIndexByte(name, '.'); lastDot > 0 && lastDot != dotIdx {
+			leftName := name[:lastDot]
+			rightField := name[lastDot+1:]
+			leftNode := &ast.Node{Kind: ast.NWord, Tok: ast.Token{Type: ast.TWord, Val: leftName}}
+			obj, err := evalWord(leftNode, env)
+			if err != nil {
+				return core.Nil, err
+			}
+			if obj.Kind == core.VMap && obj.Map != nil {
+				if v, ok := obj.Map.Get(rightField); ok {
+					return v, nil
+				}
+			}
+		}
 	}
 
 	if env.InExprMode() {
 		fmt.Fprintf(os.Stderr, "ish: warning: undefined variable '%s' used as string\n", name)
 	}
 	return core.StringVal(name), nil
+}
+
+// isZeroArity returns true if all clauses of a function accept 0 parameters.
+func isZeroArity(fn *core.FnValue) bool {
+	if fn.Native != nil {
+		return false
+	}
+	if len(fn.Clauses) == 0 {
+		return false
+	}
+	for _, c := range fn.Clauses {
+		if len(c.Params) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// evalCapture handles &name — returns the function value without auto-calling.
+func evalCapture(node *ast.Node, env *core.Env) (core.Value, error) {
+	name := node.Tok.Val
+	if fn, ok := env.GetFn(name); ok {
+		return core.Value{Kind: core.VFn, Fn: fn}, nil
+	}
+	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
+		modName := name[:dotIdx]
+		fnName := name[dotIdx+1:]
+		if mod, ok := env.GetModule(modName); ok {
+			if fn, ok := mod.Fns[fnName]; ok {
+				return core.Value{Kind: core.VFn, Fn: fn}, nil
+			}
+			if nfn, ok := mod.NativeFns[fnName]; ok {
+				return core.Value{Kind: core.VFn, Fn: &core.FnValue{
+					Name: modName + "." + fnName, Native: nfn,
+				}}, nil
+			}
+		}
+	}
+	if v, ok := env.Get(name); ok && v.Kind == core.VFn {
+		return v, nil
+	}
+	return core.Nil, fmt.Errorf("undefined function: %s", name)
 }
 
 func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {

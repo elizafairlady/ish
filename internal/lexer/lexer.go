@@ -570,6 +570,11 @@ func (l *Lexer) lexAtom() {
 		l.pos++
 	}
 	if l.pos > start {
+		if l.src[start] >= '0' && l.src[start] <= '9' {
+			if l.err == "" {
+				l.err = "atom name cannot start with a digit"
+			}
+		}
 		l.emit(ast.TAtom, l.src[start:l.pos])
 	} else {
 		l.emit(ast.TWord, ":")
@@ -839,7 +844,75 @@ func (l *Lexer) lexFlag() {
 	l.emit(ast.TWord, l.src[start:l.pos])
 }
 
+func (l *Lexer) lexDollarDoubleQuote() {
+	l.pos += 2 // skip $"
+	var buf strings.Builder
+	for l.pos < len(l.src) && l.src[l.pos] != '"' {
+		if l.src[l.pos] == '\\' && l.pos+1 < len(l.src) {
+			next := l.src[l.pos+1]
+			switch next {
+			case 't':
+				buf.WriteByte('\t')
+				l.pos += 2
+			case 'n':
+				buf.WriteByte('\n')
+				l.pos += 2
+			case 'r':
+				buf.WriteByte('\r')
+				l.pos += 2
+			case '0':
+				buf.WriteByte(0)
+				l.pos += 2
+			case '"', '\\', '$', '`':
+				buf.WriteByte(next)
+				l.pos += 2
+			case '\n':
+				buf.WriteByte(next)
+				l.pos += 2
+			default:
+				buf.WriteByte('\\')
+				buf.WriteByte(next)
+				l.pos += 2
+			}
+			continue
+		}
+		if l.src[l.pos] == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '(' {
+			buf.WriteString("$(")
+			l.pos += 2
+			depth := 1
+			for l.pos < len(l.src) && depth > 0 {
+				ch := l.src[l.pos]
+				if ch == '(' {
+					depth++
+				} else if ch == ')' {
+					depth--
+					if depth == 0 {
+						buf.WriteByte(')')
+						l.pos++
+						break
+					}
+				}
+				buf.WriteByte(ch)
+				l.pos++
+			}
+			continue
+		}
+		buf.WriteByte(l.src[l.pos])
+		l.pos++
+	}
+	if l.pos < len(l.src) {
+		l.pos++
+	} else if l.err == "" {
+		l.err = "unterminated dollar double-quoted string"
+	}
+	l.emit(ast.TString, buf.String())
+}
+
 func (l *Lexer) lexDollar() {
+	if l.peek(1) == '"' {
+		l.lexDollarDoubleQuote()
+		return
+	}
 	if l.peek(1) == '(' {
 		if l.peek(2) == '(' {
 			l.pos += 3

@@ -68,6 +68,7 @@ func evalRedir(node *ast.Node, env *core.Env) (core.Value, error) {
 }
 
 func evalIf(node *ast.Node, env *core.Env) (core.Value, error) {
+	ishStyle := node.Tok.Val == "ish"
 	for _, clause := range node.Clauses {
 		if clause.Pattern == nil {
 			return Eval(clause.Body, env)
@@ -78,13 +79,47 @@ func evalIf(node *ast.Node, env *core.Env) (core.Value, error) {
 			return core.Nil, err
 		}
 
-		syncExit(condVal, env)
+		var condTrue bool
+		if ishStyle {
+			condTrue = condVal.Truthy()
+		} else {
+			syncExit(condVal, env)
+			condTrue = env.ExitCode() == 0
+		}
 
-		if env.ExitCode() == 0 {
+		if condTrue {
 			return Eval(clause.Body, env)
 		}
 	}
 	return core.Nil, nil
+}
+
+// evalForWord resolves a for-loop word, preserving list values for bare
+// $var references instead of stringifying them the way evalCmdArg does.
+func evalForWord(w *ast.Node, env *core.Env) (core.Value, error) {
+	if w.Kind == ast.NWord {
+		name := w.Tok.Val
+		if len(name) > 1 && name[0] == '$' && isBareVarRef(name[1:]) {
+			varName := name[1:]
+			if v, ok := env.Get(varName); ok {
+				return v, nil
+			}
+			return core.StringVal(""), nil
+		}
+	}
+	return evalCmdArg(w, env)
+}
+
+func isBareVarRef(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func evalFor(node *ast.Node, env *core.Env) (core.Value, error) {
@@ -94,17 +129,13 @@ func evalFor(node *ast.Node, env *core.Env) (core.Value, error) {
 
 	var last core.Value
 	for _, w := range words {
-		v, err := evalCmdArg(w, env)
+		v, err := evalForWord(w, env)
 		if err != nil {
 			return core.Nil, err
 		}
-		val := v.ToStr()
-		fields := strings.Fields(val)
-		for _, field := range fields {
-			expanded := expandGlob(field)
-			for _, v := range expanded {
-				env.Set(varName, core.StringVal(v))
-				var err error
+		if v.Kind == core.VList {
+			for _, elem := range v.Elems {
+				env.Set(varName, elem)
 				last, err = Eval(body, env)
 				if err == core.ErrBreak {
 					return last, nil
@@ -114,6 +145,26 @@ func evalFor(node *ast.Node, env *core.Env) (core.Value, error) {
 				}
 				if err != nil {
 					return last, err
+				}
+			}
+		} else {
+			val := v.ToStr()
+			fields := strings.Fields(val)
+			for _, field := range fields {
+				expanded := expandGlob(field)
+				for _, v := range expanded {
+					env.Set(varName, core.StringVal(v))
+					var err error
+					last, err = Eval(body, env)
+					if err == core.ErrBreak {
+						return last, nil
+					}
+					if err == core.ErrContinue {
+						continue
+					}
+					if err != nil {
+						return last, err
+					}
 				}
 			}
 		}

@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -33,14 +34,18 @@ func builtinUnset(args []string, env *core.Env) (int, error) {
 			names = append(names, arg)
 		}
 	}
+	exitCode := 0
 	for _, name := range names {
 		if unsetFn {
 			env.DeleteFn(name)
 		} else {
-			env.DeleteVar(name)
+			if err := env.DeleteVar(name); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				exitCode = 1
+			}
 		}
 	}
-	return 0, nil
+	return exitCode, nil
 }
 
 func builtinSet(args []string, env *core.Env) (int, error) {

@@ -142,6 +142,8 @@ func Eval(node *ast.Node, env *core.Env) (core.Value, error) {
 		return evalDefModule(node, env)
 	case ast.NUse:
 		return evalUse(node, env)
+	case ast.NCapture:
+		return evalCapture(node, env)
 	default:
 		return core.Nil, fmt.Errorf("unknown node kind: %d", node.Kind)
 	}
@@ -374,7 +376,13 @@ func RunSource(src string, env *core.Env) core.Value {
 		if err == core.ErrExit || err == core.ErrSetE {
 			return core.Nil
 		}
-		if err != core.ErrReturn && err != core.ErrBreak && err != core.ErrContinue {
+		if err == core.ErrBreak {
+			fmt.Fprintf(os.Stderr, "ish: break: only meaningful in a loop\n")
+			env.SetExit(1)
+		} else if err == core.ErrContinue {
+			fmt.Fprintf(os.Stderr, "ish: continue: only meaningful in a loop\n")
+			env.SetExit(1)
+		} else if err != core.ErrReturn {
 			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
 			env.SetExit(1)
 		}
@@ -415,7 +423,13 @@ func RunSourceErr(src string, env *core.Env) (core.Value, error) {
 		if err == core.ErrSetE {
 			return core.Nil, core.ErrExit
 		}
-		if err != core.ErrReturn && err != core.ErrBreak && err != core.ErrContinue {
+		if err == core.ErrBreak {
+			fmt.Fprintf(os.Stderr, "ish: break: only meaningful in a loop\n")
+			env.SetExit(1)
+		} else if err == core.ErrContinue {
+			fmt.Fprintf(os.Stderr, "ish: continue: only meaningful in a loop\n")
+			env.SetExit(1)
+		} else if err != core.ErrReturn {
 			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
 			env.SetExit(1)
 		}

@@ -392,10 +392,20 @@ func (e *Env) GetModule(name string) (*Module, bool) {
 	return nil, false
 }
 
-// SetModule registers a module in this scope.
+// SetModule registers a module in this scope. If a module with the same
+// name already exists, new functions are merged into it.
 func (e *Env) SetModule(name string, mod *Module) {
 	if e.Modules == nil {
 		e.Modules = make(map[string]*Module)
+	}
+	if existing, ok := e.Modules[name]; ok {
+		for fname, fn := range mod.Fns {
+			existing.Fns[fname] = fn
+		}
+		for fname, nfn := range mod.NativeFns {
+			existing.NativeFns[fname] = nfn
+		}
+		return
 	}
 	e.Modules[name] = mod
 }
@@ -1002,13 +1012,17 @@ func (e *Env) AllAliases() map[string]string {
 	return result
 }
 
-func (e *Env) DeleteVar(name string) {
+func (e *Env) DeleteVar(name string) error {
+	if e.IsReadonly(name) {
+		return fmt.Errorf("unset: %s: readonly variable", name)
+	}
 	for c := e; c != nil; c = c.Parent {
 		if _, ok := c.Bindings[name]; ok {
 			delete(c.Bindings, name)
-			return
+			return nil
 		}
 	}
+	return nil
 }
 
 func (e *Env) DeleteFn(name string) {
