@@ -1,0 +1,7 @@
+# Math extensions written in ish.
+
+defmodule Math do
+  def clamp val, lo, hi do
+    max lo, (min val, hi)
+  end
+end

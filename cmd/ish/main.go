@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -26,7 +25,7 @@ import (
 	"ish/internal/stdlib"
 )
 
-var Version = "0.4.1"
+var Version = "0.5.0"
 
 func main() {
 	// Wire up eval <-> builtin cycle via Init
@@ -48,6 +47,11 @@ func main() {
 
 	// Set CallFn on env so stdlib/process can call user functions
 	env.CallFn = eval.CallFn
+
+	// Load embedded ish prelude (List/Map/Enum/Math/String extensions written in ish)
+	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
+		eval.RunSource(src, e)
+	})
 
 	// Set $SHELL
 	if exe, err := os.Executable(); err == nil {
@@ -102,19 +106,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "ish: --dump-ast requires a source (-c 'code' or filename)\n")
 			os.Exit(1)
 		}
-		pathCache := make(map[string]bool)
 		l := lexer.New(src)
-		node, err := parser.ParseWithCommands(l, func(name string) bool {
-			if _, ok := builtin.Builtins[name]; ok {
-				return true
-			}
-			if found, ok := pathCache[name]; ok {
-				return found
-			}
-			_, err := exec.LookPath(name)
-			pathCache[name] = err == nil
-			return err == nil
-		})
+		node, err := parser.ParseWithCommands(l, eval.MakeIsCommand(env))
 		if l.Error() != "" {
 			fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 			os.Exit(2)
@@ -483,6 +476,28 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 			return candidates
 		}
 
+		// Module-qualified completion: "List." or "List.ma"
+		if dotIdx := strings.IndexByte(prefix, '.'); dotIdx > 0 {
+			modName := prefix[:dotIdx]
+			fnPrefix := prefix[dotIdx+1:]
+			if mod, ok := env.GetModule(modName); ok {
+				for name := range mod.NativeFns {
+					if strings.HasPrefix(name, fnPrefix) {
+						candidates = append(candidates, modName+"."+name)
+					}
+				}
+				if mod.Fns != nil {
+					for name := range mod.Fns {
+						if strings.HasPrefix(name, fnPrefix) {
+							candidates = append(candidates, modName+"."+name)
+						}
+					}
+				}
+				sort.Strings(candidates)
+				return candidates
+			}
+		}
+
 		if strings.ContainsAny(prefix, "/~.") {
 			expanded := prefix
 			if strings.HasPrefix(expanded, "~") {
@@ -528,6 +543,13 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 				for name := range c.NativeFns {
 					if strings.HasPrefix(name, prefix) {
 						candidates = append(candidates, name)
+					}
+				}
+				if c.Modules != nil {
+					for name := range c.Modules {
+						if strings.HasPrefix(name, prefix) {
+							candidates = append(candidates, name+".")
+						}
 					}
 				}
 			}

@@ -15,7 +15,7 @@ echo "product = $product"
 # Max
 fn max_of a, b when a > b do a end
 fn max_of a, b do b end
-maximum = List.reduce (List.tl nums), (List.hd nums), \acc, x -> max_of acc, x
+maximum = List.reduce (tl nums), (hd nums), \acc, x -> max_of acc, x
 echo "max = $maximum"
 
 # Reverse via reduce

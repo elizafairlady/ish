@@ -10,12 +10,12 @@ fn broker_loop subs do
       echo "broker: new subscriber"
       broker_loop (List.concat subs, [pid])
     {:publish, topic, msg} ->
-      echo "broker: publishing to #{List.length subs} subscribers"
+      echo "broker: publishing to #{length subs} subscribers"
       List.each subs, \sub -> send sub, {:message, topic, msg}
       broker_loop subs
     {:unsubscribe, pid} ->
       new_subs = List.filter subs, \s -> s != pid
-      echo "broker: subscriber removed, #{List.length new_subs} remaining"
+      echo "broker: subscriber removed, #{length new_subs} remaining"
       broker_loop new_subs
     :stop ->
       List.each subs, \sub -> send sub, :broker_stopped

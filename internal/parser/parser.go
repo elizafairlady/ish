@@ -177,7 +177,7 @@ func (p *Parser) expect(tt ast.TokenType) (ast.Token, error) {
 		if t.Type == ast.TEOF {
 			return t, fmt.Errorf("unexpected end of input (expected closing delimiter)")
 		}
-		return t, fmt.Errorf("expected %d, got %d (%q) at pos %d", tt, t.Type, t.Val, t.Pos)
+		return t, fmt.Errorf("expected %q, got %q at pos %d", tt.String(), t.Val, t.Pos)
 	}
 	p.pos++
 	return t, nil
@@ -1810,15 +1810,34 @@ func (p *Parser) parseLambda() (*ast.Node, error) {
 	p.advance() // skip ->
 
 	var body *ast.Node
-	if err := p.withExprBlock([]string{"end"}, func() error {
-		var e error
-		body, e = p.parseStmtWithOps()
-		if body != nil {
-			body.Tail = true
+	multiLine := p.cur().Type == ast.TNewline
+	if multiLine {
+		// Multi-line lambda: parse block of statements until 'end'
+		if err := p.withExprBlock([]string{"end"}, func() error {
+			p.skipNewlines()
+			stmts, err := p.parseBlock()
+			if err != nil {
+				return err
+			}
+			body = ast.BlockNode(stmts)
+			markTail(stmts)
+			return nil
+		}); err != nil {
+			return nil, err
 		}
-		return e
-	}); err != nil {
-		return nil, err
+		p.matchWord("end")
+	} else {
+		// Single-expression lambda
+		if err := p.withExprBlock([]string{"end"}, func() error {
+			var e error
+			body, e = p.parseStmtWithOps()
+			if body != nil {
+				body.Tail = true
+			}
+			return e
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	return &ast.Node{
@@ -1915,15 +1934,32 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 			if _, err := p.expect(ast.TRParen); err != nil {
 				return nil, err
 			}
+			// Additional comma-separated args after paren group
+			for p.cur().Type == ast.TComma {
+				p.advance()
+				arg, err := p.parseExpr(0)
+				if err != nil {
+					return nil, err
+				}
+				cmd.Children = append(cmd.Children, arg)
+			}
 			left = cmd
 		} else if isValueStart(p.cur().Type) {
-			// Juxtaposition: single-arg call without commas
+			// Juxtaposition: bare args, comma-separated
 			cmd := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{left}}
-			arg, err := p.parseValue(false)
+			arg, err := p.parseExpr(0)
 			if err != nil {
 				return nil, err
 			}
 			cmd.Children = append(cmd.Children, arg)
+			for p.cur().Type == ast.TComma {
+				p.advance()
+				arg, err = p.parseExpr(0)
+				if err != nil {
+					return nil, err
+				}
+				cmd.Children = append(cmd.Children, arg)
+			}
 			left = cmd
 		}
 	}

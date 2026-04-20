@@ -1115,7 +1115,7 @@ end`
 	t.Run("try with rescue catches error", func(t *testing.T) {
 		env := testEnv()
 		script := `result = try do
-  List.hd []
+  hd []
 rescue
   {:error, msg} -> msg
 end`
@@ -1132,7 +1132,7 @@ end`
 	t.Run("try without rescue propagates error", func(t *testing.T) {
 		env := testEnv()
 		script := `result = try do
-  List.hd []
+  hd []
 end`
 		runSource(script, env)
 		_, ok := env.Get("result")

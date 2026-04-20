@@ -1,5 +1,7 @@
 package ast
 
+import "fmt"
+
 type TokenType byte
 
 const (
@@ -50,6 +52,28 @@ const (
 	TBang      // !
 	TBackslash // \ (lambda)
 )
+
+var tokenNames = [...]string{
+	TWord: "word", TInt: "integer", TFloat: "float", TString: "string",
+	TAtom: "atom", TNewline: "newline", TEOF: "EOF",
+	TPipe: "|", TPipeArrow: "|>", TAnd: "&&", TOr: "||",
+	TSemicolon: ";", TAmpersand: "&", TEquals: "=",
+	TLParen: "(", TRParen: ")", TLBracket: "[", TRBracket: "]",
+	TLBrace: "{", TRBrace: "}", TComma: ",", TDot: ".",
+	TArrow: "->", TLeftArrow: "<-", TPercent: "%",
+	TRedirOut: ">", TRedirAppend: ">>", TRedirIn: "<",
+	THeredoc: "<<", THereString: "<<<",
+	TPlus: "+", TMinus: "-", TMul: "*", TDiv: "/",
+	TEq: "==", TNe: "!=", TLe: "<=", TGe: ">=",
+	TBang: "!", TBackslash: `\`,
+}
+
+func (tt TokenType) String() string {
+	if int(tt) < len(tokenNames) && tokenNames[tt] != "" {
+		return tokenNames[tt]
+	}
+	return fmt.Sprintf("token(%d)", tt)
+}
 
 type Token struct {
 	Type     TokenType

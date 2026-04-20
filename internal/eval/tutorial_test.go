@@ -90,7 +90,7 @@ func TestTutorialExamples(t *testing.T) {
 		{"s12 map lambda", "r = List.map [1, 2, 3], \\x -> x * 2\necho $r", "[2, 4, 6]\n"},
 		{"s12 filter lambda", "r = List.filter [1, 2, 3, 4, 5], \\x -> x >= 4\necho $r", "[4, 5]\n"},
 		{"s12 reduce lambda", "r = List.reduce [1, 2, 3, 4], 0, \\acc, x -> acc + x\necho $r", "10\n"},
-		{"s12 range filter length", "r = List.range 1, 11 |> List.filter \\x -> x >= 6 |> List.length\necho $r", "5\n"},
+		{"s12 range filter length", "r = List.range 1, 11 |> List.filter \\x -> x >= 6 |> length\necho $r", "5\n"},
 
 		// === Script safety ===
 		{"pipefail catches left failure", "set -o pipefail\nfalse | true\necho $?", "1\n"},
@@ -126,7 +126,7 @@ func TestTutorialExamples(t *testing.T) {
 		{"pipe tuple to cmd", "{:ok, \"hi\"} | cat", "{:ok, \"hi\"}\n"},
 		{"pipe value chain to cmd", "List.range 1, 4 |> List.filter \\x -> x > 1 | cat", "2\n3\n"},
 		{"pipefn cmd to map", "r = printf \"a\\nb\\nc\\n\" |> List.map \\f -> String.upcase f\necho $r", "[\"A\", \"B\", \"C\"]\n"},
-		{"pipefn cmd to length", "r = printf \"a\\nb\\nc\\n\" |> List.length\necho $r", "3\n"},
+		{"pipefn cmd to length", "r = printf \"a\\nb\\nc\\n\" |> length\necho $r", "3\n"},
 		{"pipefn explicit from_json", "r = echo \"{\\\"x\\\":1}\" |> JSON.parse\necho $r", "%{x: 1}\n"},
 
 		// === Serialization (bridge) ===

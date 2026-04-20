@@ -20,10 +20,10 @@ import (
 // osMu protects process-global OS state (cwd, umask) during subshell execution.
 var osMu sync.Mutex
 
-// makeIsCommand builds a callback for the parser that identifies known commands
+// MakeIsCommand builds a callback for the parser that identifies known commands
 // (builtins, PATH executables, user-defined functions, stdlib).
 // PATH lookups are cached per callback instance to avoid repeated filesystem scans.
-func makeIsCommand(env *core.Env) func(string) bool {
+func MakeIsCommand(env *core.Env) func(string) bool {
 	pathCache := make(map[string]bool)
 	return func(name string) bool {
 		if _, ok := builtin.Builtins[name]; ok {
@@ -360,7 +360,7 @@ func RunSource(src string, env *core.Env) core.Value {
 		defer d.PopSource()
 	}
 	l := lexer.New(src)
-	node, err := parser.ParseWithCommands(l, makeIsCommand(env))
+	node, err := parser.ParseWithCommands(l, MakeIsCommand(env))
 	if l.Error() != "" {
 		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 		env.SetExit(2)
@@ -404,7 +404,7 @@ func RunSourceErr(src string, env *core.Env) (core.Value, error) {
 		defer d.PopSource()
 	}
 	l := lexer.New(src)
-	node, err := parser.ParseWithCommands(l, makeIsCommand(env))
+	node, err := parser.ParseWithCommands(l, MakeIsCommand(env))
 	if l.Error() != "" {
 		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 		env.SetExit(2)

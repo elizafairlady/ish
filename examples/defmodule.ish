@@ -61,12 +61,12 @@ defmodule Stats do
   end
 
   def mean list do
-    Stats.sum $list / List.length $list
+    Stats.sum $list / length $list
   end
 
   def min_max list do
     sorted = List.sort $list
-    {List.hd $sorted, List.hd (List.reverse $sorted)}
+    {hd $sorted, hd (List.reverse $sorted)}
   end
 end
 

@@ -54,7 +54,7 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 					argStr.WriteString(child.Tok.Val)
 				}
 				newSrc := aliasVal + argStr.String()
-				newNode, err := parser.ParseWithCommands(lexer.New(newSrc), makeIsCommand(env))
+				newNode, err := parser.ParseWithCommands(lexer.New(newSrc), MakeIsCommand(env))
 				if err != nil {
 					return core.Nil, err
 				}

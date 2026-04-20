@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"ish/internal/core"
+	"ish/internal/eval"
+	"ish/internal/lexer"
+	"ish/internal/parser"
 	"ish/internal/testutil"
 )
 
@@ -192,7 +196,7 @@ func TestAdversarialErrors(t *testing.T) {
 		// Former crashes (nil dereference)
 		{"crash: pipe with empty RHS", "echo hello |"},
 		{"crash: pipe arrow with empty RHS", "[1,2,3] |>"},
-		{"crash: double pipe arrow", "x = [1,2,3] |> |> List.length"},
+		{"crash: double pipe arrow", "x = [1,2,3] |> |> length"},
 
 		// Former hangs (parser infinite loop)
 		{"hang: standalone arrow", "->"},
@@ -400,10 +404,10 @@ func TestStdlibIntegration(t *testing.T) {
 		script string
 		want   string
 	}{
-		{"hd", "r = List.hd [1, 2, 3]\necho $r", "1\n"},
-		{"tl", "r = List.tl [1, 2, 3]\necho $r", "[2, 3]\n"},
-		{"length list", "r = List.length [10, 20, 30]\necho $r", "3\n"},
-		{"length string", `r = String.length "hello"` + "\necho $r", "5\n"},
+		{"hd", "r = hd [1, 2, 3]\necho $r", "1\n"},
+		{"tl", "r = tl [1, 2, 3]\necho $r", "[2, 3]\n"},
+		{"length list", "r = length [10, 20, 30]\necho $r", "3\n"},
+		{"length string", `r = length "hello"` + "\necho $r", "5\n"},
 		{"append", "r = List.append [1, 2], 3\necho $r", "[1, 2, 3]\n"},
 		{"concat", "r = List.concat [1, 2], [3, 4]\necho $r", "[1, 2, 3, 4]\n"},
 		{"range", "r = List.range 1, 4\necho $r", "[1, 2, 3]\n"},
@@ -595,5 +599,37 @@ func TestPosixFnDefMultiline(t *testing.T) {
 	})
 	if got != "hello\n" {
 		t.Errorf("multiline fn def: got %q, want %q", got, "hello\n")
+	}
+}
+
+func TestConsConstruction(t *testing.T) {
+	env := testutil.TestEnv()
+	testutil.RunSource(`result = [1 | [2, 3]]`, env)
+	got, _ := env.Get("result")
+	want := core.ListVal(core.IntVal(1), core.IntVal(2), core.IntVal(3))
+	if !got.Equal(want) {
+		t.Errorf("[1 | [2, 3]] = %s, want %s", got.Inspect(), want.Inspect())
+	}
+}
+
+func TestConsConstructionMultipleHeads(t *testing.T) {
+	env := testutil.TestEnv()
+	testutil.RunSource(`result = [1, 2 | [3, 4]]`, env)
+	got, _ := env.Get("result")
+	want := core.ListVal(core.IntVal(1), core.IntVal(2), core.IntVal(3), core.IntVal(4))
+	if !got.Equal(want) {
+		t.Errorf("[1, 2 | [3, 4]] = %s, want %s", got.Inspect(), want.Inspect())
+	}
+}
+
+func TestConsConstructionRestMustBeList(t *testing.T) {
+	env := testutil.TestEnv()
+	node, err := parser.Parse(lexer.New(`result = [1 | 2]`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, err = eval.Eval(node, env)
+	if err == nil {
+		t.Fatal("expected error for non-list tail")
 	}
 }

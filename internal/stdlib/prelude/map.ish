@@ -1,0 +1,43 @@
+# Map extensions written in ish.
+
+defmodule Map do
+  def from_pairs [] do %{} end
+  def from_pairs [pair | rest] do
+    {k, v} = pair
+    Map.put (Map.from_pairs rest), k, v
+  end
+
+  def map_values m, f do
+    List.reduce (Map.pairs m), %{}, \acc, pair ->
+      {k, v} = pair
+      Map.put acc, k, (f v)
+    end
+  end
+
+  def filter m, pred do
+    List.reduce (Map.pairs m), %{}, \acc, pair ->
+      if (pred pair) do
+        {k, v} = pair
+        Map.put acc, k, v
+      else
+        acc
+      end
+    end
+  end
+
+  def fetch m, key do
+    if (Map.has_key m, key) do
+      {:ok, Map.get m, key}
+    else
+      :error
+    end
+  end
+
+  def update m, key, f do
+    if (Map.has_key m, key) do
+      Map.put m, key, (f (Map.get m, key))
+    else
+      m
+    end
+  end
+end

@@ -73,7 +73,7 @@ end
 fib 10                        # 55
 
 # value pipes
-List.range 1, 11 |> List.filter \x -> x > 5 |> List.length   # 5
+List.range 1, 11 |> List.filter \x -> x > 5 |> length   # 5
 
 # pipes auto-coerce between bytes and values
 ls |> List.map \f -> String.upcase f | sort

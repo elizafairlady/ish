@@ -1,0 +1,63 @@
+# Enum: polymorphic enumerable — works on lists and maps.
+
+defmodule Enum do
+  def to_list list when (is_list list) do list end
+  def to_list m when (is_map m) do Map.pairs m end
+
+  def each enum, f do
+    List.each (Enum.to_list enum), f
+  end
+
+  def map enum, f do
+    List.map (Enum.to_list enum), f
+  end
+
+  def filter enum, pred do
+    List.filter (Enum.to_list enum), pred
+  end
+
+  def reduce enum, acc, f do
+    List.reduce (Enum.to_list enum), acc, f
+  end
+
+  def any enum, pred do
+    List.any (Enum.to_list enum), pred
+  end
+
+  def all enum, pred do
+    List.all (Enum.to_list enum), pred
+  end
+
+  def find enum, pred do
+    List.find (Enum.to_list enum), pred
+  end
+
+  def count enum do
+    length (Enum.to_list enum)
+  end
+
+  def sort_by enum, f do
+    decorated = List.map (Enum.to_list enum), \x -> {f x, x}
+    sorted = List.sort decorated
+    List.map sorted, \pair ->
+      {_, v} = pair
+      v
+    end
+  end
+
+  def group_by enum, f do
+    List.group_by (Enum.to_list enum), f
+  end
+
+  def flat_map enum, f do
+    List.flat_map (Enum.to_list enum), f
+  end
+
+  def with_index enum do
+    List.with_index (Enum.to_list enum)
+  end
+
+  def zip a, b do
+    List.zip (Enum.to_list a), (Enum.to_list b)
+  end
+end

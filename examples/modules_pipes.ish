@@ -28,8 +28,8 @@ echo ""
 echo "=== command substitution ==="
 
 # Module calls inside $()
-echo "hd: $(List.hd [10, 20, 30])"
-echo "tl: $(List.tl [10, 20, 30])"
+echo "hd: $(hd [10, 20, 30])"
+echo "tl: $(tl [10, 20, 30])"
 echo "join: $(String.join ["a", "b", "c"], ":")"
 echo "nested: $(String.downcase "$(String.upcase "hello")")"
 

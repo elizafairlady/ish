@@ -13,7 +13,7 @@ import (
 
 func evalScript(t *testing.T, env *core.Env, script string) {
 	t.Helper()
-	node, err := parser.Parse(lexer.New(script))
+	node, err := parser.ParseWithCommands(lexer.New(script), eval.MakeIsCommand(env))
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
@@ -25,7 +25,7 @@ func evalScript(t *testing.T, env *core.Env, script string) {
 
 func evalScriptErr(t *testing.T, env *core.Env, script string) error {
 	t.Helper()
-	node, err := parser.Parse(lexer.New(script))
+	node, err := parser.ParseWithCommands(lexer.New(script), eval.MakeIsCommand(env))
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
@@ -39,36 +39,36 @@ func evalScriptErr(t *testing.T, env *core.Env, script string) error {
 
 func TestStdlibHd(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.hd [1, 2, 3]`)
+	evalScript(t, env, `result = Kernel.hd [1, 2, 3]`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.IntVal(1)) {
-		t.Errorf("List.hd [1,2,3] = %s, want 1", got.Inspect())
+		t.Errorf("Kernel.hd [1,2,3] = %s, want 1", got.Inspect())
 	}
 }
 
 func TestStdlibHdEmpty(t *testing.T) {
 	env := testutil.TestEnv()
-	err := evalScriptErr(t, env, `result = List.hd []`)
+	err := evalScriptErr(t, env, `result = Kernel.hd []`)
 	if err == nil {
-		t.Fatal("expected error for List.hd on empty list")
+		t.Fatal("expected error for Kernel.hd on empty list")
 	}
 }
 
 func TestStdlibTl(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.tl [1, 2, 3]`)
+	evalScript(t, env, `result = Kernel.tl [1, 2, 3]`)
 	got, _ := env.Get("result")
 	want := core.ListVal(core.IntVal(2), core.IntVal(3))
 	if !got.Equal(want) {
-		t.Errorf("List.tl [1,2,3] = %s, want %s", got.Inspect(), want.Inspect())
+		t.Errorf("Kernel.tl [1,2,3] = %s, want %s", got.Inspect(), want.Inspect())
 	}
 }
 
 func TestStdlibTlEmpty(t *testing.T) {
 	env := testutil.TestEnv()
-	err := evalScriptErr(t, env, `result = List.tl []`)
+	err := evalScriptErr(t, env, `result = Kernel.tl []`)
 	if err == nil {
-		t.Fatal("expected error for List.tl on empty list")
+		t.Fatal("expected error for Kernel.tl on empty list")
 	}
 }
 
@@ -78,10 +78,10 @@ func TestStdlibLength(t *testing.T) {
 		script string
 		want   core.Value
 	}{
-		{"list", `List.length [1, 2, 3]`, core.IntVal(3)},
-		{"empty list", `List.length []`, core.IntVal(0)},
-		{"string", `List.length "hello"`, core.IntVal(5)},
-		{"tuple", `List.length {1, 2}`, core.IntVal(2)},
+		{"list", `Kernel.length [1, 2, 3]`, core.IntVal(3)},
+		{"empty list", `Kernel.length []`, core.IntVal(0)},
+		{"string", `Kernel.length "hello"`, core.IntVal(5)},
+		{"tuple", `Kernel.length {1, 2}`, core.IntVal(2)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -324,10 +324,10 @@ func TestStdlibIndexOfNotFound(t *testing.T) {
 
 func TestStdlibPipeArrow(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = [1, 2, 3] |> List.hd`)
+	evalScript(t, env, `result = [1, 2, 3] |> Kernel.hd`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.IntVal(1)) {
-		t.Errorf("[1,2,3] |> List.hd = %s, want 1", got.Inspect())
+		t.Errorf("[1,2,3] |> Kernel.hd = %s, want 1", got.Inspect())
 	}
 }
 
@@ -492,5 +492,77 @@ r2 = Map.has_key m, "z"`)
 	}
 	if !r2.Equal(core.False) {
 		t.Errorf("Map.has_key m, z = %s, want :false", r2.Inspect())
+	}
+}
+
+func TestListEachReturnsOk(t *testing.T) {
+	env := testutil.TestEnv()
+	evalScript(t, env, `
+result = List.each [1, 2, 3], fn do
+  _ -> nil
+end
+`)
+	got, _ := env.Get("result")
+	if !got.Equal(core.AtomVal("ok")) {
+		t.Errorf("List.each return = %s, want :ok", got.Inspect())
+	}
+}
+
+func TestProcessSendAfter(t *testing.T) {
+	env := testutil.TestEnv()
+	testutil.RunSource(`
+pid = spawn fn do
+  receive do
+    {:ping, from} -> send from, :pong
+  end
+end
+
+Process.send_after 10, pid, {:ping, self}
+
+result = receive do
+  :pong -> :got_pong
+after 2000 ->
+  :timeout
+end
+`, env)
+	got, _ := env.Get("result")
+	if !got.Equal(core.AtomVal("got_pong")) {
+		t.Errorf("result = %s, want :got_pong", got.Inspect())
+	}
+}
+
+func TestStringChars(t *testing.T) {
+	env := testutil.TestEnv()
+	evalScript(t, env, `result = String.chars "hello"`)
+	got, _ := env.Get("result")
+	want := core.ListVal(
+		core.StringVal("h"),
+		core.StringVal("e"),
+		core.StringVal("l"),
+		core.StringVal("l"),
+		core.StringVal("o"),
+	)
+	if !got.Equal(want) {
+		t.Errorf("chars = %s, want %s", got.Inspect(), want.Inspect())
+	}
+}
+
+func TestStringPad(t *testing.T) {
+	cases := []struct {
+		script string
+		want   string
+	}{
+		{`result = String.pad_left "7", 3, "0"`, "007"},
+		{`result = String.pad_right "7", 3, "0"`, "700"},
+		{`result = String.pad_left "hello", 3, "x"`, "hello"},
+		{`result = String.pad_left "", 3, "x"`, "xxx"},
+	}
+	for _, c := range cases {
+		env := testutil.TestEnv()
+		evalScript(t, env, c.script)
+		got, _ := env.Get("result")
+		if got.Kind != core.VString || got.Str != c.want {
+			t.Errorf("%s = %s, want %q", c.script, got.Inspect(), c.want)
+		}
 	}
 }

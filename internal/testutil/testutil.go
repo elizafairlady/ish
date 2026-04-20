@@ -20,6 +20,9 @@ func TestEnv() *core.Env {
 	builtin.Init(builtin.EvalContext{RunSource: eval.RunSource})
 	env.CmdSub = eval.RunCmdSub
 	env.CallFn = eval.CallFn
+	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
+		eval.RunSource(src, e)
+	})
 	return env
 }
 

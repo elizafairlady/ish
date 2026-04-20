@@ -1131,59 +1131,166 @@ await sup    # blocks until all workers exit normally
 
 ## Standard Library
 
+### Kernel (auto-imported)
+
+All Kernel functions are available without module qualification. They are auto-imported into the root scope.
+
+| Function | Description |
+|----------|-------------|
+| `hd list` | First element of the list. Error on empty list. |
+| `tl list` | All elements except the first. Error on empty list. |
+| `length val` | Length of a list, tuple, string, or map. |
+| `abs n` | Absolute value of an integer or float. |
+| `min a, b` | Smaller of two numbers. Returns float if either is float. |
+| `max a, b` | Larger of two numbers. Returns float if either is float. |
+| `inspect val` | String representation of any value (with type info, e.g. `"hi"` not `hi`). |
+| `apply fn, args` | Call `fn` with a list of arguments. |
+| `to_string val` | Convert any value to its string form. |
+| `to_integer val` | Convert string, float, or integer to integer. |
+| `to_float val` | Convert string, integer, or float to float. |
+| `is_integer val` | Type predicate. Works in guards. |
+| `is_float val` | Type predicate. Works in guards. |
+| `is_string val` | Type predicate. Works in guards. |
+| `is_atom val` | Type predicate. Works in guards. |
+| `is_list val` | Type predicate. Works in guards. |
+| `is_map val` | Type predicate. Works in guards. |
+| `is_nil val` | Type predicate. Works in guards. |
+| `is_tuple val` | Type predicate. Works in guards. |
+| `is_pid val` | Type predicate. Works in guards. |
+| `is_fn val` | Type predicate. Works in guards. |
+
+All Kernel functions are also accessible as `Kernel.hd`, `Kernel.is_integer`, etc.
+
 ### List Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `List.hd` | `List.hd list` | First element of the list. Error on empty list. |
-| `List.tl` | `List.tl list` | All elements except the first. Error on empty list. |
-| `List.length` | `List.length val` | Length of a list, tuple, string, or map. |
-| `List.append` | `List.append list, elem` | New list with `elem` appended at the end. |
-| `List.concat` | `List.concat list1, list2` | Concatenation of two lists. |
-| `List.map` | `List.map list, fn` | Apply `fn` to each element, return new list. |
-| `List.filter` | `List.filter list, fn` | Keep elements where `fn` returns truthy. |
-| `List.reduce` | `List.reduce list, acc, fn` | Left fold: `fn(acc, elem)` for each element. |
-| `List.range` | `List.range start, stop` | List of integers `[start, start+1, ..., stop-1]`. Empty if `start >= stop`. |
-| `List.at` | `List.at list, index` | Element at 0-based index. Error if out of bounds. |
-| `List.each` | `List.each list, fn` | Apply `fn` to each element for side effects. Returns `nil`. |
-| `List.sort` | `List.sort list` | New list with elements sorted (integers numerically, others by string representation). |
-| `List.reverse` | `List.reverse list` | New list with elements in reverse order. |
-| `List.any` | `List.any list, fn` | Returns `:true` if `fn` returns truthy for any element, `:false` otherwise. |
-| `List.all` | `List.all list, fn` | Returns `:true` if `fn` returns truthy for all elements, `:false` otherwise. |
-| `List.find` | `List.find list, fn` | Returns the first element where `fn` returns truthy, or `nil` if none. |
-| `List.with_index` | `List.with_index list` | List of `{index, value}` tuples. `List.with_index ["a", "b"]` returns `[{0, "a"}, {1, "b"}]`. |
+| Function | Description |
+|----------|-------------|
+| `List.append list, elem` | New list with `elem` appended at the end. |
+| `List.concat list1, list2` | Concatenation of two lists. |
+| `List.map list, fn` | Apply `fn` to each element, return new list. |
+| `List.filter list, fn` | Keep elements where `fn` returns truthy. |
+| `List.reduce list, acc, fn` | Left fold: `fn(acc, elem)` for each element. |
+| `List.range start, stop` | List of integers `[start, start+1, ..., stop-1]`. Empty if `start >= stop`. |
+| `List.at list, index` | Element at 0-based index. Error if out of bounds. |
+| `List.each list, fn` | Apply `fn` to each element for side effects. Returns `:ok`. |
+| `List.sort list` | Sorted list (integers numerically, others by string). |
+| `List.reverse list` | Reversed list. |
+| `List.any list, fn` | `:true` if `fn` is truthy for any element. |
+| `List.all list, fn` | `:true` if `fn` is truthy for all elements. |
+| `List.find list, fn` | First element where `fn` is truthy, or `nil`. |
+| `List.with_index list` | List of `{index, value}` tuples. |
+| `List.zip list1, list2` | List of `{a, b}` tuples, truncated to shorter list. |
+| `List.flatten list` | Recursively flatten nested lists. |
+| `List.take list, n` | First `n` elements. |
+| `List.drop list, n` | All elements after the first `n`. |
+| `List.chunk list, n` | Split into sublists of size `n`. Last chunk may be shorter. |
+| `List.uniq list` | Remove duplicates, preserving first occurrence. |
+| `List.flat_map list, fn` | Map then flatten. |
+| `List.sum list` | Sum of all elements. |
+| `List.product list` | Product of all elements. |
+| `List.min_by list, fn` | Element with smallest `fn(elem)` value. |
+| `List.max_by list, fn` | Element with largest `fn(elem)` value. |
+| `List.intersperse list, sep` | Insert `sep` between elements. |
+| `List.group_by list, fn` | Map from `to_string(fn(elem))` to list of matching elements. |
 
 ### String Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `String.split` | `String.split str, delim` | Split string on delimiter, return list of strings. |
-| `String.join` | `String.join list, delim` | Join list elements into a string with delimiter. |
-| `String.trim` | `String.trim str` | Remove leading and trailing whitespace. |
-| `String.upcase` | `String.upcase str` | Convert to uppercase. |
-| `String.downcase` | `String.downcase str` | Convert to lowercase. |
-| `String.replace` | `String.replace str, old, new` | Replace first occurrence of `old` with `new`. |
-| `String.replace_all` | `String.replace_all str, old, new` | Replace all occurrences of `old` with `new`. |
-| `String.starts_with` | `String.starts_with str, prefix` | Returns `:true` or `:false`. |
-| `String.ends_with` | `String.ends_with str, suffix` | Returns `:true` or `:false`. |
-| `String.contains` | `String.contains str, substr` | Returns `:true` or `:false`. |
-| `String.slice` | `String.slice str, start, len` | Extract a substring by 0-based start position and length. |
-| `String.index_of` | `String.index_of str, substr` | Returns 0-based index of first occurrence, or `-1` if not found. |
+| Function | Description |
+|----------|-------------|
+| `String.split str, delim` | Split string on delimiter, return list of strings. |
+| `String.join list, delim` | Join list elements into a string with delimiter. |
+| `String.trim str` | Remove leading and trailing whitespace. |
+| `String.upcase str` | Convert to uppercase. |
+| `String.downcase str` | Convert to lowercase. |
+| `String.replace str, old, new` | Replace first occurrence of `old` with `new`. |
+| `String.replace_all str, old, new` | Replace all occurrences of `old` with `new`. |
+| `String.starts_with str, prefix` | Returns `:true` or `:false`. |
+| `String.ends_with str, suffix` | Returns `:true` or `:false`. |
+| `String.contains str, substr` | Returns `:true` or `:false`. |
+| `String.slice str, start, len` | Substring by 0-based start and length. |
+| `String.index_of str, substr` | 0-based index of first occurrence, or `-1`. |
+| `String.chars str` | List of single-character strings (Unicode-aware). |
+| `String.pad_left str, width, pad` | Left-pad to `width` with `pad` string. |
+| `String.pad_right str, width, pad` | Right-pad to `width` with `pad` string. |
+| `String.repeat str, n` | Repeat `str` `n` times. |
 
 ### Map Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `Map.put` | `Map.put map, key, value` | New map with `key` set to `value`. |
-| `Map.delete` | `Map.delete map, key` | New map with `key` removed. |
-| `Map.merge` | `Map.merge map1, map2` | Combined map (`map2` wins on key conflicts). |
-| `Map.keys` | `Map.keys map` | List of key strings (in insertion order). |
-| `Map.values` | `Map.values map` | List of values (in insertion order). |
-| `Map.has_key` | `Map.has_key map, key` | Returns `:true` or `:false`. |
-| `Map.get` | `Map.get map, key` | Value for `key`, or `nil` if the key does not exist. |
-| `Map.pairs` | `Map.pairs map` | List of `{key, value}` tuples (in insertion order). |
+| Function | Description |
+|----------|-------------|
+| `Map.put map, key, value` | New map with `key` set to `value`. |
+| `Map.delete map, key` | New map with `key` removed. |
+| `Map.merge map1, map2` | Combined map (`map2` wins on key conflicts). |
+| `Map.keys map` | List of key strings (in insertion order). |
+| `Map.values map` | List of values (in insertion order). |
+| `Map.has_key map, key` | Returns `:true` or `:false`. |
+| `Map.get map, key` | Value for `key`, or `nil` if not found. |
+| `Map.pairs map` | List of `{key, value}` tuples (in insertion order). |
+| `Map.from_pairs list` | Build a map from `{key, value}` tuples. |
+| `Map.map_values map, fn` | New map with `fn` applied to each value. |
+| `Map.filter map, fn` | Keep pairs where `fn({key, value})` is truthy. |
+| `Map.fetch map, key` | `{:ok, value}` if found, `:error` if not. |
+| `Map.update map, key, fn` | Apply `fn` to the value at `key` if it exists. |
 
 All map operations return new maps (maps are immutable values).
+
+### Enum (polymorphic)
+
+Enum works on both lists and maps. Maps are converted to `{key, value}` pair lists.
+
+| Function | Description |
+|----------|-------------|
+| `Enum.to_list enum` | Convert to a list (lists pass through, maps become pairs). |
+| `Enum.each enum, fn` | Apply `fn` for side effects. Returns `:ok`. |
+| `Enum.map enum, fn` | Apply `fn` to each element. |
+| `Enum.filter enum, fn` | Keep elements where `fn` is truthy. |
+| `Enum.reduce enum, acc, fn` | Left fold. |
+| `Enum.any enum, fn` | `:true` if any element matches. |
+| `Enum.all enum, fn` | `:true` if all elements match. |
+| `Enum.find enum, fn` | First matching element, or `nil`. |
+| `Enum.count enum` | Number of elements. |
+| `Enum.sort_by enum, fn` | Sort by key function (decorate-sort-undecorate). |
+| `Enum.group_by enum, fn` | Group elements by key function. |
+| `Enum.flat_map enum, fn` | Map then flatten. |
+| `Enum.with_index enum` | List of `{index, value}` tuples. |
+| `Enum.zip a, b` | Zip two enumerables. |
+
+### Math Functions
+
+| Function | Description |
+|----------|-------------|
+| `Math.sqrt n` | Square root. |
+| `Math.pow a, b` | `a` raised to the power `b`. |
+| `Math.log n` | Natural logarithm. |
+| `Math.log2 n` | Base-2 logarithm. |
+| `Math.log10 n` | Base-10 logarithm. |
+| `Math.floor n` | Floor (returns integer). |
+| `Math.ceil n` | Ceiling (returns integer). |
+| `Math.round n` | Round to nearest integer. |
+| `Math.clamp val, lo, hi` | Clamp `val` between `lo` and `hi`. |
+
+### Regex Functions
+
+| Function | Description |
+|----------|-------------|
+| `Regex.match str, pattern` | `:true` if pattern matches anywhere in string. |
+| `Regex.scan str, pattern` | List of all matches. |
+| `Regex.replace str, pattern, repl` | Replace first match. |
+| `Regex.replace_all str, pattern, repl` | Replace all matches. |
+| `Regex.split str, pattern` | Split string on pattern. |
+
+Patterns are Go regexp syntax (RE2).
+
+### Path Functions
+
+| Function | Description |
+|----------|-------------|
+| `Path.basename path` | Last component of a path. |
+| `Path.dirname path` | Directory component of a path. |
+| `Path.extname path` | File extension including the dot, or `""`. |
+| `Path.join parts...` | Join path components with proper separators. |
+| `Path.abs path` | Resolve to absolute path. |
+| `Path.exists path` | `:true` if the path exists on disk. |
 
 ### Format Conversion (Bridge Functions)
 
@@ -1214,11 +1321,12 @@ cat data.csv |> CSV.parse |> List.filter \row -> row.age > 30
 JSON.encode data | jq .
 ```
 
-### Utility Functions
+### Process Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `Process.sleep` | `Process.sleep ms` | Pause for `ms` milliseconds. Returns `nil`. |
+| Function | Description |
+|----------|-------------|
+| `Process.sleep ms` | Pause for `ms` milliseconds. Returns `nil`. |
+| `Process.send_after delay, pid, msg` | Send `msg` to `pid` after `delay` milliseconds. Returns `:ok`. |
 
 ## How Disambiguation Works
 

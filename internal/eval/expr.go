@@ -363,13 +363,23 @@ func evalTuple(node *ast.Node, env *core.Env) (core.Value, error) {
 }
 
 func evalList(node *ast.Node, env *core.Env) (core.Value, error) {
-	elems := make([]core.Value, len(node.Children))
-	for i, child := range node.Children {
+	elems := make([]core.Value, 0, len(node.Children))
+	for _, child := range node.Children {
 		v, err := Eval(child, env)
 		if err != nil {
 			return core.Nil, err
 		}
-		elems[i] = v
+		elems = append(elems, v)
+	}
+	if node.Rest != nil {
+		tail, err := Eval(node.Rest, env)
+		if err != nil {
+			return core.Nil, err
+		}
+		if tail.Kind != core.VList {
+			return core.Nil, fmt.Errorf("cons tail must be a list, got %s", tail.Inspect())
+		}
+		elems = append(elems, tail.Elems...)
 	}
 	return core.ListVal(elems...), nil
 }
@@ -440,7 +450,7 @@ func evalArithExpansion(name string, env *core.Env) (core.Value, error) {
 }
 
 func evalCmdSub(cmdStr string, env *core.Env) (core.Value, error) {
-	node, err := parser.ParseWithCommands(lexer.New(cmdStr), makeIsCommand(env))
+	node, err := parser.ParseWithCommands(lexer.New(cmdStr), MakeIsCommand(env))
 	if err != nil {
 		return core.Nil, err
 	}

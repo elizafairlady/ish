@@ -510,33 +510,9 @@ func stdlibEach(args []core.Value, env *core.Env) (core.Value, error) {
 			return core.Nil, fmt.Errorf("each: %w", err)
 		}
 	}
-	return core.Nil, nil
-}
-
-// Enum.each list, fn -> :ok
-func stdlibEnumEach(args []core.Value, env *core.Env) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("Enum.each: expected 2 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("Enum.each: first argument must be a list, got %s", list.Inspect())
-	}
-	fn := args[1]
-	if fn.Kind != core.VFn || fn.Fn == nil {
-		return core.Nil, fmt.Errorf("Enum.each: second argument must be a function, got %s", fn.Inspect())
-	}
-	if env.CallFn == nil {
-		return core.Nil, fmt.Errorf("Enum.each: CallFn not set")
-	}
-	for _, elem := range list.Elems {
-		_, err := env.CallFn(fn.Fn, []core.Value{elem}, env)
-		if err != nil {
-			return core.Nil, fmt.Errorf("Enum.each: %w", err)
-		}
-	}
 	return core.AtomVal("ok"), nil
 }
+
 
 // sort list -> sorted list
 func stdlibSort(args []core.Value, env *core.Env) (core.Value, error) {
@@ -703,4 +679,86 @@ func stdlibSleep(args []core.Value, env *core.Env) (core.Value, error) {
 	}
 	time.Sleep(time.Duration(args[0].Int) * time.Millisecond)
 	return core.Nil, nil
+}
+
+// send_after delay_ms, pid, msg -> :ok
+func stdlibSendAfter(args []core.Value, env *core.Env) (core.Value, error) {
+	if len(args) != 3 {
+		return core.Nil, fmt.Errorf("send_after: expected 3 arguments, got %d", len(args))
+	}
+	if args[0].Kind != core.VInt {
+		return core.Nil, fmt.Errorf("send_after: delay must be an integer (milliseconds), got %s", args[0].Inspect())
+	}
+	if args[1].Kind != core.VPid || args[1].Pid == nil {
+		return core.Nil, fmt.Errorf("send_after: target must be a pid, got %s", args[1].Inspect())
+	}
+	delay := time.Duration(args[0].Int) * time.Millisecond
+	target := args[1].Pid
+	msg := args[2]
+	go func() {
+		time.Sleep(delay)
+		target.Send(msg)
+	}()
+	return core.AtomVal("ok"), nil
+}
+
+// chars string -> list of single-character strings
+func stdlibChars(args []core.Value, env *core.Env) (core.Value, error) {
+	if len(args) != 1 {
+		return core.Nil, fmt.Errorf("chars: expected 1 argument, got %d", len(args))
+	}
+	s := args[0].ToStr()
+	elems := make([]core.Value, 0, len(s))
+	for _, r := range s {
+		elems = append(elems, core.StringVal(string(r)))
+	}
+	return core.ListVal(elems...), nil
+}
+
+// pad_left string, width, pad -> padded string
+func stdlibPadLeft(args []core.Value, env *core.Env) (core.Value, error) {
+	if len(args) != 3 {
+		return core.Nil, fmt.Errorf("pad_left: expected 3 arguments, got %d", len(args))
+	}
+	s := args[0].ToStr()
+	if args[1].Kind != core.VInt {
+		return core.Nil, fmt.Errorf("pad_left: width must be an integer, got %s", args[1].Inspect())
+	}
+	width := int(args[1].Int)
+	pad := args[2].ToStr()
+	if pad == "" {
+		return core.StringVal(s), nil
+	}
+	runes := []rune(s)
+	for len(runes) < width {
+		runes = append([]rune(pad), runes...)
+	}
+	if len(runes) > utf8.RuneCountInString(s) && len(runes) > width {
+		runes = runes[len(runes)-width:]
+	}
+	return core.StringVal(string(runes)), nil
+}
+
+// pad_right string, width, pad -> padded string
+func stdlibPadRight(args []core.Value, env *core.Env) (core.Value, error) {
+	if len(args) != 3 {
+		return core.Nil, fmt.Errorf("pad_right: expected 3 arguments, got %d", len(args))
+	}
+	s := args[0].ToStr()
+	if args[1].Kind != core.VInt {
+		return core.Nil, fmt.Errorf("pad_right: width must be an integer, got %s", args[1].Inspect())
+	}
+	width := int(args[1].Int)
+	pad := args[2].ToStr()
+	if pad == "" {
+		return core.StringVal(s), nil
+	}
+	runes := []rune(s)
+	for len(runes) < width {
+		runes = append(runes, []rune(pad)...)
+	}
+	if len(runes) > width {
+		runes = runes[:width]
+	}
+	return core.StringVal(string(runes)), nil
 }
