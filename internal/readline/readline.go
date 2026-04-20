@@ -269,7 +269,7 @@ func (rl *Readline) readRaw(fd int, prompt string) (string, bool) {
 
 					if len(candidates) == 1 {
 						completion := []rune(candidates[0][len(prefix):])
-						if !strings.HasSuffix(candidates[0], "/") {
+						if !strings.HasSuffix(candidates[0], "/") && !strings.HasSuffix(candidates[0], ".") {
 							completion = append(completion, ' ')
 						}
 						line = append(line[:pos], append(completion, line[pos:]...)...)
