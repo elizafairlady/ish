@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"ish/internal/ast"
-	"ish/internal/builtin"
 	"ish/internal/core"
 )
 
@@ -32,23 +31,8 @@ func isCommandNode(node *ast.Node, env *core.Env) bool {
 		if name == "" {
 			return true
 		}
-		// Module-qualified calls produce values
-		if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-			if _, ok := env.GetModule(name[:dotIdx]); ok {
-				return false
-			}
-		}
-		// User functions, native functions, and variable-stored functions produce values
-		if _, ok := env.GetFn(name); ok {
-			return false
-		}
-		if _, ok := env.GetNativeFn(name); ok {
-			return false
-		}
-		if v, ok := env.Get(name); ok && v.Kind == core.VFn {
-			return false
-		}
-		return true // builtin or external command
+		r := ResolveCmd(name, env)
+		return r.IsCmd() || r.Kind == KindNotFound
 	}
 	return false
 }
@@ -164,7 +148,8 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 			name = v.ToStr()
 		}
 
-		if fn, ok := env.GetFn(name); ok {
+		r := ResolveCmd(name, env)
+		if r.IsFn() {
 			pipeEnv := core.NewEnv(env)
 			pipeEnv.Stdout_ = stdout
 			argVals := make([]core.Value, 0, len(node.Children)-1)
@@ -181,27 +166,12 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 				}
 				argVals = append(argVals, v)
 			}
-			return CallFn(fn, argVals, pipeEnv)
-		}
-
-		if nfn, ok := env.GetNativeFn(name); ok {
-			pipeEnv := core.NewEnv(env)
-			pipeEnv.Stdout_ = stdout
-			argVals := make([]core.Value, 0, len(node.Children)-1)
-			for _, child := range node.Children[1:] {
-				if child.Kind == ast.NWord && child.Tok.Val == "$@" {
-					for _, arg := range env.PosArgs() {
-						argVals = append(argVals, core.StringVal(arg))
-					}
-					continue
-				}
-				v, err := Eval(child, env)
-				if err != nil {
-					return core.Nil, err
-				}
-				argVals = append(argVals, v)
+			switch r.Kind {
+			case KindModuleFn, KindUserFn, KindVarFn:
+				return CallFn(r.Fn, argVals, pipeEnv)
+			case KindModuleNativeFn, KindNativeFn:
+				return r.NativeFn(argVals, pipeEnv)
 			}
-			return nfn(argVals, pipeEnv)
 		}
 
 		var strArgs []string
@@ -218,10 +188,10 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 		}
 		expanded := expandGlobs(strArgs)
 
-		if b, ok := builtin.Builtins[name]; ok {
+		if r.Kind == KindBuiltin {
 			pipeEnv := core.NewEnv(env)
 			pipeEnv.Stdout_ = stdout
-			code, err := b(expanded, pipeEnv)
+			code, err := r.Builtin(expanded, pipeEnv)
 			env.SetExit(code)
 			if err != nil && err != core.ErrReturn && err != core.ErrBreak && err != core.ErrContinue {
 				fmt.Fprintln(os.Stderr, err)
@@ -347,18 +317,33 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	switch right.Kind {
-	case ast.NCmd:
-		if len(right.Children) == 0 {
-			return core.Nil, fmt.Errorf("pipe arrow requires a function name on the right")
-		}
-		nameVal, err := Eval(right.Children[0], env)
-		if err != nil {
-			return core.Nil, err
-		}
+	case ast.NCmd, ast.NWord:
+		var name string
+		argVals := []core.Value{left}
 
-		// If the name evaluated to a function value directly, call it
-		if nameVal.Kind == core.VFn && nameVal.Fn != nil {
-			argVals := []core.Value{left}
+		if right.Kind == ast.NCmd {
+			if len(right.Children) == 0 {
+				return core.Nil, fmt.Errorf("pipe arrow requires a function name on the right")
+			}
+			nameVal, err := Eval(right.Children[0], env)
+			if err != nil {
+				return core.Nil, err
+			}
+			// If the name evaluated to a function value directly, call it
+			if nameVal.Kind == core.VFn && nameVal.Fn != nil {
+				for _, child := range right.Children[1:] {
+					v, err := Eval(child, env)
+					if err != nil {
+						return core.Nil, err
+					}
+					argVals = append(argVals, v)
+				}
+				if node.Tail {
+					return core.TailCallVal(nameVal.Fn, argVals), nil
+				}
+				return CallFn(nameVal.Fn, argVals, env)
+			}
+			name = nameVal.ToStr()
 			for _, child := range right.Children[1:] {
 				v, err := Eval(child, env)
 				if err != nil {
@@ -366,91 +351,11 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 				}
 				argVals = append(argVals, v)
 			}
-			if node.Tail {
-				return core.TailCallVal(nameVal.Fn, argVals), nil
-			}
-			return CallFn(nameVal.Fn, argVals, env)
+		} else {
+			name = right.Tok.Val
 		}
 
-		name := nameVal.ToStr()
-
-		argVals := []core.Value{left}
-		for _, child := range right.Children[1:] {
-			v, err := Eval(child, env)
-			if err != nil {
-				return core.Nil, err
-			}
-			argVals = append(argVals, v)
-		}
-
-		if fn, ok := env.GetFn(name); ok {
-			if node.Tail {
-				return core.TailCallVal(fn, argVals), nil
-			}
-			return CallFn(fn, argVals, env)
-		}
-		if nfn, ok := env.GetNativeFn(name); ok {
-			return nfn(argVals, env)
-		}
-		strArgs := make([]string, len(argVals))
-		for i, v := range argVals {
-			strArgs[i] = v.ToStr()
-		}
-		if b, ok := builtin.Builtins[name]; ok {
-			code, err := b(strArgs, env)
-			env.SetExit(code)
-			if err != nil {
-				return core.Nil, err
-			}
-			return core.Nil, nil
-		}
-		return evalExternalCmd(name, strArgs, nil, env)
-
-	case ast.NWord:
-		name := right.Tok.Val
-		argVals := []core.Value{left}
-		// Module-qualified lookup
-		if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-			modName := name[:dotIdx]
-			fnName := name[dotIdx+1:]
-			if mod, ok := env.GetModule(modName); ok {
-				if fn, ok := mod.Fns[fnName]; ok {
-					if node.Tail {
-						return core.TailCallVal(fn, argVals), nil
-					}
-					return CallFn(fn, argVals, env)
-				}
-				if nfn, ok := mod.NativeFns[fnName]; ok {
-					return nfn(argVals, env)
-				}
-			}
-		}
-		if fn, ok := env.GetFn(name); ok {
-			if node.Tail {
-				return core.TailCallVal(fn, argVals), nil
-			}
-			return CallFn(fn, argVals, env)
-		}
-		if nfn, ok := env.GetNativeFn(name); ok {
-			return nfn(argVals, env)
-		}
-		// Check for variable-stored functions
-		if v, ok := env.Get(name); ok && v.Kind == core.VFn && v.Fn != nil {
-			if node.Tail {
-				return core.TailCallVal(v.Fn, argVals), nil
-			}
-			return CallFn(v.Fn, argVals, env)
-		}
-		strArgs := []string{left.ToStr()}
-		if b, ok := builtin.Builtins[name]; ok {
-			code, err := b(strArgs, env)
-			env.SetExit(code)
-			if err != nil {
-				return core.Nil, err
-			}
-			return core.Nil, nil
-		}
-		return evalExternalCmd(name, strArgs, nil, env)
+		return callResolved(name, argVals, node.Tail, env)
 
 	default:
 		val, err := Eval(right, env)
@@ -464,5 +369,37 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 			return CallFn(val.Fn, []core.Value{left}, env)
 		}
 		return core.Nil, fmt.Errorf("pipe arrow: right side must be a function or command")
+	}
+}
+
+// callResolved resolves a name and dispatches with the given value args.
+// Used by both |> NCmd and |> NWord paths.
+func callResolved(name string, argVals []core.Value, tail bool, env *core.Env) (core.Value, error) {
+	r := ResolveCmd(name, env)
+	switch r.Kind {
+	case KindModuleFn, KindUserFn, KindVarFn:
+		if tail {
+			return core.TailCallVal(r.Fn, argVals), nil
+		}
+		return CallFn(r.Fn, argVals, env)
+	case KindModuleNativeFn, KindNativeFn:
+		return r.NativeFn(argVals, env)
+	case KindBuiltin:
+		strArgs := make([]string, len(argVals))
+		for i, v := range argVals {
+			strArgs[i] = v.ToStr()
+		}
+		code, err := r.Builtin(strArgs, env)
+		env.SetExit(code)
+		if err != nil {
+			return core.Nil, err
+		}
+		return core.Nil, nil
+	default:
+		strArgs := make([]string, len(argVals))
+		for i, v := range argVals {
+			strArgs[i] = v.ToStr()
+		}
+		return evalExternalCmd(name, strArgs, nil, env)
 	}
 }

@@ -181,7 +181,7 @@ func builtinEval(args []string, env *core.Env) (int, error) {
 		return 0, nil
 	}
 	line := strings.Join(args, " ")
-	val := evalCtx.RunSource(line, env)
+	val, _ := evalCtx.RunSource(line, env)
 	if val.Kind != core.VNil {
 		fmt.Fprintln(env.Stdout(), val.String())
 	}
@@ -214,7 +214,7 @@ func builtinSource(args []string, env *core.Env) (int, error) {
 		env.Args = args[1:]
 	}
 
-	evalCtx.RunSource(string(data), env)
+	evalCtx.RunSource(string(data), env) //nolint: errcheck
 
 	env.Args = savedArgs
 

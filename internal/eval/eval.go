@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 
 	"ish/internal/ast"
-	"ish/internal/builtin"
 	"ish/internal/core"
 	"ish/internal/debug"
 	"ish/internal/lexer"
@@ -24,31 +22,7 @@ var osMu sync.Mutex
 // (builtins, PATH executables, user-defined functions, stdlib).
 // PATH lookups are cached per callback instance to avoid repeated filesystem scans.
 func MakeIsCommand(env *core.Env) func(string) bool {
-	pathCache := make(map[string]bool)
-	return func(name string) bool {
-		if _, ok := builtin.Builtins[name]; ok {
-			return true
-		}
-		if env != nil {
-			if _, ok := env.GetFn(name); ok {
-				return true
-			}
-			if _, ok := env.GetNativeFn(name); ok {
-				return true
-			}
-			if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-				if _, ok := env.GetModule(name[:dotIdx]); ok {
-					return true
-				}
-			}
-		}
-		if found, ok := pathCache[name]; ok {
-			return found
-		}
-		_, err := exec.LookPath(name)
-		pathCache[name] = err == nil
-		return err == nil
-	}
+	return ResolveCmdCached(env)
 }
 
 func Eval(node *ast.Node, env *core.Env) (core.Value, error) {
@@ -168,7 +142,7 @@ func evalBlock(node *ast.Node, env *core.Env) (core.Value, error) {
 			// trap ERR: fire if last command failed
 			if env.ExitCode() != 0 {
 				if cmd, ok := env.GetTrap("ERR"); ok && cmd != "" {
-					RunSource(cmd, env)
+					RunSource(cmd, env) //nolint: errcheck — trap handler
 				}
 			}
 			if env.ShouldExitOnError() {
@@ -332,7 +306,7 @@ func RunCmdSub(cmd string, env *core.Env) (string, error) {
 	}
 	subEnv := core.NewEnv(env)
 	subEnv.Stdout_ = w
-	val := RunSource(cmd, subEnv)
+	val, _ := RunSource(cmd, subEnv)
 	// If the command produced a non-nil value (e.g. an expression),
 	// write its string representation to the pipe
 	if val.Kind != core.VNil {
@@ -348,7 +322,9 @@ func RunCmdSub(cmd string, env *core.Env) (string, error) {
 	return result, nil
 }
 
-func RunSource(src string, env *core.Env) core.Value {
+// RunSource parses and evaluates a source string.
+// Returns ErrExit if exit was called during evaluation.
+func RunSource(src string, env *core.Env) (core.Value, error) {
 	env.Source = src
 	if d, ok := env.Debugger.(*debug.Debugger); ok {
 		name := env.SourceName
@@ -364,63 +340,16 @@ func RunSource(src string, env *core.Env) core.Value {
 	if l.Error() != "" {
 		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 		env.SetExit(2)
-		return core.Nil
+		return core.Nil, nil
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ish: parse error: %s\n", err)
 		env.SetExit(2)
-		return core.Nil
+		return core.Nil, nil
 	}
 	val, err := Eval(node, env)
 	if err != nil {
 		if err == core.ErrExit || err == core.ErrSetE {
-			return core.Nil
-		}
-		if err == core.ErrBreak {
-			fmt.Fprintf(os.Stderr, "ish: break: only meaningful in a loop\n")
-			env.SetExit(1)
-		} else if err == core.ErrContinue {
-			fmt.Fprintf(os.Stderr, "ish: continue: only meaningful in a loop\n")
-			env.SetExit(1)
-		} else if err != core.ErrReturn {
-			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
-			env.SetExit(1)
-		}
-		return core.Nil
-	}
-	return val
-}
-
-// RunSourceErr is like RunSource but returns ErrExit if exit was called.
-func RunSourceErr(src string, env *core.Env) (core.Value, error) {
-	env.Source = src
-	if d, ok := env.Debugger.(*debug.Debugger); ok {
-		name := env.SourceName
-		if name == "" {
-			name = "<eval>"
-		}
-		sm := debug.NewSourceMap(name, src)
-		d.PushSource(sm)
-		defer d.PopSource()
-	}
-	l := lexer.New(src)
-	node, err := parser.ParseWithCommands(l, MakeIsCommand(env))
-	if l.Error() != "" {
-		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
-		env.SetExit(2)
-		return core.Nil, nil
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ish: parse error: %s\n", err)
-		env.SetExit(2)
-		return core.Nil, nil
-	}
-	val, err := Eval(node, env)
-	if err != nil {
-		if err == core.ErrExit {
-			return core.Nil, core.ErrExit
-		}
-		if err == core.ErrSetE {
 			return core.Nil, core.ErrExit
 		}
 		if err == core.ErrBreak {

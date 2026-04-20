@@ -103,34 +103,30 @@ func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
 		return v, nil
 	}
 
-	if fn, ok := env.GetFn(name); ok {
-		if env.InExprMode() && isZeroArity(fn) {
-			return CallFn(fn, nil, env)
+	r := ResolveCmd(name, env)
+	switch r.Kind {
+	case KindUserFn:
+		if env.InExprMode() && isZeroArity(r.Fn) {
+			return CallFn(r.Fn, nil, env)
 		}
-		return core.Value{Kind: core.VFn, Fn: fn}, nil
-	}
-
-	if _, ok := env.GetNativeFn(name); ok {
+		return core.Value{Kind: core.VFn, Fn: r.Fn}, nil
+	case KindNativeFn:
 		return core.StringVal(name), nil
+	case KindModuleFn:
+		if env.InExprMode() && isZeroArity(r.Fn) {
+			return CallFn(r.Fn, nil, env)
+		}
+		return core.Value{Kind: core.VFn, Fn: r.Fn}, nil
+	case KindModuleNativeFn:
+		return core.Value{Kind: core.VFn, Fn: &core.FnValue{
+			Name: r.ModName + "." + r.FnName, Native: r.NativeFn,
+		}}, nil
 	}
 
+	// Map field access and chained dot resolution (not covered by ResolveCmd)
 	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
 		modName := name[:dotIdx]
 		fnName := name[dotIdx+1:]
-		if mod, ok := env.GetModule(modName); ok {
-			if fn, ok := mod.Fns[fnName]; ok {
-				if env.InExprMode() && isZeroArity(fn) {
-					return CallFn(fn, nil, env)
-				}
-				return core.Value{Kind: core.VFn, Fn: fn}, nil
-			}
-			if nfn, ok := mod.NativeFns[fnName]; ok {
-				return core.Value{Kind: core.VFn, Fn: &core.FnValue{
-					Name: modName + "." + fnName, Native: nfn,
-				}}, nil
-			}
-		}
-		// Map field access fallback
 		if obj, ok := env.Get(modName); ok && obj.Kind == core.VMap && obj.Map != nil {
 			if v, ok := obj.Map.Get(fnName); ok {
 				return v, nil
@@ -178,25 +174,14 @@ func isZeroArity(fn *core.FnValue) bool {
 // evalCapture handles &name — returns the function value without auto-calling.
 func evalCapture(node *ast.Node, env *core.Env) (core.Value, error) {
 	name := node.Tok.Val
-	if fn, ok := env.GetFn(name); ok {
-		return core.Value{Kind: core.VFn, Fn: fn}, nil
-	}
-	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-		modName := name[:dotIdx]
-		fnName := name[dotIdx+1:]
-		if mod, ok := env.GetModule(modName); ok {
-			if fn, ok := mod.Fns[fnName]; ok {
-				return core.Value{Kind: core.VFn, Fn: fn}, nil
-			}
-			if nfn, ok := mod.NativeFns[fnName]; ok {
-				return core.Value{Kind: core.VFn, Fn: &core.FnValue{
-					Name: modName + "." + fnName, Native: nfn,
-				}}, nil
-			}
-		}
-	}
-	if v, ok := env.Get(name); ok && v.Kind == core.VFn {
-		return v, nil
+	r := ResolveCmd(name, env)
+	switch r.Kind {
+	case KindModuleFn, KindUserFn, KindVarFn:
+		return core.Value{Kind: core.VFn, Fn: r.Fn}, nil
+	case KindModuleNativeFn, KindNativeFn:
+		return core.Value{Kind: core.VFn, Fn: &core.FnValue{
+			Name: name, Native: r.NativeFn,
+		}}, nil
 	}
 	return core.Nil, fmt.Errorf("undefined function: %s", name)
 }

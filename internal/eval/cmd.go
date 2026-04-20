@@ -63,54 +63,44 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 		}
 	}
 
-	// Module-qualified call: Module.func args
-	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-		modName := name[:dotIdx]
-		fnName := name[dotIdx+1:]
-		if mod, ok := env.GetModule(modName); ok {
-			argVals, err := evalFnArgs(node, env)
-			if err != nil {
-				return core.Nil, err
-			}
-			if fn, ok := mod.Fns[fnName]; ok {
-				if node.Tail {
-					return core.TailCallVal(fn, argVals), nil
-				}
-				return CallFn(fn, argVals, env)
-			}
-			if nfn, ok := mod.NativeFns[fnName]; ok {
-				return nfn(argVals, env)
-			}
-			return core.Nil, fmt.Errorf("%s: undefined function %s in module %s", name, fnName, modName)
-		}
-	}
-
-	if fn, ok := env.GetFn(name); ok {
+	r := ResolveCmd(name, env)
+	switch r.Kind {
+	case KindModuleFn:
 		argVals, err := evalFnArgs(node, env)
 		if err != nil {
 			return core.Nil, err
 		}
 		if node.Tail {
-			return core.TailCallVal(fn, argVals), nil
+			return core.TailCallVal(r.Fn, argVals), nil
 		}
-		return CallFn(fn, argVals, env)
-	}
-
-	if nfn, ok := env.GetNativeFn(name); ok {
+		return CallFn(r.Fn, argVals, env)
+	case KindModuleNativeFn:
 		argVals, err := evalFnArgs(node, env)
 		if err != nil {
 			return core.Nil, err
 		}
-		return nfn(argVals, env)
-	}
-
-	// Check if the command name is a variable holding a function value.
-	if v, ok := env.Get(name); ok && v.Kind == core.VFn {
+		return r.NativeFn(argVals, env)
+	case KindUserFn:
 		argVals, err := evalFnArgs(node, env)
 		if err != nil {
 			return core.Nil, err
 		}
-		return CallFn(v.Fn, argVals, env)
+		if node.Tail {
+			return core.TailCallVal(r.Fn, argVals), nil
+		}
+		return CallFn(r.Fn, argVals, env)
+	case KindNativeFn:
+		argVals, err := evalFnArgs(node, env)
+		if err != nil {
+			return core.Nil, err
+		}
+		return r.NativeFn(argVals, env)
+	case KindVarFn:
+		argVals, err := evalFnArgs(node, env)
+		if err != nil {
+			return core.Nil, err
+		}
+		return CallFn(r.Fn, argVals, env)
 	}
 
 	argVals := make([]core.Value, 0, len(node.Children)-1)
@@ -642,10 +632,8 @@ func evalBg(node *ast.Node, env *core.Env) (core.Value, error) {
 			name = v.ToStr()
 		}
 
-		_, isFn := env.GetFn(name)
-		_, isBuiltin := builtin.Builtins[name]
-
-		if !isFn && !isBuiltin {
+		r := ResolveCmd(name, env)
+		if r.Kind == KindExternal || r.Kind == KindNotFound {
 			var args []string
 			for _, c := range child.Children[1:] {
 				v, err := evalCmdArg(c, env)

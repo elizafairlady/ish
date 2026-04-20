@@ -21,7 +21,7 @@ func TestEnv() *core.Env {
 	env.CmdSub = eval.RunCmdSub
 	env.CallFn = eval.CallFn
 	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
-		eval.RunSource(src, e)
+		eval.RunSource(src, e) //nolint: errcheck
 	})
 	return env
 }
@@ -40,5 +40,6 @@ func CaptureOutput(env *core.Env, fn func()) string {
 
 // RunSource is a convenience wrapper around eval.RunSource.
 func RunSource(src string, env *core.Env) core.Value {
-	return eval.RunSource(src, env)
+	val, _ := eval.RunSource(src, env)
+	return val
 }

@@ -54,7 +54,7 @@ func registerSignalTrap(sigName string, env *core.Env) {
 			if e != nil {
 				if cmd, ok := e.GetTrap(sigName); ok {
 					if cmd != "" {
-						evalCtx.RunSource(cmd, e)
+						evalCtx.RunSource(cmd, e) //nolint: errcheck
 					}
 				}
 			}
@@ -80,7 +80,7 @@ func unregisterSignalTrap(sigName string) {
 // RunExitTraps fires EXIT traps. Called at shell exit.
 func RunExitTraps(env *core.Env) {
 	if cmd, ok := env.GetTrap("EXIT"); ok && cmd != "" {
-		evalCtx.RunSource(cmd, env)
+		evalCtx.RunSource(cmd, env) //nolint: errcheck
 	}
 }
 
@@ -88,7 +88,7 @@ func RunExitTraps(env *core.Env) {
 func CheckErrTrap(env *core.Env) {
 	if env.ExitCode() != 0 {
 		if cmd, ok := env.GetTrap("ERR"); ok && cmd != "" {
-			evalCtx.RunSource(cmd, env)
+			evalCtx.RunSource(cmd, env) //nolint: errcheck
 		}
 	}
 }

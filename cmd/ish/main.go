@@ -30,9 +30,7 @@ var Version = "0.5.1"
 func main() {
 	// Wire up eval <-> builtin cycle via Init
 	builtin.Init(builtin.EvalContext{
-		RunSource: func(src string, env *core.Env) core.Value {
-			return eval.RunSource(src, env)
-		},
+		RunSource: eval.RunSource,
 	})
 
 	env := core.TopEnv()
@@ -50,7 +48,7 @@ func main() {
 
 	// Load embedded ish prelude (List/Map/Enum/Math/String extensions written in ish)
 	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
-		eval.RunSource(src, e)
+		eval.RunSource(src, e) //nolint: errcheck
 	})
 
 	// Set $SHELL
@@ -125,7 +123,7 @@ func main() {
 	if len(args) > 0 {
 		if args[0] == "-c" && len(args) > 1 {
 			env.SourceName = "<stdin>"
-			eval.RunSource(args[1], env)
+			eval.RunSource(args[1], env) //nolint: errcheck
 			shellExit(env)
 			os.Exit(env.LastExit)
 		}
@@ -137,7 +135,7 @@ func main() {
 		env.ShellName = args[0]
 		env.SourceName = args[0]
 		env.Args = args[1:]
-		eval.RunSource(string(data), env)
+		eval.RunSource(string(data), env) //nolint: errcheck
 		shellExit(env)
 		os.Exit(env.LastExit)
 	}
@@ -150,7 +148,7 @@ func main() {
 			os.Exit(1)
 		}
 		env.SourceName = "<stdin>"
-		eval.RunSource(string(data), env)
+		eval.RunSource(string(data), env) //nolint: errcheck
 		shellExit(env)
 		os.Exit(env.LastExit)
 	}
@@ -241,7 +239,7 @@ func sourceIfExists(path string, env *core.Env) bool {
 	if err != nil {
 		return false
 	}
-	eval.RunSource(string(data), env)
+	eval.RunSource(string(data), env) //nolint: errcheck
 	return true
 }
 
@@ -267,10 +265,10 @@ func repl(env *core.Env) {
 		}
 		exitWarned = false
 
-		line = readMultilineRL(line, rl)
+		line = readMultilineRL(line, rl, env)
 		rl.AddHistory(line)
 
-		val, err := eval.RunSourceErr(line, env)
+		val, err := eval.RunSource(line, env)
 		if err == core.ErrExit {
 			if !exitWarned && hasStoppedJobs() {
 				fmt.Fprintln(os.Stderr, "There are stopped jobs.")
@@ -297,8 +295,8 @@ func hasStoppedJobs() bool {
 	return false
 }
 
-func needsMore(input string) bool {
-	_, err := parser.Parse(lexer.New(input))
+func needsMore(input string, env *core.Env) bool {
+	_, err := parser.ParseWithCommands(lexer.New(input), eval.MakeIsCommand(env))
 	if err == nil {
 		return false
 	}
@@ -315,8 +313,8 @@ func needsMore(input string) bool {
 		strings.Contains(msg, "unexpected end of input")
 }
 
-func readMultilineRL(line string, rl *readline.Readline) string {
-	for needsMore(line) {
+func readMultilineRL(line string, rl *readline.Readline, env *core.Env) string {
+	for needsMore(line, env) {
 		next, ok := rl.ReadLine("... ")
 		if !ok {
 			break

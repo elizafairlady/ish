@@ -1210,18 +1210,24 @@ func (p *Parser) parsePosixFnDef() (*ast.Node, error) {
 }
 
 func (p *Parser) parseIshFn() (*ast.Node, error) {
+	return p.parseIshFnWith(false)
+}
+
+// parseIshFnWith parses a function definition. When requireName is true
+// (used inside defmodule), a name is always required. Otherwise, anonymous
+// functions are allowed in expression context or with bare "fn do".
+func (p *Parser) parseIshFnWith(requireName bool) (*ast.Node, error) {
+	keyword := p.cur().Val // "fn" or "def"
 	p.advance()
 
 	var nameTok ast.Token
-	if p.mode == ModeExpr || (p.isWord("do")) {
-		// Anonymous: expression context, or fn do...end at statement level
+	if !requireName && (p.mode == ModeExpr || p.isWord("do")) {
 		nameTok = ast.Token{Type: ast.TWord, Val: "<anon>"}
 	} else {
-		// fn name ... — named function definition at statement level
 		var err error
 		nameTok, err = p.expect(ast.TWord)
 		if err != nil {
-			return nil, fmt.Errorf("expected function name after 'fn' at pos %d", p.cur().Pos)
+			return nil, fmt.Errorf("expected function name after '%s' at pos %d", keyword, p.cur().Pos)
 		}
 	}
 
@@ -1259,7 +1265,7 @@ func (p *Parser) parseIshFn() (*ast.Node, error) {
 			clauses, err := p.parseClauses(func() (*ast.Node, error) {
 				var clauseParams []*ast.Node
 				for p.cur().Type != ast.TEOF {
-					if p.cur().Type == ast.TArrow || (p.isWord("when")) {
+					if p.cur().Type == ast.TArrow || p.isWord("when") {
 						break
 					}
 					if p.cur().Type == ast.TComma {
@@ -1328,9 +1334,9 @@ func (p *Parser) parseDefModule() (*ast.Node, error) {
 		var err error
 		switch p.cur().Val {
 		case "def":
-			child, err = p.parseDef()
+			child, err = p.parseIshFnWith(true)
 		case "fn":
-			child, err = p.parseDef()
+			child, err = p.parseIshFnWith(true)
 		case "use":
 			child, err = p.parseUse()
 		default:
@@ -1350,93 +1356,6 @@ func (p *Parser) parseDefModule() (*ast.Node, error) {
 	return &ast.Node{Kind: ast.NDefModule, Pos: pos, Tok: name, Children: children}, nil
 }
 
-// parseDef parses a function definition inside a module body.
-// Unlike parseIshFn, it always expects a name (never anonymous).
-func (p *Parser) parseDef() (*ast.Node, error) {
-	p.advance() // consume "def" or "fn"
-
-	nameTok, err := p.expect(ast.TWord)
-	if err != nil {
-		return nil, fmt.Errorf("expected function name after 'def' at pos %d", p.cur().Pos)
-	}
-
-	// Parse params until "when" or "do"
-	var params []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.isWord("when") || p.isWord("do") {
-			break
-		}
-		if p.cur().Type == ast.TComma {
-			p.advance()
-			continue
-		}
-		param, err := p.parsePattern()
-		if err != nil {
-			return nil, err
-		}
-		params = append(params, param)
-	}
-
-	// Optional guard
-	var guard *ast.Node
-	if p.isWord("when") {
-		p.advance()
-		guardMode := p.withMode(ModeExpr)
-		guard, err = p.parseExpr(0)
-		p.restoreMode(guardMode)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	var fnNode *ast.Node
-	if err := p.ishBlock(func() error {
-		if len(params) == 0 && guard == nil && p.looksLikeClauseStart() {
-			clauses, err := p.parseClauses(func() (*ast.Node, error) {
-				var clauseParams []*ast.Node
-				for p.cur().Type != ast.TEOF {
-					if p.cur().Type == ast.TArrow || p.isWord("when") {
-						break
-					}
-					if p.cur().Type == ast.TComma {
-						p.advance()
-						continue
-					}
-					param, err := p.parsePattern()
-					if err != nil {
-						return nil, err
-					}
-					clauseParams = append(clauseParams, param)
-				}
-				return ast.BlockNode(clauseParams), nil
-			})
-			if err != nil {
-				return err
-			}
-			fnNode = &ast.Node{Kind: ast.NIshFn, Tok: nameTok, Clauses: clauses}
-			return nil
-		}
-
-		bodyStmts, err := p.parseBlock()
-		if err != nil {
-			return err
-		}
-		markTail(bodyStmts)
-		fnNode = &ast.Node{
-			Kind: ast.NIshFn,
-			Tok:  nameTok,
-			Clauses: []ast.Clause{{
-				Body:  ast.BlockNode(bodyStmts),
-				Guard: guard,
-			}},
-			Children: params,
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return fnNode, nil
-}
 
 func (p *Parser) parseUse() (*ast.Node, error) {
 	pos := p.cur().Pos

@@ -39,7 +39,8 @@ func captureOutput(env *core.Env, fn func()) string {
 }
 
 func runSource(src string, env *core.Env) core.Value {
-	return RunSource(src, env)
+	val, _ := RunSource(src, env)
+	return val
 }
 
 // ---------------------------------------------------------------------------

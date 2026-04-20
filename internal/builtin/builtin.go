@@ -10,7 +10,7 @@ type BuiltinFunc func(args []string, env *core.Env) (int, error)
 
 // EvalContext provides callbacks that builtins need from eval, breaking the import cycle.
 type EvalContext struct {
-	RunSource func(src string, env *core.Env) core.Value
+	RunSource func(src string, env *core.Env) (core.Value, error)
 }
 
 var evalCtx EvalContext
