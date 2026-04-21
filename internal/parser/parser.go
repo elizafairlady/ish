@@ -2725,6 +2725,10 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 					break // could be redirect in command context
 				}
 			}
+			// TMinus/TPlus adjacent to next token are flags (-m, +x), not operators
+			if (tt == ast.TMinus || tt == ast.TPlus) && !p.cur().SpaceAfter && !p.committed && !p.exprContext {
+				break
+			}
 			prec := p.precedence(tt)
 			if prec <= minPrec {
 				break
