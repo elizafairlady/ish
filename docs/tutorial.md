@@ -1121,10 +1121,10 @@ List.reverse [1, 2, 3]        # [3, 2, 1]
 List.with_index ["a", "b"]    # [{0, "a"}, {1, "b"}]
 ```
 
-Transform with lambdas:
+Transform with lambdas — the pipe arrow `|>` feeds the list as the first argument:
 
 ```
-r = List.map [1, 2, 3], \x -> x * 2
+r = [1, 2, 3] |> List.map \x -> x * 2
 echo $r
 ```
 ```
@@ -1132,22 +1132,24 @@ echo $r
 ```
 
 ```
-r = List.filter [1, 2, 3, 4, 5], \x -> x >= 4
+r = [1, 2, 3, 4, 5] |> List.filter \x -> x >= 4
 echo $r
 ```
 ```
 [4, 5]
 ```
 
+For functions that take extra arguments beyond the piped value, use adjacent parens:
+
 ```
-r = List.reduce [1, 2, 3, 4], 0, \acc, x -> acc + x
+r = [1, 2, 3, 4] |> List.reduce(0, \acc, x -> acc + x)
 echo $r
 ```
 ```
 10
 ```
 
-There are also `List.each` (like `List.map` but for side effects), `List.any`, `List.all`, and `List.find`:
+At statement level, commas also work without pipes:
 
 ```
 List.each [1, 2, 3], \x -> echo $x    # prints 1, 2, 3 on separate lines
@@ -1156,10 +1158,10 @@ List.all [1, 2, 3], \x -> x > 0       # :true
 List.find [1, 2, 3, 4], \x -> x > 2   # 3
 ```
 
-These chain with `|>`:
+Chains with `|>` read left to right:
 
 ```
-r = List.range 1, 11 |> List.filter \x -> x >= 6 |> List.length
+r = List.range(1, 11) |> List.filter \x -> x >= 6 |> length
 echo $r
 ```
 ```

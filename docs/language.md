@@ -602,20 +602,20 @@ The `\` (backslash) syntax creates anonymous function values:
 \ -> 42                  # zero parameters
 ```
 
-Lambdas are single-expression: the body is everything after `->` on the same line. They are always values (never statements).
-
-Lambdas can be passed directly as arguments:
+Lambdas are single-expression: the body is everything after `->` up to a statement terminator. The body does NOT consume `|>`, so lambdas compose naturally in pipe chains:
 
 ```
-List.map [1, 2, 3], \x -> x * 2
-List.filter [1, 2, 3, 4], \x -> x > 2
-List.reduce [1, 2, 3], 0, \acc, x -> acc + x
+[1, 2, 3] |> List.filter \x -> x > 1 |> List.map \x -> x * 2   # [4, 6]
 ```
 
-And used with the pipe operator:
+This parses as `[1,2,3] |> (List.filter \x -> x > 1) |> (List.map \x -> x * 2)`, not as `List.filter (\x -> x > 1 |> ...)`.
+
+Lambdas are the idiomatic way to pass callbacks:
 
 ```
-result = [1, 2, 3] |> List.map \x -> x * 2    # [2, 4, 6]
+[1, 2, 3] |> List.map \x -> x * 2
+[1, 2, 3, 4] |> List.filter \x -> x > 2
+[1, 2, 3] |> List.reduce(0, \acc, x -> acc + x)
 ```
 
 **When to use which:**
@@ -631,13 +631,39 @@ result = [1, 2, 3] |> List.map \x -> x * 2    # [2, 4, 6]
 
 ### Calling Functions
 
+There are three calling syntaxes:
+
+**Statement level (NCmd):** space-separated args with optional commas. Works everywhere — top level, bindings, pipe chains:
+
 ```
-result = add 3, 4       # call named function with two arguments
-greet "world"            # call with one argument
-r = fib 10              # recursive call
+greet "world"                    # one arg
+add 3, 4                         # two args, comma-separated
+r = List.map [1, 2, 3], \x -> x * 2   # qualified call with commas
 ```
 
-Functions are called like commands -- the function name followed by arguments. For user-defined and native functions, arguments are evaluated as ish expressions (variable lookup applies). For builtins and external commands, arguments are evaluated as command arguments (bare words are literal strings, no variable lookup).
+**Adjacent parens:** `func(a, b)` — no space between name and `(`. Required inside data structures (tuples, lists, maps) for multi-arg calls:
+
+```
+{hd [1, 2], List.map([3, 4], \x -> x * 2)}   # inside a tuple
+max(lo, min(val, hi))                          # nested multi-arg calls
+```
+
+**Single-value juxtaposition:** `func value` — in expression context, function application binds tighter than operators. Each call takes one value:
+
+```
+fn fib n when n > 1 do
+  fib (n - 1) + fib (n - 2)     # (fib (n-1)) + (fib (n-2))
+end
+Stats.sum $list / length $list   # (Stats.sum $list) / (length $list)
+```
+
+**Pipe arrow:** `value |> func` — passes value as first argument. The idiomatic way to chain:
+
+```
+[1, 2, 3] |> List.map \x -> x * 2           # [2, 4, 6]
+[1, 2, 3, 4] |> List.filter \x -> x > 2     # [3, 4]
+[1, 2, 3] |> List.reduce(0, \a, x -> a + x) # 6 (extra args in parens)
+```
 
 **Calling function values stored in variables:**
 
@@ -660,9 +686,9 @@ In command position, if a variable holds a function value, it is called with the
 
 ```
 fn double x do x * 2 end
-List.map [1, 2, 3], double       # [2, 4, 6]
-f = double                   # store named function in a variable
-f 5                          # 10
+[1, 2, 3] |> List.map double    # [2, 4, 6]
+f = double                      # store named function in a variable
+f 5                              # 10
 ```
 
 **POSIX vs ish function argument evaluation:**
@@ -729,42 +755,31 @@ hd [10, 20, 30]                # 10
 
 `use` works at the top level and inside `defmodule` bodies.
 
-#### Calling module functions in expression context
+#### Calling module functions
 
-At statement level (assignments, bare calls, pipe chains), commas separate function arguments:
-
-```
-r = List.map [1, 2, 3], \x -> x * 2    # two args, comma is unambiguous
-[1, 2, 3] |> List.filter \x -> x > 1   # pipe chain
-```
-
-Inside tuple and list literals, commas are structural separators — they delimit elements. This creates ambiguity for multi-argument function calls. The rules:
-
-**Single-argument calls work by juxtaposition:**
+At statement level (assignments, bare calls, pipe chains), commas separate arguments:
 
 ```
-{List.hd [1, 2], List.hd [3, 4]}    # tuple of two elements: {1, 3}
-[List.length "hello", List.hd [9]]   # list of two elements: [5, 9]
+r = List.map [1, 2, 3], \x -> x * 2    # two args
+List.each $items, \x -> echo $x         # side-effecting call
 ```
 
-The parser recognizes `List.hd` as a known function and consumes the next value as its argument. No commas are consumed — the comma after `[1, 2]` is a tuple separator.
-
-**Multi-argument calls need parentheses:**
-
-When a function takes multiple comma-separated arguments inside a tuple or list, wrap the call in parentheses to distinguish function-argument commas from structural commas:
+**Pipe arrows are idiomatic** for chaining module calls. The pipe feeds the first arg:
 
 ```
-{(List.map [1, 2, 3], \x -> x * 2), 99}        # {[2, 4, 6], 99}
-[(List.reduce [1, 2, 3], 0, \a, x -> a + x)]    # [6]
+[1, 2, 3] |> List.map \x -> x * 2               # single extra arg
+[1, 2, 3] |> List.reduce(0, \a, x -> a + x)     # multiple extra args in parens
+enum |> Enum.to_list |> List.filter pred |> length
 ```
 
-Two forms work:
-- `(List.map [1, 2, 3], \x -> x * 2)` — parentheses around the whole call, parsed as a sub-expression in command mode where commas are argument separators
-- `List.map ([1, 2, 3], \x -> x * 2)` — parentheses around the arguments, parsed as a parenthesized argument list
+**Inside data structures** (tuples, lists, maps), commas are structural separators. Multi-arg calls use adjacent parens `func(args)`:
 
-Both produce identical results. Use whichever reads more naturally.
+```
+{hd $sorted, hd (List.reverse $sorted)}         # single-arg: no parens needed
+{List.map([1,2,3], \x -> x * 2), 99}            # multi-arg: adjacent parens
+```
 
-**This only matters inside `{...}` and `[...]` literals.** At statement level, in pipe chains, in assignments, and in `$()` command substitution, commas are always function-argument separators and no parentheses are needed.
+Single-value juxtaposition works bare inside data structures because function application binds tighter than operators and commas terminate the call.
 
 ### Match Expression
 
@@ -786,13 +801,13 @@ result = match status do
 end
 ```
 
-### Functional Pipe
+### Functional Pipe (`|>`)
 
 ```
-expr |> fn_name
+expr |> func
 ```
 
-Passes the result of `expr` as the **first** argument to `fn_name`. Additional arguments can follow the function name. Chains left to right:
+Passes the result of `expr` as the **first** argument to `func`. Additional arguments follow the function by juxtaposition or adjacent parens. Chains left to right:
 
 ```
 fn double x do x * 2 end
@@ -802,13 +817,21 @@ result = 5 |> double |> inc    # inc(double(5)) = 11
 result = 3 |> inc |> double    # double(inc(3)) = 8
 ```
 
-The pipe operator works with user functions, native stdlib functions, builtins, and external commands. For builtins and external commands, the piped value is converted to a string.
+**With additional arguments:** the pipe value becomes the first arg; extra args follow:
+
+```
+[1, 2, 3] |> List.map \x -> x * 2           # List.map([1,2,3], \x -> x * 2)
+[1, 2, 3] |> List.reduce(0, \a, x -> a + x) # List.reduce([1,2,3], 0, fn)
+enum |> Enum.to_list |> List.filter pred     # chaining with single-arg
+```
+
+When the right side has one extra arg, juxtaposition works: `list |> List.map \x -> x`. When it has two or more extra args, use adjacent parens: `list |> List.reduce(0, fn)`.
 
 **Auto-coercion:** if the left side of `|>` is a command that produces bytes (an external command or builtin), its stdout is captured and automatically split into a list of lines (`IO.lines`). This means you can pipe command output directly into value functions:
 
 ```
 ls |> List.map \f -> String.upcase f         # list of uppercased filenames
-ls |> List.filter \f -> String.ends_with f, ".go" |> List.length  # count .go files
+ls |> List.filter \f -> String.ends_with f, ".go" |> length  # count .go files
 ```
 
 **Explicit bridge override:** if the right side of `|>` is a bridge function (`JSON.parse`, `CSV.parse`, `CSV.parse_tsv`, `IO.lines`), the raw string is passed instead of auto-coercing to lines:
@@ -1380,14 +1403,18 @@ The parser uses position and context to decide between POSIX shell syntax and is
 - Lambdas (`\params -> expr`) are the preferred syntax for simple anonymous functions.
 
 **Module-qualified names (`Name.func`):**
-- In command mode, `List.map` is a single word token (the lexer treats `.` as a word character). The eval layer splits on `.` and checks for a module named `List`.
-- In expression mode, `List.map` produces a dot-access node (`List` `.` `map`). The eval layer checks if `List` is a module before falling back to map field access.
-- PascalCase names are reserved for modules. If a variable `List` holds a map and a module `List` is registered, the module takes priority for dot access.
+- The lexer tokenizes `.` separately. `List.map` produces three tokens: `TIdent("List")`, `TDot`, `TIdent("map")`.
+- At statement start, the parser builds a dot access chain (NAccess), then tries expression first (for `Fib.calc (n-1) + Fib.calc (n-2)` style). If uncommitted, falls back to NCmd which handles commas (`List.map [1,2,3], \x -> x * 2`).
+- In expression context, dot access builds NAccess nodes. The evaluator checks modules first, then map field access.
 
 **Commas in function arguments vs data structure elements:**
-- At statement level: commas always separate function arguments. `List.map [1,2,3], \x -> x * 2` passes two arguments to `List.map`.
-- Inside `{...}` (tuples) and `[...]` (lists): commas are structural separators between elements. A multi-argument function call must be wrapped in parentheses: `{(List.map [1,2,3], \x -> x * 2), other}`.
-- Single-argument calls inside tuples/lists work without parentheses: `{List.hd [1,2], List.hd [3,4]}` — the parser recognizes known functions and consumes one argument by juxtaposition.
+- At statement level (including binding RHS and `$()` command substitutions): commas always separate command arguments. `List.map [1,2,3], \x -> x * 2` passes two arguments.
+- Inside `{...}` (tuples) and `[...]` (lists): commas are structural separators. Use adjacent parens for multi-arg calls: `{List.map([1,2,3], \x -> x), 99}`.
+- Single-arg calls work bare inside data structures: `{hd $list, tl $list}` — function application takes one value and the comma goes to the tuple.
+
+**Function application precedence:**
+- In expression context, `func value` (juxtaposition) binds tighter than all binary operators. `f x + g y` parses as `(f x) + (g y)`.
+- Spaced `+` and `*` etc. are binary operators. Adjacent `-m` is a command flag. Spaced `- value` after a call is a binary minus.
 
 **General rule:** ish extensions never use tokens that are valid in POSIX shell at the same position. Atoms (`:word`), tuples (`{a, b}`), maps (`%{}`), pipe arrows (`|>`), lambdas (`\x -> expr`), and the `fn`/`match`/`spawn`/`receive`/`supervise`/`defmodule`/`use` keywords occupy syntactic positions that are unambiguous.
 
