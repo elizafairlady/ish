@@ -179,7 +179,7 @@ func TestEnvExpand(t *testing.T) {
 		},
 		{
 			name:  "$$ pid",
-			setup: func(e *Env) { e.ShellPid = 1234 },
+			setup: func(e *Env) { e.Shell.ShellPid = 1234 },
 			input: "pid=$$",
 			want:  "pid=1234",
 		},
@@ -317,9 +317,9 @@ func TestEnvExpandNoMarkers(t *testing.T) {
 func TestEnvBuildEnv(t *testing.T) {
 	t.Run("includes exported vars", func(t *testing.T) {
 		e := NewEnv(nil)
-		e.Exported = make(map[string]bool)
+		e.Shell.Exported = make(map[string]bool)
 		e.SetLocal("FOO", StringVal("bar"))
-		e.Exported["FOO"] = true
+		e.Shell.Exported["FOO"] = true
 		e.SetLocal("SECRET", StringVal("hidden"))
 
 		envVars := e.BuildEnv()
@@ -343,9 +343,9 @@ func TestEnvBuildEnv(t *testing.T) {
 
 	t.Run("child scope overrides parent", func(t *testing.T) {
 		parent := NewEnv(nil)
-		parent.Exported = make(map[string]bool)
+		parent.Shell.Exported = make(map[string]bool)
 		parent.SetLocal("X", StringVal("old"))
-		parent.Exported["X"] = true
+		parent.Shell.Exported["X"] = true
 
 		child := NewEnv(parent)
 		child.SetLocal("X", StringVal("new"))
@@ -387,7 +387,7 @@ func TestEnvDeleteFn(t *testing.T) {
 
 func TestEnvExpandShellName(t *testing.T) {
 	e := NewEnv(nil)
-	e.ShellName = "testshell"
+	e.Shell.ShellName = "testshell"
 	got := e.Expand("name=$0")
 	if got != "name=testshell" {
 		t.Errorf("$0 expansion: got %q, want %q", got, "name=testshell")

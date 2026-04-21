@@ -19,10 +19,10 @@ import (
 
 func testEnv() *core.Env {
 	env := core.TopEnv()
-	env.Proc = process.NewProcess()
+	env.Shell.Proc = process.NewProcess()
 	stdlib.Register(env)
 	builtin.Init(builtin.EvalContext{RunSource: RunSource})
-	env.CmdSub = RunCmdSub
+	env.Shell.CmdSub = RunCmdSub
 	env.CallFn = CallFn
 	return env
 }

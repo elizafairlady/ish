@@ -15,10 +15,10 @@ import (
 // TestEnv creates a fully-initialized environment for tests.
 func TestEnv() *core.Env {
 	env := core.TopEnv()
-	env.Proc = process.NewProcess()
+	env.Shell.Proc = process.NewProcess()
 	stdlib.Register(env)
 	builtin.Init(builtin.EvalContext{RunSource: eval.RunSource})
-	env.CmdSub = eval.RunCmdSub
+	env.Shell.CmdSub = eval.RunCmdSub
 	env.CallFn = eval.CallFn
 	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
 		eval.RunSource(src, e) //nolint: errcheck

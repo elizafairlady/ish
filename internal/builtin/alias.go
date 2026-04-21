@@ -33,7 +33,9 @@ func builtinAlias(args []string, env *core.Env) (int, error) {
 func builtinUnalias(args []string, env *core.Env) (int, error) {
 	for _, arg := range args {
 		if arg == "-a" {
-			env.Aliases = nil
+			if env.Shell != nil {
+				env.Shell.Aliases = nil
+			}
 		} else {
 			env.DeleteAlias(arg)
 		}

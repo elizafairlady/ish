@@ -686,7 +686,7 @@ func evalBg(node *ast.Node, env *core.Env) (core.Value, error) {
 			pid := cmd.Process.Pid
 			cmdStr := name + " " + strings.Join(expanded, " ")
 			jobID := jobs.AddJob(pid, strings.TrimSpace(cmdStr), cmd.Process)
-			env.LastBg = pid
+			env.Shell.LastBg = pid
 			fmt.Fprintf(os.Stderr, "[%d] %d\n", jobID, pid)
 
 			j := jobs.FindJob(jobID)

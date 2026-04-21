@@ -97,8 +97,8 @@ func builtinTrap(args []string, env *core.Env) (int, error) {
 	if len(args) == 0 {
 		w := env.Stdout()
 		for c := env; c != nil; c = c.Parent {
-			if c.Traps != nil {
-				for sig, cmd := range c.Traps {
+			if c.Shell != nil && c.Shell.Traps != nil {
+				for sig, cmd := range c.Shell.Traps {
 					fmt.Fprintf(w, "trap -- %q %s\n", cmd, sig)
 				}
 			}

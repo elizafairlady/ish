@@ -47,7 +47,7 @@ func TestEnvGetProc(t *testing.T) {
 		e := core.NewEnv(nil)
 		p := process.NewProcess()
 		defer p.Close()
-		e.Proc = p
+		e.Shell.Proc = p
 
 		got := e.GetProc()
 		if got != p {
@@ -59,7 +59,7 @@ func TestEnvGetProc(t *testing.T) {
 		parent := core.NewEnv(nil)
 		p := process.NewProcess()
 		defer p.Close()
-		parent.Proc = p
+		parent.Shell.Proc = p
 
 		child := core.NewEnv(parent)
 		got := child.GetProc()

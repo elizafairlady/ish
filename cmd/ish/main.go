@@ -34,11 +34,11 @@ func main() {
 	})
 
 	env := core.TopEnv()
-	env.ShellName = os.Args[0]
-	env.CmdSub = eval.RunCmdSub
+	env.Shell.ShellName = os.Args[0]
+	env.Shell.CmdSub = eval.RunCmdSub
 
 	// Create main process
-	env.Proc = process.NewProcess()
+	env.Shell.Proc = process.NewProcess()
 
 	// Register stdlib
 	stdlib.Register(env)
@@ -78,7 +78,7 @@ func main() {
 		}
 	}
 	args = filteredArgs
-	env.IsLoginShell = loginShell
+	env.Shell.IsLoginShell = loginShell
 
 	// Set up debugger if requested
 	if debugMode {
@@ -122,7 +122,7 @@ func main() {
 	// Non-interactive modes: -c command or script file
 	if len(args) > 0 {
 		if args[0] == "-c" && len(args) > 1 {
-			env.SourceName = "<stdin>"
+			env.Shell.SourceName = "<stdin>"
 			eval.RunSource(args[1], env) //nolint: errcheck
 			shellExit(env)
 			os.Exit(env.LastExit)
@@ -132,8 +132,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
 			os.Exit(1)
 		}
-		env.ShellName = args[0]
-		env.SourceName = args[0]
+		env.Shell.ShellName = args[0]
+		env.Shell.SourceName = args[0]
 		env.Args = args[1:]
 		eval.RunSource(string(data), env) //nolint: errcheck
 		shellExit(env)
@@ -147,7 +147,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
 			os.Exit(1)
 		}
-		env.SourceName = "<stdin>"
+		env.Shell.SourceName = "<stdin>"
 		eval.RunSource(string(data), env) //nolint: errcheck
 		shellExit(env)
 		os.Exit(env.LastExit)
@@ -205,7 +205,7 @@ func main() {
 		os.Exit(129) // 128 + SIGHUP(1)
 	}()
 
-	env.SourceName = "<repl>"
+	env.Shell.SourceName = "<repl>"
 	repl(env)
 	shellExit(env)
 }
@@ -213,7 +213,7 @@ func main() {
 // shellExit runs cleanup for shell exit: exit traps, logout file, HUP to jobs.
 func shellExit(env *core.Env) {
 	builtin.RunExitTraps(env)
-	if env.IsLoginShell {
+	if env.Shell != nil && env.Shell.IsLoginShell {
 		home := homeDir(env)
 		sourceIfExists(home+"/.ish_logout", env)
 		// Send SIGHUP to remaining background jobs
@@ -533,20 +533,22 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 				}
 			}
 			for c := env; c != nil; c = c.Parent {
-				for name := range c.Fns {
-					if strings.HasPrefix(name, prefix) {
-						candidates = append(candidates, name)
-					}
-				}
-				for name := range c.NativeFns {
-					if strings.HasPrefix(name, prefix) {
-						candidates = append(candidates, name)
-					}
-				}
-				if c.Modules != nil {
-					for name := range c.Modules {
+				if c.Shell != nil {
+					for name := range c.Shell.Fns {
 						if strings.HasPrefix(name, prefix) {
-							candidates = append(candidates, name+".")
+							candidates = append(candidates, name)
+						}
+					}
+					for name := range c.Shell.NativeFns {
+						if strings.HasPrefix(name, prefix) {
+							candidates = append(candidates, name)
+						}
+					}
+					if c.Shell.Modules != nil {
+						for name := range c.Shell.Modules {
+							if strings.HasPrefix(name, prefix) {
+								candidates = append(candidates, name+".")
+							}
 						}
 					}
 				}

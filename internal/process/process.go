@@ -305,7 +305,7 @@ func (s *Supervisor) AddChild(name string, fn *core.FnValue, env *core.Env) {
 func (s *Supervisor) startChild(child SupervisorChild) *Process {
 	proc := NewProcess()
 	childEnv := core.CopyEnv(child.Env)
-	childEnv.Proc = proc
+	childEnv.Shell.Proc = proc
 
 	// Copy closure env to avoid races with parent goroutine
 	fn := child.Fn

@@ -132,12 +132,12 @@ func ensureDebugger(env *core.Env) {
 	d := debug.New()
 	env.Debugger = d
 	// Build source map from current source if available
-	if env.Source != "" {
-		name := env.SourceName
+	if env.Shell != nil && env.Shell.Source != "" {
+		name := env.Shell.SourceName
 		if name == "" {
 			name = "<eval>"
 		}
-		sm := debug.NewSourceMap(name, env.Source)
+		sm := debug.NewSourceMap(name, env.Shell.Source)
 		d.PushSource(sm)
 	}
 }
@@ -190,8 +190,8 @@ func builtinReadonly(args []string, env *core.Env) (int, error) {
 	if len(args) == 0 || (len(args) == 1 && args[0] == "-p") {
 		w := env.Stdout()
 		for c := env; c != nil; c = c.Parent {
-			if c.ReadonlySet != nil {
-				for name := range c.ReadonlySet {
+			if c.Shell != nil && c.Shell.ReadonlySet != nil {
+				for name := range c.Shell.ReadonlySet {
 					if v, ok := env.Get(name); ok {
 						fmt.Fprintf(w, "declare -r %s=%s\n", name, v.ToStr())
 					} else {

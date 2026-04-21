@@ -224,7 +224,7 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 		var guardErr error
 		for _, clause := range fn.Clauses {
 			if len(clause.Params) == 0 {
-				fnEnv := core.NewEnv(parentEnv)
+				fnEnv := core.NewFlatEnv(parentEnv)
 				fnEnv.Args = strArgs
 				val, err := Eval(clause.Body, fnEnv)
 				if err == core.ErrReturn {
@@ -265,7 +265,7 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 				continue
 			}
 
-			fnEnv := core.NewEnv(parentEnv)
+			fnEnv := core.NewFlatEnv(parentEnv)
 			fnEnv.Args = strArgs
 			for i := range clause.Params {
 				PatternBind(&clause.Params[i], vals[i], fnEnv)
@@ -350,9 +350,9 @@ func RunCmdSub(cmd string, env *core.Env) (string, error) {
 // RunSource parses and evaluates a source string.
 // Returns ErrExit if exit was called during evaluation.
 func RunSource(src string, env *core.Env) (core.Value, error) {
-	env.Source = src
+	env.Shell.Source = src
 	if d, ok := env.Debugger.(*debug.Debugger); ok {
-		name := env.SourceName
+		name := env.Shell.SourceName
 		if name == "" {
 			name = "<eval>"
 		}

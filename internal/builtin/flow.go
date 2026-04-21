@@ -24,7 +24,7 @@ func builtinExit(args []string, env *core.Env) (int, error) {
 }
 
 func builtinLogout(args []string, env *core.Env) (int, error) {
-	if !env.IsLoginShell {
+	if env.Shell == nil || !env.Shell.IsLoginShell {
 		return 1, fmt.Errorf("logout: not login shell: use 'exit'")
 	}
 	return builtinExit(args, env)

@@ -16,15 +16,22 @@ import (
 )
 
 func evalLit(node *ast.Node, env *core.Env) (core.Value, error) {
-	// With the new parser, string interpolation is handled by NInterpString.
-	// NLit strings are plain literal segments — no expansion needed.
 	return litToValue(node)
 }
 
+// litToValue returns the Value for a literal node. Inlineable: the cache-hit
+// path is a nil check + type assertion. Cache misses fall through to litToValueSlow.
 func litToValue(node *ast.Node) (core.Value, error) {
 	if node.CachedVal != nil {
 		return node.CachedVal.(core.Value), nil
 	}
+	return litToValueSlow(node)
+}
+
+// litToValueSlow parses the literal from its token string and caches the result.
+//
+//go:noinline
+func litToValueSlow(node *ast.Node) (core.Value, error) {
 	var v core.Value
 	switch node.Tok.Type {
 	case ast.TInt:

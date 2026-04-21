@@ -96,7 +96,7 @@ func evalIshMatch(node *ast.Node, env *core.Env) (core.Value, error) {
 func spawnProcess(node *ast.Node, env *core.Env) (*process.Process, error) {
 	proc := process.NewProcess()
 	childEnv := core.CopyEnv(env)
-	childEnv.Proc = proc
+	childEnv.Shell.Proc = proc
 	child := node.Children[0]
 
 	go func() {

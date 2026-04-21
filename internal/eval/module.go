@@ -27,7 +27,7 @@ func evalDefModule(node *ast.Node, env *core.Env) (core.Value, error) {
 		}
 		// Sync exported functions into the module after each definition
 		// so later definitions can reference earlier ones via module name.
-		for name, fn := range modEnv.Fns {
+		for name, fn := range modEnv.Shell.Fns {
 			if !strings.HasPrefix(name, "_") {
 				mod.Fns[name] = fn
 			}
@@ -35,7 +35,7 @@ func evalDefModule(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	// Set closure env on all module functions so they can see each other
-	for _, fn := range modEnv.Fns {
+	for _, fn := range modEnv.Shell.Fns {
 		if fn.Env == nil {
 			fn.Env = modEnv
 		}
