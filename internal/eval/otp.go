@@ -47,9 +47,8 @@ func evalIshFn(node *ast.Node, env *core.Env) (core.Value, error) {
 				Body:   clause.Body,
 			})
 		}
-		fnVal := &core.FnValue{Name: name, Clauses: fnClauses}
+		fnVal := &core.FnValue{Name: name, Clauses: fnClauses, Env: env}
 		if name == "<anon>" {
-			fnVal.Env = env
 			return core.Value{Kind: core.VFn, Fn: fnVal}, nil
 		}
 		// Arrow-clause form provides a complete dispatch table — replace.
@@ -68,10 +67,9 @@ func evalIshFn(node *ast.Node, env *core.Env) (core.Value, error) {
 		Body:   node.Clauses[0].Body,
 	}
 
-	fnVal := &core.FnValue{Name: name, Clauses: []core.FnClause{clause}}
+	fnVal := &core.FnValue{Name: name, Clauses: []core.FnClause{clause}, Env: env}
 
 	if name == "<anon>" {
-		fnVal.Env = env
 		return core.Value{Kind: core.VFn, Fn: fnVal}, nil
 	}
 

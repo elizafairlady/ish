@@ -100,7 +100,7 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 
 	// Auto-coerce numeric strings for arithmetic operators.
 	// This bridges the POSIX world (everything is a string) and ish expressions.
-	if isArithOp(node.Tok.Type) {
+	if isArithOp(node.Tok.Type) && (left.Kind == core.VString || right.Kind == core.VString) {
 		left = coerceNumeric(left)
 		right = coerceNumeric(right)
 	}

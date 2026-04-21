@@ -139,7 +139,7 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 
 	r := ResolveCmd(name, env)
 	switch r.Kind {
-	case KindModuleFn:
+	case KindModuleFn, KindUserFn, KindVarFn:
 		argVals, err := evalFnArgs(node, env)
 		if err != nil {
 			return core.Nil, err
@@ -148,33 +148,12 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 			return core.TailCallVal(r.Fn, argVals), nil
 		}
 		return CallFn(r.Fn, argVals, env)
-	case KindModuleNativeFn:
+	case KindModuleNativeFn, KindNativeFn:
 		argVals, err := evalFnArgs(node, env)
 		if err != nil {
 			return core.Nil, err
 		}
 		return r.NativeFn(argVals, env)
-	case KindUserFn:
-		argVals, err := evalFnArgs(node, env)
-		if err != nil {
-			return core.Nil, err
-		}
-		if node.Tail {
-			return core.TailCallVal(r.Fn, argVals), nil
-		}
-		return CallFn(r.Fn, argVals, env)
-	case KindNativeFn:
-		argVals, err := evalFnArgs(node, env)
-		if err != nil {
-			return core.Nil, err
-		}
-		return r.NativeFn(argVals, env)
-	case KindVarFn:
-		argVals, err := evalFnArgs(node, env)
-		if err != nil {
-			return core.Nil, err
-		}
-		return CallFn(r.Fn, argVals, env)
 	}
 
 	// Build string arguments for builtins and external commands.
