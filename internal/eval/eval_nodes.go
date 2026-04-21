@@ -261,6 +261,12 @@ func evalArg(node *ast.Node, env *core.Env) (core.Value, error) {
 			buf.WriteString(child.Tok.Val)
 			continue
 		}
+		// Numeric literals in compound words preserve raw text
+		// (e.g. 1.120 in IP address 192.168.1.120)
+		if child.Kind == ast.NLit && (child.Tok.Type == ast.TFloat || child.Tok.Type == ast.TInt) {
+			buf.WriteString(child.Tok.Val)
+			continue
+		}
 		v, err := Eval(child, env)
 		if err != nil {
 			return core.Nil, err

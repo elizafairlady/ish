@@ -191,13 +191,19 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 	for _, child := range node.Children[1:] {
 		switch child.Kind {
 		case ast.NLit:
-			// Quoted strings: no splitting, no globbing
-			v, err := Eval(child, env)
-			if err != nil {
-				return core.Nil, err
+			// In command context, use raw token text for numeric literals
+			// to preserve formatting (e.g. 1.120 in IP addresses).
+			if child.Tok.Type == ast.TFloat || child.Tok.Type == ast.TInt {
+				strArgs = append(strArgs, child.Tok.Val)
+				quotedFlags = append(quotedFlags, true)
+			} else {
+				v, err := Eval(child, env)
+				if err != nil {
+					return core.Nil, err
+				}
+				strArgs = append(strArgs, v.ToStr())
+				quotedFlags = append(quotedFlags, true)
 			}
-			strArgs = append(strArgs, v.ToStr())
-			quotedFlags = append(quotedFlags, true)
 		case ast.NInterpString:
 			// Interpolated strings: quoted context
 			v, err := Eval(child, env)

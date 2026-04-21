@@ -755,6 +755,14 @@ hd [10, 20, 30]                # 10
 
 `use` works at the top level and inside `defmodule` bodies.
 
+> **Warning:** `use` at the top level imports bare names that may shadow Unix
+> commands on your `$PATH`. For example, `use List` imports `sort`, `reverse`,
+> and `find` — all common Unix utilities. When shadowed, `sort` in a pipeline
+> like `ls | sort` will call `List.sort` (which expects a list value) instead
+> of `/usr/bin/sort` (which reads bytes from stdin). Prefer module-qualified
+> calls (`List.sort`, `String.trim`) at the top level. `use` is safe inside
+> `defmodule` bodies where it cannot interfere with command resolution.
+
 #### Calling module functions
 
 At statement level (assignments, bare calls, pipe chains), commas separate arguments:
