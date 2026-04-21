@@ -346,10 +346,10 @@ func TestPatternBind(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// PatternMatches
+// TryBind (nil env = match-only, replaces old PatternMatches)
 // ---------------------------------------------------------------------------
 
-func TestPatternMatches(t *testing.T) {
+func TestTryBind(t *testing.T) {
 	tests := []struct {
 		name string
 		pat  *ast.Node
@@ -389,10 +389,9 @@ func TestPatternMatches(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := testEnv()
-			got := PatternMatches(tt.pat, tt.val, env)
+			got := TryBind(tt.pat, tt.val, nil)
 			if got != tt.want {
-				t.Errorf("PatternMatches = %v, want %v", got, tt.want)
+				t.Errorf("TryBind(nil env) = %v, want %v", got, tt.want)
 			}
 		})
 	}

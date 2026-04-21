@@ -323,6 +323,20 @@ func (e *Env) Set(name string, v Value) error {
 	return e.SetLocal(name, v)
 }
 
+// ResetFlat clears a flat-mode env's bindings so it can be reused for another
+// clause attempt in pattern matching. Zeroes keys/vals to release references.
+func (e *Env) ResetFlat() {
+	if e.FlatN < 0 {
+		// Overflowed to map mode — caller must allocate a new env.
+		return
+	}
+	for i := int8(0); i < e.FlatN; i++ {
+		e.FlatKeys[i] = ""
+		e.FlatVals[i] = Nil
+	}
+	e.FlatN = 0
+}
+
 // SetLocal always writes to the current scope, never walking the parent chain.
 func (e *Env) SetLocal(name string, v Value) error {
 	if e.IsReadonly(name) {

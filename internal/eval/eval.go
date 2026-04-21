@@ -217,6 +217,7 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 
 		matched := false
 		var guardErr error
+		fnEnv := core.NewFlatEnv(parentEnv)
 		for _, clause := range fn.Clauses {
 			if len(clause.Params) == 0 {
 				// POSIX function path: convert args to strings for $1/$@ access.
@@ -224,7 +225,6 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 				for i, v := range vals {
 					strArgs[i] = v.ToStr()
 				}
-				fnEnv := core.NewFlatEnv(parentEnv)
 				fnEnv.Args = strArgs
 				val, err := Eval(clause.Body, fnEnv)
 				if err == core.ErrReturn {
@@ -254,20 +254,23 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 				continue
 			}
 
-			matches := true
+			// Single-pass: TryBind tests the pattern and binds on match.
+			// fnEnv is reused across clause attempts — reset for each try.
+			if fnEnv.FlatN < 0 {
+				fnEnv = core.NewFlatEnv(parentEnv)
+			} else {
+				fnEnv.ResetFlat()
+			}
+
+			bindOK := true
 			for i := range clause.Params {
-				if !PatternMatches(&clause.Params[i], vals[i], env) {
-					matches = false
+				if !TryBind(&clause.Params[i], vals[i], fnEnv) {
+					bindOK = false
 					break
 				}
 			}
-			if !matches {
+			if !bindOK {
 				continue
-			}
-
-			fnEnv := core.NewFlatEnv(parentEnv)
-			for i := range clause.Params {
-				PatternBind(&clause.Params[i], vals[i], fnEnv) //nolint: errcheck — match already verified
 			}
 
 			if clause.Guard != nil {
@@ -276,9 +279,12 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 					if guardErr == nil {
 						guardErr = err
 					}
+					// Guard had side effects — need fresh env for next clause
+					fnEnv = core.NewFlatEnv(parentEnv)
 					continue
 				}
 				if !guardVal.Truthy() {
+					fnEnv = core.NewFlatEnv(parentEnv)
 					continue
 				}
 			}

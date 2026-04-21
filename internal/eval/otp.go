@@ -84,9 +84,8 @@ func evalIshMatch(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	for _, clause := range node.Clauses {
-		if PatternMatches(clause.Pattern, subject, env) {
-			matchEnv := core.NewEnv(env)
-			PatternBind(clause.Pattern, subject, matchEnv) //nolint: errcheck — match already verified
+		matchEnv := core.NewEnv(env)
+		if TryBind(clause.Pattern, subject, matchEnv) {
 			return Eval(clause.Body, matchEnv)
 		}
 	}
@@ -175,7 +174,7 @@ func evalIshReceive(node *ast.Node, env *core.Env) (core.Value, error) {
 
 	matchFn := func(msg core.Value) bool {
 		for _, clause := range node.Clauses {
-			if PatternMatches(clause.Pattern, msg, env) {
+			if TryBind(clause.Pattern, msg, nil) {
 				return true
 			}
 		}
@@ -208,9 +207,8 @@ func evalIshReceive(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	for _, clause := range node.Clauses {
-		if PatternMatches(clause.Pattern, msg, env) {
-			matchEnv := core.NewEnv(env)
-			PatternBind(clause.Pattern, msg, matchEnv) //nolint: errcheck — match already verified
+		matchEnv := core.NewEnv(env)
+		if TryBind(clause.Pattern, msg, matchEnv) {
 			return Eval(clause.Body, matchEnv)
 		}
 	}
@@ -287,9 +285,8 @@ func evalIshTry(node *ast.Node, env *core.Env) (core.Value, error) {
 	errVal := core.TupleVal(core.AtomVal("error"), core.StringVal(err.Error()))
 
 	for _, clause := range node.Clauses {
-		if PatternMatches(clause.Pattern, errVal, env) {
-			matchEnv := core.NewEnv(env)
-			PatternBind(clause.Pattern, errVal, matchEnv) //nolint: errcheck — match already verified
+		matchEnv := core.NewEnv(env)
+		if TryBind(clause.Pattern, errVal, matchEnv) {
 			return Eval(clause.Body, matchEnv)
 		}
 	}
