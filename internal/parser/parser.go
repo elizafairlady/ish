@@ -192,7 +192,6 @@ func (p *Parser) compact() {
 }
 
 func (p *Parser) fillTo(n int) {
-	p.compact()
 	for n-p.base >= len(p.tokens) {
 		resumePos := p.lex.SourcePos()
 		tok := p.lex.NextToken()
@@ -271,6 +270,48 @@ func (p *Parser) tryParseExpr() (*ast.Node, bool) {
 	// No commitment point — rollback
 	p.savedPositions = p.savedPositions[:len(p.savedPositions)-1]
 	p.pos = saved
+	p.committed = savedCommitted
+	return nil, false
+}
+
+// tryParseExprFrom attempts to continue an expression parse from a pre-parsed
+// left-hand side (e.g. a dot chain that has already been consumed). On commitment,
+// returns the expression. On non-commitment, rolls back to rollbackPos so the
+// caller can re-parse the arguments in command mode. The left node is not lost —
+// the caller already has it and can pass it to parseInvocationWithName.
+func (p *Parser) tryParseExprFrom(left *ast.Node, rollbackPos int) (*ast.Node, bool) {
+	savedCommitted := p.committed
+	p.committed = false
+	p.savedPositions = append(p.savedPositions, rollbackPos)
+
+	node, err := p.parseExprFrom(left, 0)
+	if err != nil {
+		p.savedPositions = p.savedPositions[:len(p.savedPositions)-1]
+		p.pos = rollbackPos
+		p.committed = savedCommitted
+		return nil, false
+	}
+
+	// Check for trailing = (match bind) like parseExpression does
+	if p.cur().Type == ast.TEquals {
+		p.advance()
+		rhs, err := p.parseExpression()
+		if err != nil {
+			p.savedPositions = p.savedPositions[:len(p.savedPositions)-1]
+			p.pos = rollbackPos
+			p.committed = savedCommitted
+			return nil, false
+		}
+		node = &ast.Node{Kind: ast.NMatch, Children: []*ast.Node{node, rhs}}
+	}
+
+	if p.committed {
+		p.savedPositions = p.savedPositions[:len(p.savedPositions)-1]
+		return node, true
+	}
+
+	p.savedPositions = p.savedPositions[:len(p.savedPositions)-1]
+	p.pos = rollbackPos
 	p.committed = savedCommitted
 	return nil, false
 }
@@ -397,6 +438,7 @@ func (p *Parser) parseBlock() ([]*ast.Node, error) {
 			return nil, fmt.Errorf("unexpected token %q at position %d", p.cur().Val, p.cur().Pos)
 		}
 		p.skipSeparators()
+		p.compact()
 	}
 	return stmts, nil
 }
@@ -637,6 +679,24 @@ func (p *Parser) parseStmt() (*ast.Node, error) {
 	return nil, nil
 }
 
+// buildDotChain consumes an adjacent dot chain from the current position.
+func (p *Parser) buildDotChain() *ast.Node {
+	tok := p.advance()
+	node := ast.IdentNode(tok)
+	for p.cur().Type == ast.TDot && !p.rawAt(p.pos-1).SpaceAfter {
+		p.advance()
+		field := p.cur()
+		if field.Type == ast.TIdent || field.Type.IsKeyword() {
+			field = p.advance()
+			field.Type = ast.TIdent
+			node = &ast.Node{Kind: ast.NAccess, Tok: field, Children: []*ast.Node{node}}
+		} else {
+			break
+		}
+	}
+	return node
+}
+
 // dispatchIdent handles a bare TIdent at statement start.
 // Uses SYNTAX and SpaceAfter to determine: POSIX assign, binding, expression, or invocation.
 func (p *Parser) dispatchIdent() (*ast.Node, error) {
@@ -652,48 +712,24 @@ func (p *Parser) dispatchIdent() (*ast.Node, error) {
 			return p.parsePosixAssign()
 		}
 		// Adjacent dot: a.b → module-qualified name.
-		// Try expression first (handles NCall + binary ops like Fib.calc (n-1) + Fib.calc (n-2)).
-		// If committed (operator found), keep it. Otherwise fall back to NCmd for commas.
+		// Build the dot chain once, then try expression continuation.
+		// If expression commits (operator, lambda, parens), keep it.
+		// Otherwise roll back to after the chain and dispatch as command.
 		if next.Type == ast.TDot {
-			if node, ok := p.tryParseExpr(); ok {
-				return node, nil
-			}
-			// Tentative parse didn't commit — build dot chain for NCmd
-			tok := p.advance()
-			nameNode := ast.IdentNode(tok)
-			for p.cur().Type == ast.TDot {
-				p.advance()
-				field := p.cur()
-				if field.Type == ast.TIdent || field.Type.IsKeyword() {
-					field = p.advance()
-					field.Type = ast.TIdent
-					nameNode = &ast.Node{Kind: ast.NAccess, Tok: field, Children: []*ast.Node{nameNode}}
-				} else {
-					break
-				}
-			}
-			// Adjacent parens: Module.func(a, b) → NCall
-			if p.cur().Type == ast.TLParen && !p.rawAt(p.pos-1).SpaceAfter {
-				call := &ast.Node{Kind: ast.NCall, Children: []*ast.Node{nameNode}}
-				p.advance()
-				for !p.until(ast.TRParen, ast.TEOF) {
-					arg, err := p.parseExpr(0)
-					if err != nil {
-						return nil, err
-					}
-					call.Children = append(call.Children, arg)
-					if p.cur().Type == ast.TComma {
-						p.advance()
-					}
-				}
-				if _, err := p.expect(ast.TRParen); err != nil {
-					return nil, err
-				}
-				return call, nil
-			}
+			nameNode := p.buildDotChain()
+			afterChain := p.pos
+
+			// Terminator → standalone access (zero-arity call or module value)
 			if isTerminator(p.cur().Type) || p.isBlockEndToken() {
 				return nameNode, nil
 			}
+
+			// Try expression from the dot chain. On commitment, keep it.
+			// On non-commitment, rollback to afterChain and fall through to command.
+			if node, ok := p.tryParseExprFrom(nameNode, afterChain); ok {
+				return node, nil
+			}
+
 			return p.parseInvocationWithName(nameNode)
 		}
 		// Adjacent paren: name() — POSIX fn def, or name(args) — function call
@@ -2692,6 +2728,11 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 		return nil, err
 	}
 
+	return p.parseExprFrom(left, minPrec)
+}
+
+// parseExprFrom continues expression parsing from a pre-parsed left-hand side.
+func (p *Parser) parseExprFrom(left *ast.Node, minPrec int) (*ast.Node, error) {
 	for {
 		prec := p.precedence(p.cur().Type)
 		if prec <= minPrec {
