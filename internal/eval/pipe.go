@@ -24,9 +24,14 @@ func isCommandNode(node *ast.Node, env *core.Env) bool {
 		if len(node.Children) == 0 {
 			return true
 		}
+		child := node.Children[0]
 		name := ""
-		if node.Children[0].Kind == ast.NIdent {
-			name = node.Children[0].Tok.Val
+		if child.Kind == ast.NIdent {
+			name = child.Tok.Val
+		} else if child.Kind == ast.NAccess {
+			// Module-qualified: String.split, JSON.parse, etc.
+			// These resolve to functions, not external commands.
+			return false
 		}
 		if name == "" {
 			return true
@@ -258,6 +263,13 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 		pr2.Close()
 		<-done
 		return val, err2
+	}
+
+	// Bare identifier in pipe context (e.g. `echo | cat` parsed in expression mode
+	// produces NIdent "cat") — treat as a command invocation.
+	if node.Kind == ast.NIdent {
+		wrapped := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{node}, Pos: node.Pos}
+		return evalWithIO(wrapped, env, stdin, stdout)
 	}
 
 	pipeEnv := core.NewEnv(env)
