@@ -8,12 +8,20 @@ import (
 	"ish/internal/ast"
 )
 
-type LexerMode int
-
-const (
-	LexerShell LexerMode = iota
-	LexerExpr
-)
+// Keywords maps identifier strings to their keyword token types.
+var keywords = map[string]ast.TokenType{
+	"if": ast.TIf, "then": ast.TThen, "elif": ast.TElif, "else": ast.TElse, "fi": ast.TFi,
+	"for": ast.TFor, "in": ast.TIn, "do": ast.TDo, "done": ast.TDone,
+	"while": ast.TWhile, "until": ast.TUntil,
+	"case": ast.TCase, "esac": ast.TEsac,
+	"fn": ast.TFn, "end": ast.TEnd,
+	"defmodule": ast.TDefModule, "use": ast.TUse, "match": ast.TMatch,
+	"spawn": ast.TSpawn, "spawn_link": ast.TSpawnLink,
+	"send": ast.TSend, "monitor": ast.TMonitor, "await": ast.TAwait,
+	"supervise": ast.TSupervise, "receive": ast.TReceive,
+	"try": ast.TTry, "rescue": ast.TRescue, "after": ast.TAfter,
+	"nil": ast.TNil, "true": ast.TTrue, "false": ast.TFalse,
+}
 
 type Lexer struct {
 	src         string
@@ -22,7 +30,6 @@ type Lexer struct {
 	readPos     int
 	lastEmitted ast.TokenType
 	err         string
-	mode        LexerMode
 	done        bool
 }
 
@@ -34,14 +41,6 @@ func New(src string) *Lexer {
 // token manipulation between lexing and parsing).
 func NewFromTokens(tokens []ast.Token) *Lexer {
 	return &Lexer{tokens: tokens, done: true, lastEmitted: ast.TEOF}
-}
-
-func (l *Lexer) SetMode(m LexerMode) {
-	l.mode = m
-}
-
-func (l *Lexer) Mode() LexerMode {
-	return l.mode
 }
 
 func (l *Lexer) SourcePos() int {
@@ -109,11 +108,22 @@ func (l *Lexer) NextToken() ast.Token {
 		}
 	}
 	tok := l.tokens[l.readPos]
+	// Ensure SpaceAfter is set: lex one more step if needed so
+	// skipSpaces has a chance to mark this token.
+	if l.readPos+1 >= len(l.tokens) && !l.done {
+		if l.lexStep() {
+			l.emit(ast.TEOF, "")
+			l.done = true
+		}
+		// Re-read the token since skipSpaces may have updated SpaceAfter
+		tok = l.tokens[l.readPos]
+	}
 	l.readPos++
 	return tok
 }
 
 // lexStep runs one iteration of the lexer loop. Returns true if EOF is reached.
+// No mode checks — every character produces the same token regardless of context.
 func (l *Lexer) lexStep() bool {
 	l.skipSpaces()
 	if l.pos >= len(l.src) {
@@ -121,17 +131,31 @@ func (l *Lexer) lexStep() bool {
 	}
 	ch := l.src[l.pos]
 
-	if ch == '#' && !l.isInterpolation() {
-		for l.pos < len(l.src) && l.src[l.pos] != '\n' {
+	// Comments: # starts a comment ONLY at word boundary (after whitespace,
+	// newline, semicolon, or at start of input). Mid-word # is a literal.
+	// #{  is always string interpolation, never a comment.
+	if ch == '#' {
+		if l.isInterpolation() {
+			// #{ — handled below as THashLBrace
+		} else if l.isCommentPosition() {
+			for l.pos < len(l.src) && l.src[l.pos] != '\n' {
+				l.pos++
+			}
+			return false
+		} else {
+			// Mid-word #: literal character
+			l.emit(ast.THash, "#")
 			l.pos++
+			return false
 		}
-		return false
 	}
 
 	switch {
 	case ch == '\n':
 		l.emit(ast.TNewline, "\n")
 		l.pos++
+
+	// Pipes
 	case ch == '|':
 		if l.peek(1) == '>' {
 			l.emit(ast.TPipeArrow, "|>")
@@ -140,12 +164,14 @@ func (l *Lexer) lexStep() bool {
 			l.emit(ast.TOr, "||")
 			l.pos += 2
 		} else if l.peek(1) == '&' {
-			l.emit(ast.TPipe, "|&")
+			l.emit(ast.TPipeStderr, "|&")
 			l.pos += 2
 		} else {
 			l.emit(ast.TPipe, "|")
 			l.pos++
 		}
+
+	// Ampersand
 	case ch == '&':
 		if l.peek(1) == '&' {
 			l.emit(ast.TAnd, "&&")
@@ -154,9 +180,12 @@ func (l *Lexer) lexStep() bool {
 			l.emit(ast.TAmpersand, "&")
 			l.pos++
 		}
+
 	case ch == ';':
 		l.emit(ast.TSemicolon, ";")
 		l.pos++
+
+	// Delimiters — unconditional, no hints
 	case ch == '(':
 		l.emit(ast.TLParen, "(")
 		l.pos++
@@ -164,23 +193,13 @@ func (l *Lexer) lexStep() bool {
 		l.emit(ast.TRParen, ")")
 		l.pos++
 	case ch == '{':
-		if l.mode == LexerShell && l.looksLikeExprBrace() {
-			l.tokens = append(l.tokens, ast.Token{Type: ast.TLBrace, Val: "{", Pos: l.pos, ExprHint: true})
-			l.lastEmitted = ast.TLBrace
-		} else {
-			l.emit(ast.TLBrace, "{")
-		}
+		l.emit(ast.TLBrace, "{")
 		l.pos++
 	case ch == '}':
 		l.emit(ast.TRBrace, "}")
 		l.pos++
 	case ch == '[':
-		if l.mode == LexerShell && l.looksLikeExprBracket() {
-			l.tokens = append(l.tokens, ast.Token{Type: ast.TLBracket, Val: "[", Pos: l.pos, ExprHint: true})
-			l.lastEmitted = ast.TLBracket
-		} else {
-			l.emit(ast.TLBracket, "[")
-		}
+		l.emit(ast.TLBracket, "[")
 		l.pos++
 	case ch == ']':
 		l.emit(ast.TRBracket, "]")
@@ -188,62 +207,44 @@ func (l *Lexer) lexStep() bool {
 	case ch == ',':
 		l.emit(ast.TComma, ",")
 		l.pos++
+
+	// Operators — always the same token, no mode checks
+	case ch == '.':
+		l.emit(ast.TDot, ".")
+		l.pos++
+	case ch == '/':
+		l.emit(ast.TDiv, "/")
+		l.pos++
 	case ch == '+':
-		next := l.peek(1)
-		if next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' || next == '%' {
-			l.lexWord()
-		} else {
-			l.emit(ast.TPlus, "+")
-			l.pos++
-		}
+		l.emit(ast.TPlus, "+")
+		l.pos++
 	case ch == '*':
 		l.emit(ast.TMul, "*")
 		l.pos++
-	case ch == '/':
-		if l.mode == LexerExpr {
-			l.emit(ast.TDiv, "/")
-			l.pos++
-		} else {
-			isDivision := false
-			next := l.peek(1)
-			isPathStart := (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') ||
-				(next >= '0' && next <= '9') || next == '.' || next == '_' || next == '-'
-			if !isPathStart {
-				switch l.lastEmitted {
-				case ast.TInt, ast.TFloat, ast.TRParen, ast.TRBracket:
-					isDivision = true
-				case ast.TWord:
-					isDivision = next == 0 || next == ' ' || next == '\t' || next == '\n'
-				}
-			}
-			if isDivision {
-				l.emit(ast.TDiv, "/")
-				l.pos++
-			} else {
-				l.lexWord()
-			}
-		}
-	case ch == '.':
-		next := l.peek(1)
-		if next == '.' || next == '/' || (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || next == '_' {
-			l.lexWord()
-		} else {
-			l.emit(ast.TDot, ".")
-			l.pos++
-		}
 	case ch == '%':
-		next := l.peek(1)
-		if next >= '0' && next <= '9' {
-			start := l.pos
-			l.pos++
-			for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
-				l.pos++
-			}
-			l.emit(ast.TWord, l.src[start:l.pos])
+		if l.peek(1) == '{' {
+			l.emit(ast.TPercentLBrace, "%{")
+			l.pos += 2
 		} else {
 			l.emit(ast.TPercent, "%")
 			l.pos++
 		}
+	case ch == '~':
+		l.emit(ast.TTilde, "~")
+		l.pos++
+	case ch == '@':
+		l.emit(ast.TAt, "@")
+		l.pos++
+
+	case ch == '-':
+		if l.peek(1) == '>' {
+			l.emit(ast.TArrow, "->")
+			l.pos += 2
+		} else {
+			l.emit(ast.TMinus, "-")
+			l.pos++
+		}
+
 	case ch == '!':
 		if l.peek(1) == '=' {
 			l.emit(ast.TNe, "!=")
@@ -252,6 +253,7 @@ func (l *Lexer) lexStep() bool {
 			l.emit(ast.TBang, "!")
 			l.pos++
 		}
+
 	case ch == '=':
 		if l.peek(1) == '=' {
 			l.emit(ast.TEq, "==")
@@ -260,36 +262,7 @@ func (l *Lexer) lexStep() bool {
 			l.emit(ast.TEquals, "=")
 			l.pos++
 		}
-	case ch == '-':
-		if l.peek(1) == '>' {
-			l.emit(ast.TArrow, "->")
-			l.pos += 2
-		} else if l.mode == LexerExpr {
-			// In expression mode, - is always minus operator
-			l.emit(ast.TMinus, "-")
-			l.pos++
-		} else {
-			next := l.peek(1)
-			if next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' {
-				l.lexFlag()
-			} else if next == '-' {
-				if l.pos+2 < len(l.src) {
-					after := l.src[l.pos+2]
-					if after >= 'a' && after <= 'z' || after >= 'A' && after <= 'Z' {
-						l.lexFlag()
-					} else {
-						l.emit(ast.TWord, "--")
-						l.pos += 2
-					}
-				} else {
-					l.emit(ast.TWord, "--")
-					l.pos += 2
-				}
-			} else {
-				l.emit(ast.TMinus, "-")
-				l.pos++
-			}
-		}
+
 	case ch == '<':
 		if l.peek(1) == '-' {
 			l.emit(ast.TLeftArrow, "<-")
@@ -304,9 +277,10 @@ func (l *Lexer) lexStep() bool {
 			l.emit(ast.TLe, "<=")
 			l.pos += 2
 		} else {
-			l.emit(ast.TRedirIn, "<")
+			l.emit(ast.TLt, "<")
 			l.pos++
 		}
+
 	case ch == '>':
 		if l.peek(1) == '>' {
 			l.emit(ast.TRedirAppend, ">>")
@@ -315,31 +289,58 @@ func (l *Lexer) lexStep() bool {
 			l.emit(ast.TGe, ">=")
 			l.pos += 2
 		} else {
-			l.emit(ast.TRedirOut, ">")
+			l.emit(ast.TGt, ">")
 			l.pos++
 		}
+
+	// Expansion delimiters
 	case ch == '$':
 		l.lexDollar()
+
+	// String interpolation: #{
+	case ch == '#' && l.isInterpolation():
+		l.emit(ast.THashLBrace, "#{")
+		l.pos += 2
+
+	// Strings
 	case ch == '"':
 		l.lexDoubleQuote()
 	case ch == '\'':
 		l.lexSingleQuote()
+
+	// Atoms: :name
 	case ch == ':':
 		l.lexAtom()
+
+	// Numbers
 	case ch >= '0' && ch <= '9':
 		l.lexNumber()
+
+	// Backtick (legacy command substitution)
 	case ch == '`':
 		l.lexBacktick()
+
+	// Backslash
 	case ch == '\\':
 		if l.peek(1) == '\n' {
-			// Backslash-newline: line continuation, skip both
-			l.pos += 2
+			l.pos += 2 // line continuation
 		} else {
 			l.emit(ast.TBackslash, "\\")
 			l.pos++
 		}
+
+	// Identifiers (and keywords)
 	default:
-		l.lexWord()
+		if isIdentStart(ch) {
+			l.lexIdent()
+		} else if ch > 127 {
+			// Unicode identifier
+			l.lexIdent()
+		} else {
+			// Unknown character — emit as single-char identifier
+			l.emit(ast.TIdent, string(ch))
+			l.pos++
+		}
 	}
 	return false
 }
@@ -356,67 +357,24 @@ func (l *Lexer) isInterpolation() bool {
 	return l.pos+1 < len(l.src) && l.src[l.pos] == '#' && l.src[l.pos+1] == '{'
 }
 
-// looksLikeExprBrace peeks ahead from { to check for commas or leading atoms
-// at depth 1, which distinguish a tuple {a, b} from a group command { cmd; }.
-func (l *Lexer) looksLikeExprBrace() bool {
-	depth := 0
-	first := true
-	for i := l.pos; i < len(l.src); i++ {
-		ch := l.src[i]
-		switch ch {
-		case '{':
-			depth++
-			first = depth == 1
-		case '}':
-			depth--
-			if depth == 0 {
-				return i == l.pos+1 // empty {} is expression
-			}
-		case ',':
-			if depth == 1 {
-				return true
-			}
-		case ':':
-			if depth == 1 && first {
-				return true // atom after { = tuple
-			}
-			first = false
-		case '\n':
-			return false
-		case ' ', '\t', '\r':
-			// skip whitespace without clearing first
-		default:
-			first = false
-		}
+// isCommentPosition returns true if # at the current position should start
+// a comment. In POSIX sh, # is only a comment character at word boundary:
+// after whitespace, newline, semicolon, or at start of input.
+func (l *Lexer) isCommentPosition() bool {
+	// # is a comment at word boundary: after whitespace or at start of input.
+	// Since we don't emit TWhitespace, check if the previous token has SpaceAfter.
+	if len(l.tokens) == 0 {
+		return true // start of input
 	}
-	return false
-}
-
-// looksLikeExprBracket peeks ahead from [ to check for commas or | at depth 1,
-// which distinguish a list literal [a, b] from the test builtin [ -n x ].
-func (l *Lexer) looksLikeExprBracket() bool {
-	depth := 0
-	for i := l.pos; i < len(l.src); i++ {
-		ch := l.src[i]
-		switch ch {
-		case '[':
-			depth++
-		case ']':
-			depth--
-			if depth == 0 {
-				return i == l.pos+1 // empty [] is list
-			}
-		case ',':
-			if depth == 1 {
-				return true
-			}
-		case '|':
-			if depth == 1 {
-				return true
-			}
-		case '\n':
-			return false
-		}
+	prev := l.tokens[len(l.tokens)-1]
+	if prev.SpaceAfter {
+		return true
+	}
+	switch prev.Type {
+	case ast.TNewline, ast.TSemicolon,
+		ast.TPipe, ast.TPipeStderr, ast.TPipeArrow, ast.TAnd, ast.TOr,
+		ast.TAmpersand, ast.TLParen, ast.TLBrace:
+		return true
 	}
 	return false
 }
@@ -427,118 +385,53 @@ func (l *Lexer) emit(t ast.TokenType, val string) {
 }
 
 func (l *Lexer) skipSpaces() {
-	for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t' || l.src[l.pos] == '\r') {
-		l.pos++
+	if l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t' || l.src[l.pos] == '\r') {
+		if len(l.tokens) > 0 {
+			l.tokens[len(l.tokens)-1].SpaceAfter = true
+		}
+		for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t' || l.src[l.pos] == '\r') {
+			l.pos++
+		}
 	}
 }
 
-func (l *Lexer) lexWord() {
+// isIdentStart returns true if ch can start an identifier.
+func isIdentStart(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
+}
+
+// isIdentChar returns true if ch can continue an identifier.
+func isIdentChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') || ch == '_' || ch > 127
+}
+
+// IsAlphaNum returns true if r is a letter, digit, or underscore. Used externally.
+func IsAlphaNum(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// lexIdent scans an identifier and emits either a keyword token or TIdent.
+func (l *Lexer) lexIdent() {
 	start := l.pos
-	braceDepth := 0
-	parenDepth := 0
-	for l.pos < len(l.src) {
-		ch := l.src[l.pos]
-		if braceDepth == 0 && parenDepth == 0 {
-			if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
-				break
-			}
-			if ch == '|' || ch == '&' || ch == ';' || ch == '(' || ch == ')' ||
-				ch == '{' || ch == '}' || ch == '[' || ch == ']' ||
-				ch == '<' || ch == '>' || ch == ',' {
-				break
-			}
-			if ch == '#' && !(l.pos+1 < len(l.src) && l.src[l.pos+1] == '{') {
-				break
-			}
-		}
-		if ch == '"' {
-			l.pos++
-			for l.pos < len(l.src) && l.src[l.pos] != '"' {
-				if l.src[l.pos] == '\\' {
-					l.pos++
-				}
-				l.pos++
-			}
-			if l.pos < len(l.src) {
-				l.pos++
-			}
-			continue
-		}
-		if ch == '\'' {
-			l.pos++
-			for l.pos < len(l.src) && l.src[l.pos] != '\'' {
-				l.pos++
-			}
-			if l.pos < len(l.src) {
-				l.pos++
-			}
-			continue
-		}
-		if ch == '\\' {
-			l.pos++
-			if l.pos < len(l.src) {
-				l.pos++
-			}
-			continue
-		}
-		if ch == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '(' {
-			parenDepth++
-			l.pos += 2
-			continue
-		}
-		if ch == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
-			braceDepth++
-			l.pos += 2
-			continue
-		}
-		if ch == '#' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
-			braceDepth++
-			l.pos += 2
-			continue
-		}
-		if ch == '`' {
-			// Backtick substitution inside a word: skip to closing backtick
-			l.pos++
-			for l.pos < len(l.src) && l.src[l.pos] != '`' {
-				if l.src[l.pos] == '\\' {
-					l.pos++
-				}
-				l.pos++
-			}
-			if l.pos < len(l.src) {
-				l.pos++ // skip closing backtick
-			}
-			continue
-		}
-		if ch == '(' && parenDepth > 0 {
-			parenDepth++
-		}
-		if ch == ')' && parenDepth > 0 {
-			parenDepth--
-			l.pos++
-			continue
-		}
-		if ch == '{' && braceDepth > 0 {
-			braceDepth++
-		}
-		if ch == '}' && braceDepth > 0 {
-			braceDepth--
-			l.pos++
-			continue
-		}
+	for l.pos < len(l.src) && isIdentChar(l.src[l.pos]) {
 		l.pos++
 	}
-	if l.pos > start {
-		l.emit(ast.TWord, l.src[start:l.pos])
+	word := l.src[start:l.pos]
+	if kwTok, ok := keywords[word]; ok {
+		l.emit(kwTok, word)
+	} else {
+		l.emit(ast.TIdent, word)
 	}
 }
 
+// lexNumber scans integer or float literals.
 func (l *Lexer) lexNumber() {
 	start := l.pos
 	for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
 		l.pos++
 	}
-	// Check for float: digits followed by '.' followed by digit
+	// Float: digits followed by '.' followed by digit
 	if l.pos < len(l.src) && l.src[l.pos] == '.' && l.pos+1 < len(l.src) && l.src[l.pos+1] >= '0' && l.src[l.pos+1] <= '9' {
 		l.pos++ // consume '.'
 		for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
@@ -547,26 +440,22 @@ func (l *Lexer) lexNumber() {
 		l.emit(ast.TFloat, l.src[start:l.pos])
 		return
 	}
-	// If followed by a letter or underscore, treat the whole thing as a word
-	// (e.g. "3abc"). Don't extend for operators like +, -, /, % which should
-	// be tokenized separately.
-	if l.pos < len(l.src) {
-		ch := l.src[l.pos]
-		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' {
-			for l.pos < len(l.src) && isWordChar(l.src[l.pos]) {
-				l.pos++
-			}
-			l.emit(ast.TWord, l.src[start:l.pos])
-			return
+	// Number followed by letter/underscore → treat as identifier (e.g. "3rd")
+	if l.pos < len(l.src) && isIdentStart(l.src[l.pos]) {
+		for l.pos < len(l.src) && isIdentChar(l.src[l.pos]) {
+			l.pos++
 		}
+		l.emit(ast.TIdent, l.src[start:l.pos])
+		return
 	}
 	l.emit(ast.TInt, l.src[start:l.pos])
 }
 
+// lexAtom scans :name atoms. If ':' is not followed by an identifier, emits TColon.
 func (l *Lexer) lexAtom() {
-	l.pos++
+	l.pos++ // skip ':'
 	start := l.pos
-	for l.pos < len(l.src) && (isWordChar(l.src[l.pos]) || l.src[l.pos] == '_') {
+	for l.pos < len(l.src) && isIdentChar(l.src[l.pos]) {
 		l.pos++
 	}
 	if l.pos > start {
@@ -577,96 +466,262 @@ func (l *Lexer) lexAtom() {
 		}
 		l.emit(ast.TAtom, l.src[start:l.pos])
 	} else {
-		l.emit(ast.TWord, ":")
+		l.emit(ast.TColon, ":")
 	}
 }
 
+// lexDollar handles all $-prefixed constructs by emitting expansion delimiter tokens.
+// The interior is lexed normally by subsequent lexStep calls.
+// The parser matches opening/closing delimiters and builds structured nodes.
+func (l *Lexer) lexDollar() {
+	if l.peek(1) == '"' {
+		l.lexDollarDoubleQuote()
+		return
+	}
+	if l.peek(1) == '(' {
+		if l.peek(2) == '(' {
+			// $(( — arithmetic expansion
+			l.emit(ast.TDollarDLParen, "$((")
+			l.pos += 3
+		} else {
+			// $( — command substitution
+			l.emit(ast.TDollarLParen, "$(")
+			l.pos += 2
+		}
+		return
+	}
+	if l.peek(1) == '{' {
+		// ${ — parameter expansion
+		l.emit(ast.TDollarLBrace, "${")
+		l.pos += 2
+		return
+	}
+
+	// $? $$ $! $@ $* $# $0-$9 — special variables
+	l.pos++ // skip '$'
+	if l.pos < len(l.src) {
+		ch := l.src[l.pos]
+		if ch == '?' || ch == '$' || ch == '!' || ch == '@' || ch == '*' ||
+			ch == '#' || (ch >= '0' && ch <= '9') {
+			l.emit(ast.TSpecialVar, "$"+string(ch))
+			l.pos++
+			return
+		}
+	}
+
+	// $identifier — variable reference
+	start := l.pos
+	for l.pos < len(l.src) && isIdentChar(l.src[l.pos]) {
+		l.pos++
+	}
+	if l.pos > start {
+		// Emit TDollar marker, then the variable name as TIdent
+		varName := l.src[start:l.pos]
+		l.emit(ast.TDollar, "$")
+		l.emit(ast.TIdent, varName)
+	} else {
+		// Bare $ with no identifier
+		l.emit(ast.TDollar, "$")
+	}
+}
+
+// lexDoubleQuote handles "..." strings with embedded interpolation.
+// Emits TStringStart, then alternating TString segments and expansion tokens,
+// then TStringEnd. The parser builds NInterpString from the sequence.
+//
+// Example: "hello $name, $(cmd)" emits:
+//   TStringStart, TString("hello "), TDollar, TIdent("name"), TString(", "), TDollarLParen, ..., TRParen, TStringEnd
 func (l *Lexer) lexDoubleQuote() {
-	l.pos++
+	l.emit(ast.TStringStart, "\"")
+	l.pos++ // skip opening "
+
 	var buf strings.Builder
+	flushLiteral := func() {
+		if buf.Len() > 0 {
+			l.emit(ast.TString, buf.String())
+			buf.Reset()
+		}
+	}
+
 	for l.pos < len(l.src) && l.src[l.pos] != '"' {
-		if l.src[l.pos] == '\\' && l.pos+1 < len(l.src) {
+		ch := l.src[l.pos]
+
+		// Escape sequences
+		if ch == '\\' && l.pos+1 < len(l.src) {
 			next := l.src[l.pos+1]
 			switch next {
 			case '"', '\\', '$', '`', '\n':
 				buf.WriteByte(next)
-				l.pos += 2
 			default:
 				buf.WriteByte('\\')
 				buf.WriteByte(next)
+			}
+			l.pos += 2
+			continue
+		}
+
+		// $( — command substitution inside string
+		if ch == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '(' {
+			flushLiteral()
+			if l.pos+2 < len(l.src) && l.src[l.pos+2] == '(' {
+				// $(( — arithmetic inside string
+				l.emit(ast.TDollarDLParen, "$((")
+				l.pos += 3
+				l.lexUntilDoubleClose()
+			} else {
+				l.emit(ast.TDollarLParen, "$(")
 				l.pos += 2
+				l.lexUntilClose(ast.TRParen)
 			}
 			continue
 		}
-		// $() creates a new quoting context — skip over it so inner
-		// quotes don't terminate the outer string.
-		if l.src[l.pos] == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '(' {
-			buf.WriteString("$(")
+
+		// ${ — parameter expansion inside string
+		if ch == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
+			flushLiteral()
+			l.emit(ast.TDollarLBrace, "${")
 			l.pos += 2
-			depth := 1
-			for l.pos < len(l.src) && depth > 0 {
-				ch := l.src[l.pos]
-				if ch == '(' {
-					depth++
-				} else if ch == ')' {
-					depth--
-					if depth == 0 {
-						buf.WriteByte(')')
-						l.pos++
-						break
-					}
-				} else if ch == '\'' {
-					// Single-quoted string inside $() — skip entirely
-					buf.WriteByte('\'')
+			l.lexUntilClose(ast.TRBrace)
+			continue
+		}
+
+		// $var — variable reference inside string
+		if ch == '$' && l.pos+1 < len(l.src) {
+			next := l.src[l.pos+1]
+			// Special variables: $?, $$, $!, $@, $*, $#, $0-$9
+			if next == '?' || next == '$' || next == '!' || next == '@' || next == '*' ||
+				next == '#' || (next >= '0' && next <= '9') {
+				flushLiteral()
+				l.emit(ast.TSpecialVar, "$"+string(next))
+				l.pos += 2
+				continue
+			}
+			// Named variable: $identifier
+			if isIdentStart(next) {
+				flushLiteral()
+				l.pos++ // skip $
+				start := l.pos
+				for l.pos < len(l.src) && isIdentChar(l.src[l.pos]) {
 					l.pos++
-					for l.pos < len(l.src) && l.src[l.pos] != '\'' {
-						buf.WriteByte(l.src[l.pos])
-						l.pos++
-					}
-					if l.pos < len(l.src) {
-						buf.WriteByte('\'')
-						l.pos++
-					}
-					continue
-				} else if ch == '"' {
-					// Double-quoted string inside $() — skip entirely
-					buf.WriteByte('"')
-					l.pos++
-					for l.pos < len(l.src) && l.src[l.pos] != '"' {
-						if l.src[l.pos] == '\\' && l.pos+1 < len(l.src) {
-							buf.WriteByte(l.src[l.pos])
-							buf.WriteByte(l.src[l.pos+1])
-							l.pos += 2
-							continue
-						}
-						buf.WriteByte(l.src[l.pos])
-						l.pos++
-					}
-					if l.pos < len(l.src) {
-						buf.WriteByte('"')
-						l.pos++
-					}
-					continue
-				} else if ch == '\\' && l.pos+1 < len(l.src) {
-					buf.WriteByte(ch)
-					buf.WriteByte(l.src[l.pos+1])
-					l.pos += 2
-					continue
 				}
-				buf.WriteByte(ch)
+				l.emit(ast.TDollar, "$")
+				l.emit(ast.TIdent, l.src[start:l.pos])
+				continue
+			}
+			// Bare $ not followed by expansion — literal
+			buf.WriteByte('$')
+			l.pos++
+			continue
+		}
+
+		// #{ — ish string interpolation inside string
+		if ch == '#' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
+			flushLiteral()
+			l.emit(ast.THashLBrace, "#{")
+			l.pos += 2
+			l.lexUntilClose(ast.TRBrace)
+			continue
+		}
+
+		// Backtick inside string — command substitution (legacy)
+		if ch == '`' {
+			flushLiteral()
+			l.pos++
+			var btBuf strings.Builder
+			for l.pos < len(l.src) && l.src[l.pos] != '`' {
+				if l.src[l.pos] == '\\' && l.pos+1 < len(l.src) {
+					next := l.src[l.pos+1]
+					if next == '$' || next == '`' || next == '\\' || next == '"' {
+						btBuf.WriteByte(next)
+						l.pos += 2
+						continue
+					}
+				}
+				btBuf.WriteByte(l.src[l.pos])
 				l.pos++
 			}
+			if l.pos < len(l.src) {
+				l.pos++ // skip closing `
+			}
+			l.emit(ast.TDollarLParen, "$(")
+			l.emit(ast.TString, btBuf.String())
+			l.emit(ast.TRParen, ")")
 			continue
 		}
-		buf.WriteByte(l.src[l.pos])
+
+		// Regular character
+		buf.WriteByte(ch)
 		l.pos++
 	}
+
+	flushLiteral()
+
 	if l.pos < len(l.src) {
-		l.pos++
+		l.pos++ // skip closing "
 	} else if l.err == "" {
 		l.err = "unterminated double-quoted string"
 	}
-	l.emit(ast.TString, buf.String())
+	l.emit(ast.TStringEnd, "\"")
+}
+
+// lexUntilClose lexes tokens inside an expansion (within a string or at top level),
+// using token-level depth tracking. Stops when the matching closer is found at depth 0.
+// The closing token is emitted by this function.
+func (l *Lexer) lexUntilClose(closerType ast.TokenType) {
+	var openerType ast.TokenType
+	switch closerType {
+	case ast.TRParen:
+		openerType = ast.TLParen
+	case ast.TRBrace:
+		openerType = ast.TLBrace
+	}
+
+	depth := 1
+	for depth > 0 {
+		if l.pos >= len(l.src) {
+			return
+		}
+		before := len(l.tokens)
+		if l.lexStep() {
+			return // EOF
+		}
+		// Check tokens emitted by lexStep for depth tracking
+		for i := before; i < len(l.tokens); i++ {
+			tt := l.tokens[i].Type
+			if tt == openerType || (closerType == ast.TRParen && tt == ast.TDollarLParen) || (closerType == ast.TRParen && tt == ast.TDollarDLParen) {
+				depth++
+			} else if tt == closerType {
+				depth--
+				if depth == 0 {
+					return
+				}
+			}
+		}
+	}
+}
+
+// lexUntilDoubleClose handles )) for $((...)) inside strings.
+// Tracks depth by looking for matching $(( and )) pairs.
+func (l *Lexer) lexUntilDoubleClose() {
+	depth := 1
+	for depth > 0 {
+		if l.pos >= len(l.src) {
+			return
+		}
+		// Check for )) at character level before lexStep
+		if l.src[l.pos] == ')' && l.pos+1 < len(l.src) && l.src[l.pos+1] == ')' {
+			depth--
+			if depth == 0 {
+				l.emit(ast.TRParen, ")")
+				l.emit(ast.TRParen, ")")
+				l.pos += 2
+				return
+			}
+		}
+		if l.lexStep() {
+			return
+		}
+	}
 }
 
 func (l *Lexer) lexSingleQuote() {
@@ -771,6 +826,8 @@ func (l *Lexer) lexHeredoc() {
 	l.lastEmitted = ast.TString
 }
 
+// lexBacktick handles `...` legacy command substitution.
+// Emits as TDollarLParen + TString(content) + TRParen to represent $(content).
 func (l *Lexer) lexBacktick() {
 	l.pos++
 	var buf strings.Builder
@@ -786,237 +843,118 @@ func (l *Lexer) lexBacktick() {
 		buf.WriteByte(l.src[l.pos])
 		l.pos++
 	}
-	content := buf.String()
 	if l.pos < len(l.src) {
 		l.pos++
 	}
-	l.emit(ast.TWord, "$("+content+")")
+	// Emit as command substitution: $( content )
+	// For now, emit the content as a single string token that the evaluator
+	// will re-parse. Future: recursively lex the backtick interior.
+	content := buf.String()
+	l.emit(ast.TDollarLParen, "$(")
+	l.emit(ast.TString, content)
+	l.emit(ast.TRParen, ")")
 }
 
-func (l *Lexer) lexFlag() {
-	start := l.pos
-	l.pos++
-	if l.pos < len(l.src) && l.src[l.pos] == '-' {
-		l.pos++
-	}
-	for l.pos < len(l.src) {
-		ch := l.src[l.pos]
-		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_' {
-			l.pos++
-		} else {
-			break
-		}
-	}
-	if l.pos < len(l.src) && l.src[l.pos] == '=' {
-		l.pos++
-		for l.pos < len(l.src) {
-			ch := l.src[l.pos]
-			if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ||
-				ch == '|' || ch == '&' || ch == ';' || ch == ')' || ch == '}' || ch == ']' {
-				break
-			}
-			if ch == '"' {
-				l.pos++
-				for l.pos < len(l.src) && l.src[l.pos] != '"' {
-					if l.src[l.pos] == '\\' {
-						l.pos++
-					}
-					l.pos++
-				}
-				if l.pos < len(l.src) {
-					l.pos++
-				}
-				continue
-			}
-			if ch == '\'' {
-				l.pos++
-				for l.pos < len(l.src) && l.src[l.pos] != '\'' {
-					l.pos++
-				}
-				if l.pos < len(l.src) {
-					l.pos++
-				}
-				continue
-			}
-			l.pos++
-		}
-	}
-	l.emit(ast.TWord, l.src[start:l.pos])
-}
-
+// lexDollarDoubleQuote handles $"..." strings with C-style escapes and interpolation.
+// Uses the same structured token approach as lexDoubleQuote.
 func (l *Lexer) lexDollarDoubleQuote() {
+	l.emit(ast.TDollarDQuote, "$\"")
 	l.pos += 2 // skip $"
+
 	var buf strings.Builder
+	flushLiteral := func() {
+		if buf.Len() > 0 {
+			l.emit(ast.TString, buf.String())
+			buf.Reset()
+		}
+	}
+
 	for l.pos < len(l.src) && l.src[l.pos] != '"' {
-		if l.src[l.pos] == '\\' && l.pos+1 < len(l.src) {
+		ch := l.src[l.pos]
+
+		if ch == '\\' && l.pos+1 < len(l.src) {
 			next := l.src[l.pos+1]
 			switch next {
 			case 't':
 				buf.WriteByte('\t')
-				l.pos += 2
 			case 'n':
 				buf.WriteByte('\n')
-				l.pos += 2
 			case 'r':
 				buf.WriteByte('\r')
-				l.pos += 2
 			case '0':
 				buf.WriteByte(0)
-				l.pos += 2
 			case '"', '\\', '$', '`':
 				buf.WriteByte(next)
-				l.pos += 2
 			case '\n':
 				buf.WriteByte(next)
-				l.pos += 2
 			default:
 				buf.WriteByte('\\')
 				buf.WriteByte(next)
-				l.pos += 2
 			}
-			continue
-		}
-		if l.src[l.pos] == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '(' {
-			buf.WriteString("$(")
 			l.pos += 2
-			depth := 1
-			for l.pos < len(l.src) && depth > 0 {
-				ch := l.src[l.pos]
-				if ch == '(' {
-					depth++
-				} else if ch == ')' {
-					depth--
-					if depth == 0 {
-						buf.WriteByte(')')
-						l.pos++
-						break
-					}
-				}
-				buf.WriteByte(ch)
-				l.pos++
-			}
 			continue
 		}
-		buf.WriteByte(l.src[l.pos])
+
+		// $( inside $"..."
+		if ch == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '(' {
+			flushLiteral()
+			l.emit(ast.TDollarLParen, "$(")
+			l.pos += 2
+			l.lexUntilClose(ast.TRParen)
+			continue
+		}
+
+		// ${ inside $"..."
+		if ch == '$' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
+			flushLiteral()
+			l.emit(ast.TDollarLBrace, "${")
+			l.pos += 2
+			l.lexUntilClose(ast.TRBrace)
+			continue
+		}
+
+		// $var inside $"..."
+		if ch == '$' && l.pos+1 < len(l.src) {
+			next := l.src[l.pos+1]
+			if next == '?' || next == '$' || next == '!' || next == '@' || next == '*' ||
+				next == '#' || (next >= '0' && next <= '9') {
+				flushLiteral()
+				l.emit(ast.TSpecialVar, "$"+string(next))
+				l.pos += 2
+				continue
+			}
+			if isIdentStart(next) {
+				flushLiteral()
+				l.pos++
+				start := l.pos
+				for l.pos < len(l.src) && isIdentChar(l.src[l.pos]) {
+					l.pos++
+				}
+				l.emit(ast.TDollar, "$")
+				l.emit(ast.TIdent, l.src[start:l.pos])
+				continue
+			}
+		}
+
+		// #{ inside $"..."
+		if ch == '#' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
+			flushLiteral()
+			l.emit(ast.THashLBrace, "#{")
+			l.pos += 2
+			l.lexUntilClose(ast.TRBrace)
+			continue
+		}
+
+		buf.WriteByte(ch)
 		l.pos++
 	}
+
+	flushLiteral()
+
 	if l.pos < len(l.src) {
 		l.pos++
 	} else if l.err == "" {
 		l.err = "unterminated dollar double-quoted string"
 	}
-	l.emit(ast.TString, buf.String())
-}
-
-func (l *Lexer) lexDollar() {
-	if l.peek(1) == '"' {
-		l.lexDollarDoubleQuote()
-		return
-	}
-	if l.peek(1) == '(' {
-		if l.peek(2) == '(' {
-			l.pos += 3
-			start := l.pos
-			depth := 1
-			for l.pos < len(l.src) && depth > 0 {
-				ch := l.src[l.pos]
-				if ch == '"' {
-					l.pos++
-					for l.pos < len(l.src) && l.src[l.pos] != '"' {
-						if l.src[l.pos] == '\\' {
-							l.pos++
-						}
-						l.pos++
-					}
-					if l.pos < len(l.src) {
-						l.pos++
-					}
-					continue
-				}
-				if ch == '\'' {
-					l.pos++
-					for l.pos < len(l.src) && l.src[l.pos] != '\'' {
-						l.pos++
-					}
-					if l.pos < len(l.src) {
-						l.pos++
-					}
-					continue
-				}
-				if ch == '(' && l.peek(1) == '(' {
-					depth++
-					l.pos += 2
-				} else if ch == ')' && l.peek(1) == ')' {
-					depth--
-					if depth == 0 {
-						break
-					}
-					l.pos += 2
-				} else {
-					l.pos++
-				}
-			}
-			l.emit(ast.TWord, "$(("+l.src[start:l.pos]+"))")
-			if l.pos < len(l.src) {
-				l.pos += 2
-			}
-		} else {
-			l.pos += 2
-			start := l.pos
-			depth := 1
-			for l.pos < len(l.src) && depth > 0 {
-				if l.src[l.pos] == '(' {
-					depth++
-				} else if l.src[l.pos] == ')' {
-					depth--
-				}
-				if depth > 0 {
-					l.pos++
-				}
-			}
-			l.emit(ast.TWord, "$("+l.src[start:l.pos]+")")
-			if l.pos < len(l.src) {
-				l.pos++
-			}
-		}
-	} else if l.peek(1) == '{' {
-		l.pos += 2
-		start := l.pos
-		for l.pos < len(l.src) && l.src[l.pos] != '}' {
-			l.pos++
-		}
-		l.emit(ast.TWord, "${"+l.src[start:l.pos]+"}")
-		if l.pos < len(l.src) {
-			l.pos++
-		}
-	} else {
-		l.pos++
-		start := l.pos
-		if l.pos < len(l.src) && (l.src[l.pos] == '?' || l.src[l.pos] == '$' ||
-			l.src[l.pos] == '!' || l.src[l.pos] == '@' || l.src[l.pos] == '*' ||
-			l.src[l.pos] == '#' || (l.src[l.pos] >= '0' && l.src[l.pos] <= '9')) {
-			l.pos++
-			l.emit(ast.TWord, "$"+l.src[start:l.pos])
-		} else {
-			for l.pos < len(l.src) && (isWordChar(l.src[l.pos]) || l.src[l.pos] == '_') {
-				l.pos++
-			}
-			if l.pos > start {
-				l.emit(ast.TWord, "$"+l.src[start:l.pos])
-			} else {
-				l.emit(ast.TWord, "$")
-			}
-		}
-	}
-}
-
-func isWordChar(ch byte) bool {
-	return ch == '_' || ch == '-' || ch == '/' || ch == '.' || ch == '~' ||
-		ch == '@' || ch == ':' || ch == '+' || ch == '%' ||
-		(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
-		ch > 127
-}
-
-func IsAlphaNum(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+	l.emit(ast.TStringEnd, "\"")
 }

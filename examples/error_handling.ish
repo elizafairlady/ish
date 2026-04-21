@@ -10,8 +10,8 @@ fn safe_divide a, b do
   end
 end
 
-echo $(safe_divide 10, 2)
-echo $(safe_divide 10, 0)
+echo $(safe_divide(10, 2))
+echo $(safe_divide(10, 0))
 
 # Pattern match errors
 r = try do

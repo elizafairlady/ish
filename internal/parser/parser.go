@@ -8,48 +8,121 @@ import (
 	"ish/internal/lexer"
 )
 
+// IsAssignment is no longer used — POSIX assignment detection is done by the
+// parser using SpaceAfter adjacency (no whitespace between IDENT and EQUALS).
 func IsAssignment(tok ast.Token) bool {
-	if tok.Type != ast.TWord {
-		return false
-	}
-	idx := strings.IndexByte(tok.Val, '=')
-	if idx <= 0 {
-		return false
-	}
-	name := tok.Val[:idx]
-	for i, ch := range name {
-		if i == 0 && ch >= '0' && ch <= '9' {
-			return false
-		}
-		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_') {
-			return false
-		}
-	}
-	return true
+	return false
 }
 
-func (p *Parser) isBlockEnd(word string) bool {
-	for _, t := range p.terminators {
-		if word == t {
-			return true
+// parsePosixAssign handles FOO=bar (no whitespace around =).
+// Also handles FOO= (empty value) and prefix assignments (FOO=bar cmd args).
+func (p *Parser) parsePosixAssign() (*ast.Node, error) {
+	nameTok := p.advance() // consume IDENT
+	eqTok := p.advance()  // consume EQUALS (adjacent to ident — no space)
+
+	// Collect value as compound word if adjacent to =
+	var val *ast.Node
+	if !eqTok.SpaceAfter && p.cur().Type != ast.TNewline &&
+		p.cur().Type != ast.TSemicolon && p.cur().Type != ast.TEOF {
+		var err error
+		val, err = p.parseCompoundWord()
+		if err != nil {
+			return nil, err
 		}
+	}
+
+	// NAssign: Tok.Val = variable name, Children[0] = value node (if any)
+	node := &ast.Node{Kind: ast.NAssign, Tok: nameTok, Pos: nameTok.Pos}
+	if val != nil {
+		node.Children = []*ast.Node{val}
+	}
+
+	// Check for prefix assignment: FOO=bar cmd args
+	cur := p.cur()
+	if cur.Type == ast.TIdent || cur.Type == ast.TDiv || cur.Type == ast.TDot || cur.Type == ast.TTilde {
+		cmd, err := p.parseStmt()
+		if err != nil {
+			return nil, err
+		}
+		if cmd != nil && cmd.Kind == ast.NCmd {
+			cmd.Assigns = append([]*ast.Node{node}, cmd.Assigns...)
+			return cmd, nil
+		}
+		return node, nil
+	}
+
+	return node, nil
+}
+
+func isBlockEnd(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TEnd, ast.TDone, ast.TFi, ast.TEsac, ast.TElse, ast.TElif,
+		ast.TRescue, ast.TAfter, ast.TThen, ast.TDo:
+		return true
 	}
 	return false
 }
 
-func (p *Parser) pushTerminators(terms ...string) []string {
-	old := p.terminators
-	p.terminators = append(append([]string{}, old...), terms...)
-	return old
-}
-
-func (p *Parser) restoreTerminators(old []string) {
-	p.terminators = old
-}
-
-func isExprOperator(tt ast.TokenType) bool {
+// isExprBinOp returns true for tokens that are unambiguously binary expression
+// operators at statement level regardless of whitespace context.
+// TGt and TLt are excluded (POSIX redirects).
+// TMinus and TPlus are excluded here — they need whitespace analysis to
+// distinguish binary ops (a - b) from flags (-n, +x). See dispatchIdent.
+func isExprBinOp(tt ast.TokenType) bool {
 	switch tt {
-	case ast.TPlus, ast.TMinus, ast.TMul, ast.TDiv, ast.TPercent, ast.TEq, ast.TNe, ast.TLe, ast.TGe, ast.TDot:
+	case ast.TMul, ast.TDiv, ast.TPercent,
+		ast.TEq, ast.TNe, ast.TLe, ast.TGe:
+		return true
+	}
+	return false
+}
+
+// isTerminator returns true for tokens that end a statement.
+// isTerminator returns true for tokens that unconditionally end a statement.
+// Block-end keywords (done, end, fi, etc.) are NOT here — they only terminate
+// when the parser is expecting them (checked via isBlockEndToken/terminators stack).
+func isTerminator(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TEOF, ast.TNewline, ast.TSemicolon,
+		ast.TPipe, ast.TPipeStderr, ast.TPipeArrow,
+		ast.TAnd, ast.TOr, ast.TAmpersand,
+		ast.TRParen, ast.TRBrace, ast.TRBracket,
+		ast.TComma, ast.TArrow:
+		return true
+	}
+	return false
+}
+
+// isShellMetachar returns true for POSIX shell metacharacters that always
+// break words regardless of whitespace. | & ; ( ) < > are metacharacters.
+// These tokens stop compound word assembly even when adjacent.
+func isShellMetachar(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TPipe, ast.TPipeStderr, ast.TPipeArrow,
+		ast.TAnd, ast.TOr, ast.TAmpersand,
+		ast.TSemicolon,
+		ast.TLParen, ast.TRParen,
+		ast.TGt, ast.TLt, ast.TRedirAppend, ast.THeredoc, ast.THereString:
+		return true
+	}
+	return false
+}
+
+// isValueStart returns true if the token type can begin a value expression.
+func isValueStart(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TIdent, ast.TInt, ast.TFloat, ast.TString, ast.TStringStart, ast.TAtom,
+		ast.TNil, ast.TTrue, ast.TFalse,
+		ast.TLParen, ast.TLBracket, ast.TLBrace, ast.TPercent, ast.TPercentLBrace,
+		ast.TBackslash,
+		ast.TDollar, ast.TDollarLParen, ast.TDollarDLParen, ast.TDollarLBrace,
+		ast.TSpecialVar, ast.THashLBrace, ast.TDollarDQuote:
+		return true
+	}
+	// Non-structural keywords are valid values in command argument position
+	// (echo in, echo done). But block-structure keywords (do, end, then, fi, etc.)
+	// are NOT value starts — they control block structure.
+	if tt.IsKeyword() && !isBlockEnd(tt) {
 		return true
 	}
 	return false
@@ -57,57 +130,17 @@ func isExprOperator(tt ast.TokenType) bool {
 
 const maxParseDepth = 1000
 
-type ParseMode int
-
-const (
-	ModeCommand ParseMode = iota // POSIX: -n is flag, > is redirect, { is group, [ is test
-	ModeExpr                     // ish: -n is negation, > is comparison, { is tuple, [ is list
-)
-
 type Parser struct {
 	lex             *lexer.Lexer
 	tokens          []ast.Token
 	pos             int
 	base            int
 	resumePositions []int
-	terminators     []string
-	mode            ParseMode
+	terminators     []ast.TokenType // block-ending token types
 	depth           int
-	IsCommand       func(name string) bool // if set, used to disambiguate commands from expressions
-}
-
-func (p *Parser) syncLexerMode() {
-	lm := lexer.LexerShell
-	if p.mode == ModeExpr {
-		lm = lexer.LexerExpr
-	}
-	if p.lex.Mode() == lm {
-		return
-	}
-	p.lex.SetMode(lm)
-	idx := p.pos - p.base
-	if idx < len(p.tokens) {
-		p.lex.SetPos(p.resumePositions[idx])
-		if p.pos > 0 && p.pos-1 >= p.base {
-			p.lex.SetLastEmitted(p.tokens[p.pos-1-p.base].Type)
-		} else {
-			p.lex.SetLastEmitted(ast.TEOF)
-		}
-		p.tokens = p.tokens[:idx]
-		p.resumePositions = p.resumePositions[:idx]
-	}
-}
-
-func (p *Parser) withMode(m ParseMode) ParseMode {
-	old := p.mode
-	p.mode = m
-	p.syncLexerMode()
-	return old
-}
-
-func (p *Parser) restoreMode(old ParseMode) {
-	p.mode = old
-	p.syncLexerMode()
+	committed       bool  // set when an expression commitment point is reached during tentative parsing
+	exprContext     bool  // when true, > and < are comparisons (not redirects). Set by lambda bodies, fn guards, etc.
+	savedPositions  []int // tentative parse save points — compact must not drop these
 }
 
 func Parse(l *lexer.Lexer) (*ast.Node, error) {
@@ -115,10 +148,10 @@ func Parse(l *lexer.Lexer) (*ast.Node, error) {
 	return p.parseProgram()
 }
 
-// ParseWithCommands parses with a command-lookup callback for disambiguating
-// commands from expressions inside fn do...end bodies.
+// ParseWithCommands is kept for API compatibility during migration.
+// The isCmd callback is ignored — the parser is now purely syntactic.
 func ParseWithCommands(l *lexer.Lexer, isCmd func(string) bool) (*ast.Node, error) {
-	p := &Parser{lex: l, IsCommand: isCmd}
+	p := &Parser{lex: l}
 	return p.parseProgram()
 }
 
@@ -126,7 +159,16 @@ func (p *Parser) compact() {
 	if p.pos-p.base < 256 {
 		return
 	}
+	// Don't compact past any tentative parse save point
 	keep := p.pos - 1
+	for _, saved := range p.savedPositions {
+		if saved < keep {
+			keep = saved
+		}
+	}
+	if keep <= p.base {
+		return
+	}
 	drop := keep - p.base
 	p.tokens = append([]ast.Token{}, p.tokens[drop:]...)
 	p.resumePositions = append([]int{}, p.resumePositions[drop:]...)
@@ -146,85 +188,111 @@ func (p *Parser) fillTo(n int) {
 	}
 }
 
+// rawAt returns the token at absolute position n without skipping whitespace.
+func (p *Parser) rawAt(n int) ast.Token {
+	p.fillTo(n)
+	idx := n - p.base
+	if idx >= len(p.tokens) {
+		return ast.Token{Type: ast.TEOF}
+	}
+	return p.tokens[idx]
+}
+
+// cur returns the current non-whitespace token, skipping any SpaceAfter.
+// cur returns the token at the current position.
+// No SpaceAfter in the stream. Whitespace info is on tok.SpaceAfter.
 func (p *Parser) cur() ast.Token {
-	p.fillTo(p.pos)
-	idx := p.pos - p.base
-	if idx >= len(p.tokens) {
-		return ast.Token{Type: ast.TEOF}
-	}
-	return p.tokens[idx]
+	return p.rawAt(p.pos)
 }
 
-func (p *Parser) peek() ast.Token {
-	p.fillTo(p.pos + 1)
-	idx := p.pos + 1 - p.base
-	if idx >= len(p.tokens) {
-		return ast.Token{Type: ast.TEOF}
-	}
-	return p.tokens[idx]
+// peek returns the token n positions ahead. Non-destructive.
+func (p *Parser) peek(n int) ast.Token {
+	return p.rawAt(p.pos + n)
 }
 
-
+// advance consumes the current token and returns it.
 func (p *Parser) advance() ast.Token {
-	t := p.cur()
+	t := p.rawAt(p.pos)
 	p.pos++
 	return t
+}
+
+// until returns true if the current token matches any of the given types.
+func (p *Parser) until(types ...ast.TokenType) bool {
+	tt := p.cur().Type
+	for _, t := range types {
+		if tt == t {
+			return true
+		}
+	}
+	return false
+}
+
+// tryParseExpr attempts to parse the current statement as an expression.
+// If the parse hits a commitment point (infix operator, comma, parens, pipe),
+// the expression interpretation is confirmed and the result is returned.
+// If no commitment point is reached (just ident followed by ident), the parse
+// is rolled back and the caller should try command invocation instead.
+func (p *Parser) tryParseExpr() (*ast.Node, bool) {
+	saved := p.pos
+	savedCommitted := p.committed
+	p.committed = false
+	p.savedPositions = append(p.savedPositions, saved)
+
+	node, err := p.parseExpression()
+	if err != nil {
+		p.savedPositions = p.savedPositions[:len(p.savedPositions)-1]
+		p.pos = saved
+		p.committed = savedCommitted
+		return nil, false
+	}
+
+	if p.committed {
+		p.savedPositions = p.savedPositions[:len(p.savedPositions)-1]
+		return node, true
+	}
+
+	// No commitment point — rollback
+	p.savedPositions = p.savedPositions[:len(p.savedPositions)-1]
+	p.pos = saved
+	p.committed = savedCommitted
+	return nil, false
 }
 
 func (p *Parser) expect(tt ast.TokenType) (ast.Token, error) {
 	t := p.cur()
 	if t.Type != tt {
 		if t.Type == ast.TEOF {
-			return t, fmt.Errorf("unexpected end of input (expected closing delimiter)")
+			return t, fmt.Errorf("unexpected end of input (expected %s)", tt.String())
 		}
-		return t, fmt.Errorf("expected %q, got %q at pos %d", tt.String(), t.Val, t.Pos)
+		return t, fmt.Errorf("expected %s, got %q at pos %d", tt.String(), t.Val, t.Pos)
 	}
-	p.pos++
-	return t, nil
+	return p.advance(), nil
 }
 
 func (p *Parser) match(tt ast.TokenType) bool {
-	if p.cur().Type == tt {
-		p.pos++
+	if p.cur().Type == tt { // cur() skips SpaceAfter
+		p.advance()
 		return true
 	}
 	return false
-}
-
-func (p *Parser) isWord(w string) bool {
-	return p.cur().Type == ast.TWord && p.cur().Val == w
-}
-
-func (p *Parser) matchWord(w string) bool {
-	if p.isWord(w) {
-		p.pos++
-		return true
-	}
-	return false
-}
-
-func (p *Parser) expectWord(w string) error {
-	if p.cur().Type != ast.TWord || p.cur().Val != w {
-		return fmt.Errorf("expected %q at pos %d, got %q", w, p.cur().Pos, p.cur().Val)
-	}
-	p.pos++
-	return nil
 }
 
 func (p *Parser) skipNewlines() {
 	for p.cur().Type == ast.TNewline {
-		p.pos++
+		p.advance()
 	}
 }
 
 func (p *Parser) skipSeparators() {
-	for p.cur().Type == ast.TSemicolon || p.cur().Type == ast.TNewline {
-		p.pos++
+	for {
+		tt := p.cur().Type
+		if tt == ast.TSemicolon || tt == ast.TNewline {
+			p.advance()
+		} else {
+			break
+		}
 	}
-}
-
-func (p *Parser) isExprContext() bool {
-	return p.mode == ModeExpr || p.cur().ExprHint
 }
 
 func markTail(stmts []*ast.Node) {
@@ -233,10 +301,52 @@ func markTail(stmts []*ast.Node) {
 	}
 }
 
-// ishBlockWithSection parses a do...end block where the body has two phases
-// separated by a keyword: main body parsed until keyword, then optional
-// continuation if keyword is present. Used by if/else, try/rescue, receive/after.
-func (p *Parser) ishBlockWithSection(keyword string, parseMain func() error, parseCont func() error) error {
+// --- Terminator management ---
+
+func (p *Parser) pushTerminators(terms ...ast.TokenType) []ast.TokenType {
+	old := p.terminators
+	p.terminators = append(append([]ast.TokenType{}, old...), terms...)
+	return old
+}
+
+func (p *Parser) restoreTerminators(old []ast.TokenType) {
+	p.terminators = old
+}
+
+func (p *Parser) isBlockEndToken() bool {
+	tt := p.cur().Type
+	for _, t := range p.terminators {
+		if tt == t {
+			return true
+		}
+	}
+	return false
+}
+
+// --- Block parsing helpers ---
+
+func (p *Parser) ishBlock(body func() error) error {
+	if _, err := p.expect(ast.TDo); err != nil {
+		return err
+	}
+	p.skipNewlines()
+	old := p.pushTerminators(ast.TEnd)
+	// Inside ish blocks (do...end), > and < are comparison operators.
+	savedExpr := p.exprContext
+	p.exprContext = true
+	err := body()
+	p.exprContext = savedExpr
+	p.restoreTerminators(old)
+	if err != nil {
+		return err
+	}
+	if _, err := p.expect(ast.TEnd); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Parser) ishBlockWithSection(keyword ast.TokenType, parseMain func() error, parseCont func() error) error {
 	return p.ishBlock(func() error {
 		old := p.pushTerminators(keyword)
 		err := parseMain()
@@ -244,7 +354,7 @@ func (p *Parser) ishBlockWithSection(keyword string, parseMain func() error, par
 		if err != nil {
 			return err
 		}
-		if p.matchWord(keyword) {
+		if p.match(keyword) {
 			p.skipNewlines()
 			return parseCont()
 		}
@@ -252,30 +362,12 @@ func (p *Parser) ishBlockWithSection(keyword string, parseMain func() error, par
 	})
 }
 
-func (p *Parser) withExprBlock(terminators []string, body func() error) error {
-	defer p.restoreMode(p.withMode(ModeExpr))
-	defer p.restoreTerminators(p.pushTerminators(terminators...))
-	return body()
-}
-
-func (p *Parser) ishBlock(body func() error) error {
-	if err := p.expectWord("do"); err != nil {
-		return err
-	}
-	p.skipNewlines()
-	if err := p.withExprBlock([]string{"end"}, body); err != nil {
-		return err
-	}
-	if p.matchWord("end") {
-		return nil
-	}
-	return fmt.Errorf("expected 'end' at pos %d", p.cur().Pos)
-}
+// --- Program structure ---
 
 func (p *Parser) parseBlock() ([]*ast.Node, error) {
 	var stmts []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && p.isBlockEnd(p.cur().Val) {
+	for !p.until(ast.TEOF) {
+		if p.isBlockEndToken() {
 			break
 		}
 		posBefore := p.pos
@@ -309,7 +401,8 @@ func (p *Parser) parseList() (*ast.Node, error) {
 	}
 
 	for {
-		if p.cur().Type == ast.TAnd {
+		switch p.cur().Type {
+		case ast.TAnd:
 			p.advance()
 			p.skipNewlines()
 			right, err := p.parsePipeline()
@@ -317,7 +410,7 @@ func (p *Parser) parseList() (*ast.Node, error) {
 				return nil, err
 			}
 			left = &ast.Node{Kind: ast.NAndList, Children: []*ast.Node{left, right}}
-		} else if p.cur().Type == ast.TOr {
+		case ast.TOr:
 			p.advance()
 			p.skipNewlines()
 			right, err := p.parsePipeline()
@@ -325,14 +418,13 @@ func (p *Parser) parseList() (*ast.Node, error) {
 				return nil, err
 			}
 			left = &ast.Node{Kind: ast.NOrList, Children: []*ast.Node{left, right}}
-		} else if p.cur().Type == ast.TAmpersand {
+		case ast.TAmpersand:
 			p.advance()
 			left = &ast.Node{Kind: ast.NBg, Children: []*ast.Node{left}}
-		} else {
-			break
+		default:
+			return left, nil
 		}
 	}
-	return left, nil
 }
 
 func (p *Parser) parsePipeline() (*ast.Node, error) {
@@ -342,7 +434,8 @@ func (p *Parser) parsePipeline() (*ast.Node, error) {
 	}
 
 	for {
-		if p.cur().Type == ast.TPipe {
+		switch p.cur().Type {
+		case ast.TPipe, ast.TPipeStderr:
 			tok := p.advance()
 			p.skipNewlines()
 			right, err := p.parseStmtWithOps()
@@ -350,10 +443,10 @@ func (p *Parser) parsePipeline() (*ast.Node, error) {
 				return nil, err
 			}
 			if right == nil {
-				return nil, fmt.Errorf("expected command after '|'")
+				return nil, fmt.Errorf("expected command after '%s'", tok.Val)
 			}
 			left = &ast.Node{Kind: ast.NPipe, Tok: tok, Children: []*ast.Node{left, right}}
-		} else if p.cur().Type == ast.TPipeArrow {
+		case ast.TPipeArrow:
 			p.advance()
 			p.skipNewlines()
 			right, err := p.parseStmtWithOps()
@@ -364,11 +457,10 @@ func (p *Parser) parsePipeline() (*ast.Node, error) {
 				return nil, fmt.Errorf("expected expression after '|>'")
 			}
 			left = &ast.Node{Kind: ast.NPipeFn, Children: []*ast.Node{left, right}}
-		} else {
-			break
+		default:
+			return left, nil
 		}
 	}
-	return left, nil
 }
 
 func (p *Parser) parseStmtWithOps() (*ast.Node, error) {
@@ -391,31 +483,7 @@ func (p *Parser) parseStmtWithOps() (*ast.Node, error) {
 	return left, nil
 }
 
-// parsePrimary dispatches mode-dependent bracketed constructs:
-// ( ) → subshell or expression, { } → group or tuple, [ ] → test or list.
-// For { and [, the streaming lexer detects expression syntax (commas, atoms,
-// pipes) during lexing and sets ExprHint on the token.
-func (p *Parser) parsePrimary() (*ast.Node, error) {
-	isExpr := p.isExprContext()
-	switch p.cur().Type {
-	case ast.TLParen:
-		if isExpr {
-			return p.parseExpression()
-		}
-		return p.parseSubshell()
-	case ast.TLBrace:
-		if isExpr {
-			return p.parseExpression()
-		}
-		return p.parseGroup()
-	case ast.TLBracket:
-		if isExpr {
-			return p.parseExpression()
-		}
-		return p.parseCmdLine()
-	}
-	return nil, nil
-}
+// --- Statement dispatch ---
 
 func (p *Parser) parseStmt() (*ast.Node, error) {
 	cur := p.cur()
@@ -423,161 +491,758 @@ func (p *Parser) parseStmt() (*ast.Node, error) {
 	switch cur.Type {
 	case ast.TEOF:
 		return nil, nil
-	case ast.TLParen, ast.TLBrace, ast.TLBracket:
-		return p.parsePrimary()
-	case ast.TBang:
-		return p.parseExpression()
-	case ast.TAtom:
-		return p.parseExpression()
-	case ast.TPercent:
-		if p.peek().Type == ast.TLBrace {
+
+	// POSIX : (colon) — no-op command
+	case ast.TColon:
+		tok := p.advance()
+		return &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: ":", Pos: tok.Pos}),
+		}, Pos: tok.Pos}, nil
+
+	// Keywords dispatch directly by token type — no string inspection
+	case ast.TIf:
+		return p.parseIf()
+	case ast.TFor:
+		return p.parseFor()
+	case ast.TWhile:
+		return p.parseWhile()
+	case ast.TUntil:
+		return p.parseUntil()
+	case ast.TCase:
+		return p.parseCase()
+	case ast.TFn:
+		if p.exprContext {
+			return p.parseIshFnAnon() // In expression context, fn is always anonymous
+		}
+		return p.parseIshFn()
+	case ast.TDefModule:
+		return p.parseDefModule()
+	case ast.TUse:
+		return p.parseUse()
+	case ast.TMatch:
+		return p.parseIshMatchExpr()
+	case ast.TSpawn:
+		return p.parseIshSpawn()
+	case ast.TSpawnLink:
+		return p.parseIshSpawnLink()
+	case ast.TSend:
+		return p.parseIshSend()
+	case ast.TMonitor:
+		return p.parseIshMonitor()
+	case ast.TAwait:
+		return p.parseIshAwait()
+	case ast.TSupervise:
+		return p.parseIshSupervise()
+	case ast.TReceive:
+		return p.parseIshReceive()
+	case ast.TTry:
+		return p.parseIshTry()
+
+	// true/false/nil at statement start: POSIX commands (set exit code)
+	// unless followed by an operator (then expression)
+	case ast.TTrue, ast.TFalse, ast.TNil:
+		next := p.peek(1)
+		if isExprBinOp(next.Type) || next.Type == ast.TDot || next.Type == ast.TEquals {
 			return p.parseExpression()
 		}
+		// Standalone or followed by args → command
+		tok := p.advance()
+		cmdName := ast.IdentNode(tok) // preserve original token type (TTrue/TFalse/TNil)
+		if isTerminator(p.cur().Type) || p.isBlockEndToken() {
+			return &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{cmdName}, Pos: tok.Pos}, nil
+		}
+		return p.parseInvocationWithName(cmdName)
+
+	// Other literals → always expression
+	case ast.TInt, ast.TFloat, ast.TString, ast.TStringStart, ast.TAtom:
+		return p.parseExpression()
+
+	// Unary operators
+	case ast.TBang, ast.TMinus:
+		return p.parseExpression()
+
+	// Lambda
 	case ast.TBackslash:
 		return p.parseLambda()
-	case ast.TInt, ast.TFloat:
+
+	// Map literal %{...}
+	case ast.TPercentLBrace:
 		return p.parseExpression()
-	case ast.TString:
+
+	case ast.TPercent:
+		return nil, fmt.Errorf("unexpected '%%' at pos %d", cur.Pos)
+
+	// Expansion tokens → expression
+	case ast.TDollar, ast.TDollarLParen, ast.TDollarDLParen,
+		ast.TDollarLBrace, ast.TSpecialVar, ast.THashLBrace, ast.TDollarDQuote:
 		return p.parseExpression()
-	case ast.TWord:
-		return p.dispatchKeyword()
-	case ast.TMinus:
-		return p.parseExpression()
+
+	// Brackets — disambiguate by lookahead
+	case ast.TLParen:
+		if p.exprContext {
+			return p.parseExpression() // In expression context, ( starts grouped expr
+		}
+		return p.parseParenStart()
+	case ast.TLBrace:
+		return p.parseBraceStart()
+	case ast.TLBracket:
+		return p.parseBracketStart()
+
+	// Capture: &name
 	case ast.TAmpersand:
-		if p.isExprContext() && p.peek().Type == ast.TWord {
-			p.advance() // consume &
-			tok := p.advance() // consume name
+		if p.peek(1).Type == ast.TIdent { // adjacent: &name capture
+			p.advance()
+			tok := p.advance()
 			return &ast.Node{Kind: ast.NCapture, Tok: tok}, nil
 		}
+
+	// Identifier at statement start — the key decision point
+	case ast.TIdent:
+		return p.dispatchIdent()
+
+	// TDot at statement start — source command or path
+	case ast.TDot:
+		return p.parseDotStart()
+
+	// TDiv at statement start — absolute path command
+	case ast.TDiv:
+		return p.parsePathInvocation()
+
+	// TTilde at statement start — home-relative path command
+	case ast.TTilde:
+		return p.parseTildeInvocation()
 	}
 
-	return p.parseCmdLine()
+	// Expression is the fallthrough
+	if isValueStart(cur.Type) {
+		return p.parseExpression()
+	}
+
+	return nil, nil
 }
 
-func (p *Parser) dispatchKeyword() (*ast.Node, error) {
-	cur := p.cur()
+// dispatchIdent handles a bare TIdent at statement start.
+// Uses SYNTAX and SpaceAfter to determine: POSIX assign, binding, expression, or invocation.
+func (p *Parser) dispatchIdent() (*ast.Node, error) {
+	ident := p.cur()       // the identifier (cur skips WS)
+	next := p.peek(1)      // next non-WS token after ident
 
-	if IsAssignment(cur) {
-		return p.parsePosixAssign()
+	// Adjacency: does the ident have NO space after it?
+	adjacent := !ident.SpaceAfter
+
+	if adjacent {
+		// POSIX assignment: FOO=bar — TEquals adjacent
+		if next.Type == ast.TEquals {
+			return p.parsePosixAssign()
+		}
+		// Adjacent dot: a.b → module-qualified name.
+		// Try expression first (handles NCall + binary ops like Fib.calc (n-1) + Fib.calc (n-2)).
+		// If committed (operator found), keep it. Otherwise fall back to NCmd for commas.
+		if next.Type == ast.TDot {
+			if node, ok := p.tryParseExpr(); ok {
+				return node, nil
+			}
+			// Tentative parse didn't commit — build dot chain for NCmd
+			tok := p.advance()
+			nameNode := ast.IdentNode(tok)
+			for p.cur().Type == ast.TDot {
+				p.advance()
+				field := p.cur()
+				if field.Type == ast.TIdent || field.Type.IsKeyword() {
+					field = p.advance()
+					field.Type = ast.TIdent
+					nameNode = &ast.Node{Kind: ast.NAccess, Tok: field, Children: []*ast.Node{nameNode}}
+				} else {
+					break
+				}
+			}
+			// Adjacent parens: Module.func(a, b) → NCall
+			if p.cur().Type == ast.TLParen && !p.rawAt(p.pos-1).SpaceAfter {
+				call := &ast.Node{Kind: ast.NCall, Children: []*ast.Node{nameNode}}
+				p.advance()
+				for !p.until(ast.TRParen, ast.TEOF) {
+					arg, err := p.parseExpr(0)
+					if err != nil {
+						return nil, err
+					}
+					call.Children = append(call.Children, arg)
+					if p.cur().Type == ast.TComma {
+						p.advance()
+					}
+				}
+				if _, err := p.expect(ast.TRParen); err != nil {
+					return nil, err
+				}
+				return call, nil
+			}
+			if isTerminator(p.cur().Type) || p.isBlockEndToken() {
+				return nameNode, nil
+			}
+			return p.parseInvocationWithName(nameNode)
+		}
+		// Adjacent paren: name() — POSIX fn def, or name(args) — function call
+		if next.Type == ast.TLParen {
+			if p.peek(2).Type == ast.TRParen {
+				return p.parsePosixFnDef()
+			}
+			// Adjacent paren call: func(a, b) → expression
+			return p.parseExpression()
+		}
+		// Other adjacent token → compound word / invocation
+		return p.parseInvocation()
 	}
-	// Allow keywords as variable names when followed by =
-	if p.peek().Type == ast.TEquals {
+
+	// There IS whitespace after the ident. next is the token after the space.
+
+	// ish binding: x = expr
+	if next.Type == ast.TEquals {
 		return p.parseIshBind()
 	}
-	switch cur.Val {
-	case "if":
-		return p.parseIf()
-	case "for":
-		return p.parseFor()
-	case "while":
-		return p.parseWhile()
-	case "until":
-		return p.parseUntil()
-	case "case":
-		return p.parseCase()
-	case "fn":
-		return p.parseIshFn()
-	case "defmodule":
-		return p.parseDefModule()
-	case "use":
-		return p.parseUse()
-	case "match":
-		return p.parseIshMatchExpr()
-	case "spawn":
-		return p.parseIshSpawn()
-	case "spawn_link":
-		return p.parseIshSpawnLink()
-	case "send":
-		return p.parseIshSend()
-	case "monitor":
-		return p.parseIshMonitor()
-	case "await":
-		return p.parseIshAwait()
-	case "supervise":
-		return p.parseIshSupervise()
-	case "receive":
-		return p.parseIshReceive()
-	case "try":
-		return p.parseIshTry()
-	}
-	if isExprOperator(p.peek().Type) && p.mode == ModeExpr {
-		// Don't treat % as modulo when followed by { (that's a map literal: %{...})
-		if p.peek().Type == ast.TPercent {
-			p.fillTo(p.pos + 2)
-			idx := p.pos + 2 - p.base
-			if idx < len(p.tokens) && p.tokens[idx].Type == ast.TLBrace {
-				return p.parseCmdLine()
-			}
-		}
-		// If the word is a known command, parse as command not expression.
-		// This lets `head -5 file` work inside fn do...end bodies.
-		if p.IsCommand != nil && p.IsCommand(cur.Val) {
-			old := p.withMode(ModeCommand)
-			node, err := p.parseCmdLine()
-			p.restoreMode(old)
-			return node, err
-		}
-		return p.parseExpression()
-	}
-	if (p.peek().Type == ast.TRedirIn || p.peek().Type == ast.TRedirOut) && p.mode == ModeExpr {
-		if p.IsCommand != nil && p.IsCommand(cur.Val) {
-			old := p.withMode(ModeCommand)
-			node, err := p.parseCmdLine()
-			p.restoreMode(old)
-			return node, err
-		}
-		return p.parseExpression()
-	}
-	p.fillTo(p.pos + 2)
-	if p.peek().Type == ast.TLParen && p.pos+2-p.base < len(p.tokens) && p.tokens[p.pos+2-p.base].Type == ast.TRParen {
+
+	// POSIX fn def with space: name ()
+	if next.Type == ast.TLParen && p.peek(2).Type == ast.TRParen {
 		return p.parsePosixFnDef()
 	}
-	if p.mode == ModeExpr {
-		next := p.peek().Type
-		if next == ast.TNewline || next == ast.TEOF || next == ast.TSemicolon ||
-			next == ast.TPipe || next == ast.TPipeArrow || next == ast.TAnd || next == ast.TOr ||
-			next == ast.TRParen || next == ast.TRBrace || next == ast.TComma || next == ast.TArrow {
-			p.advance()
-			return ast.WordNode(cur), nil
+
+	// Operators with SpaceAfter: spaced = binary op (expression).
+	// Adjacent = command arg (flag, path, glob).
+	if isExprBinOp(next.Type) || next.Type == ast.TPlus || next.Type == ast.TMinus {
+		if next.SpaceAfter {
+			return p.parseExpression()
+		}
+		return p.parseInvocation() // -n, /tmp, *glob, +x
+	}
+
+	// Redirect tokens → command (redirect context).
+	// But when in expression context (lambda body, fn guard), bare > and <
+	// are comparison operators — skip the redirect check and let expression
+	// parsing handle them.
+	if next.Type == ast.TRedirAppend || next.Type == ast.THeredoc || next.Type == ast.THereString {
+		return p.parseInvocation()
+	}
+	if (next.Type == ast.TGt || next.Type == ast.TLt) && !p.exprContext {
+		return p.parseInvocation()
+	}
+
+	// Dot after space → path arg (.hidden, .., ./) → command
+	if next.Type == ast.TDot {
+		return p.parseInvocation()
+	}
+
+	// Terminator or block-end → standalone (zero-arg command or value)
+	if isTerminator(next.Type) || p.isBlockEndToken() {
+		tok := p.advance()
+		if p.exprContext {
+			return ast.IdentNode(tok), nil
+		}
+		return &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{ast.IdentNode(tok)}, Pos: tok.Pos}, nil
+	}
+
+	// Ambiguous: identifier followed by a value. Could be a function call
+	// (countdown n - 1) or a command (echo hello world).
+	// Try expression first. If we hit a commitment point (operator, comma,
+	// parens, pipe), keep it. Otherwise rollback and parse as command.
+	if node, ok := p.tryParseExpr(); ok {
+		return node, nil
+	}
+	return p.parseInvocation()
+}
+
+// --- Bracket disambiguation (parser-level, no ExprHint) ---
+
+func (p *Parser) parseParenStart() (*ast.Node, error) {
+	// ( at statement start → subshell
+	return p.parseSubshell()
+}
+
+func (p *Parser) parseBraceStart() (*ast.Node, error) {
+	if p.looksLikeTuple() {
+		return p.parseExpression() // handles trailing = for pattern match
+	}
+	return p.parseGroup()
+}
+
+func (p *Parser) parseBracketStart() (*ast.Node, error) {
+	if p.looksLikeList() {
+		return p.parseExpression() // handles trailing = for pattern match
+	}
+	// In exprContext, [ is a list unless it looks like a POSIX test command.
+	// Test commands have patterns like [ -n x ], [ $x = y ], etc.
+	// A single value inside [ ] with no commas/pipes is ambiguous —
+	// in exprContext default to list.
+	if p.exprContext && !p.looksLikeTest() {
+		return p.parseExpression()
+	}
+	// Test builtin: [ -n x ]
+	// Parse as command with [ as name. Collect args until ] (which is the last arg).
+	pos := p.cur().Pos
+	p.advance() // consume [
+	nameNode := ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "[", Pos: pos})
+	cmd := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{nameNode}, Pos: pos}
+	for {
+		cur := p.cur()
+		if cur.Type == ast.TEOF || cur.Type == ast.TNewline || cur.Type == ast.TSemicolon {
+			break
+		}
+		if cur.Type == ast.TRBracket {
+			p.advance() // consume ] as the closing marker
+			break
+		}
+		arg, err := p.parseCompoundWord()
+		if err != nil {
+			return nil, err
+		}
+		if arg != nil {
+			cmd.Children = append(cmd.Children, arg)
 		}
 	}
-	return p.parseCmdLine()
+	return cmd, nil
 }
 
-func (p *Parser) isStmtEnd(cur ast.Token) bool {
-	switch cur.Type {
-	case ast.TEOF, ast.TNewline, ast.TSemicolon, ast.TPipe, ast.TPipeArrow, ast.TAnd, ast.TOr,
-		ast.TRParen, ast.TRBrace, ast.TArrow, ast.TPlus, ast.TMul, ast.TDiv, ast.TEq, ast.TNe, ast.TLe, ast.TGe:
-		return true
-	case ast.TAmpersand:
-		return p.peek().Type != ast.TRedirOut && p.peek().Type != ast.TRedirAppend
+// looksLikeTuple peeks inside { } to check for commas or leading atoms.
+func (p *Parser) looksLikeTuple() bool {
+	depth := 0
+	first := true
+	for i := p.pos; ; i++ {
+		p.fillTo(i)
+		idx := i - p.base
+		if idx >= len(p.tokens) {
+			return false
+		}
+		t := p.tokens[idx]
+		switch t.Type {
+		case ast.TLBrace:
+			depth++
+			first = depth == 1
+		case ast.TRBrace:
+			depth--
+			if depth == 0 {
+				return i == p.pos+1 // empty {} is tuple
+			}
+		case ast.TComma:
+			if depth == 1 {
+				return true
+			}
+		case ast.TAtom:
+			if depth == 1 && first {
+				return true
+			}
+			first = false
+		case ast.TNewline:
+			return false
+		case ast.TEOF:
+			return false
+		default:
+			first = false
+		}
 	}
-	return false
 }
 
-func (p *Parser) collectAssigns() []*ast.Node {
-	var assigns []*ast.Node
-	for p.cur().Type == ast.TWord && IsAssignment(p.cur()) {
-		tok := p.advance()
-		assigns = append(assigns, &ast.Node{Kind: ast.NAssign, Tok: tok, Pos: tok.Pos})
+// looksLikeTest peeks inside [ ] for POSIX test patterns (flags like -n, operators like =).
+func (p *Parser) looksLikeTest() bool {
+	// [ followed by flag (-n, -f, etc.) or containing = / != at depth 1
+	for i := p.pos + 1; ; i++ {
+		p.fillTo(i)
+		idx := i - p.base
+		if idx >= len(p.tokens) {
+			return false
+		}
+		t := p.tokens[idx]
+		if t.Type == ast.TRBracket || t.Type == ast.TEOF || t.Type == ast.TNewline {
+			return false
+		}
+		// Flag like -n, -f, -d → test command
+		if t.Type == ast.TMinus && i == p.pos+1 {
+			return true
+		}
+		// = or != between values → test command
+		if t.Type == ast.TEquals || t.Type == ast.TNe || t.Type == ast.TBang {
+			return true
+		}
 	}
-	return assigns
 }
+
+// looksLikeList peeks inside [ ] to check for commas or |.
+func (p *Parser) looksLikeList() bool {
+	depth := 0
+	for i := p.pos; ; i++ {
+		p.fillTo(i)
+		idx := i - p.base
+		if idx >= len(p.tokens) {
+			return false
+		}
+		t := p.tokens[idx]
+		switch t.Type {
+		case ast.TLBracket:
+			depth++
+		case ast.TRBracket:
+			depth--
+			if depth == 0 {
+				return i == p.pos+1 // empty [] is list
+			}
+		case ast.TComma:
+			if depth == 1 {
+				return true
+			}
+		case ast.TPipe:
+			if depth == 1 {
+				return true // [h | t] cons
+			}
+		case ast.TNewline:
+			return false
+		case ast.TEOF:
+			return false
+		}
+	}
+}
+
+// --- Invocation parsing (commands / function calls) ---
+
+// parseDotStart handles TDot at statement start: source command or path.
+func (p *Parser) parseDotStart() (*ast.Node, error) {
+	pos := p.cur().Pos
+	// Assemble the callee as a compound word starting with "."
+	nameNode, err := p.parseCompoundWord()
+	if err != nil {
+		return nil, err
+	}
+	if nameNode == nil {
+		nameNode = &ast.Node{Kind: ast.NPath, Tok: ast.Token{Type: ast.TIdent, Val: ".", Pos: pos}}
+	}
+
+	if isTerminator(p.cur().Type) {
+		return &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{nameNode}, Pos: pos}, nil
+	}
+
+	return p.parseInvocationWithName(nameNode)
+}
+
+// parsePathInvocation handles TDiv at statement start (absolute path command).
+func (p *Parser) parsePathInvocation() (*ast.Node, error) {
+	pos := p.cur().Pos
+	nameNode, err := p.parseCompoundWord()
+	if err != nil {
+		return nil, err
+	}
+	return p.parseInvocationWithName(&ast.Node{Kind: ast.NPath, Tok: ast.Token{Type: ast.TIdent, Val: nodeToString(nameNode), Pos: pos}})
+}
+
+// parseTildeInvocation handles TTilde at statement start (~/bin/script).
+func (p *Parser) parseTildeInvocation() (*ast.Node, error) {
+	pos := p.cur().Pos
+	nameNode, err := p.parseCompoundWord()
+	if err != nil {
+		return nil, err
+	}
+	return p.parseInvocationWithName(&ast.Node{Kind: ast.NPath, Tok: ast.Token{Type: ast.TIdent, Val: nodeToString(nameNode), Pos: pos}})
+}
+
+// parseInvocation parses a command invocation starting with TIdent at current position.
+func (p *Parser) parseInvocation() (*ast.Node, error) {
+	nameTok := p.advance()
+	nameNode := ast.IdentNode(nameTok)
+	return p.parseInvocationWithName(nameNode)
+}
+
+// parseInvocationFrom creates a command from a synthesized name token (for [ builtin).
+func (p *Parser) parseInvocationFrom(nameTok ast.Token) (*ast.Node, error) {
+	p.advance() // consume the bracket
+	nameNode := ast.IdentNode(nameTok)
+	return p.parseInvocationWithName(nameNode)
+}
+
+// parseInvocationWithName parses command arguments after the command name is known.
+// Each argument is a compound word: adjacent tokens with no SpaceAfter between them.
+func (p *Parser) parseInvocationWithName(nameNode *ast.Node) (*ast.Node, error) {
+	cmd := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{nameNode}, Pos: nameNode.Pos}
+
+	for {
+		cur := p.cur()
+		// Commas separate args in NCmd (e.g. `add 3, 4`, `Map.put m, k, v`)
+		if cur.Type == ast.TComma {
+			p.advance()
+			continue
+		}
+		if isTerminator(cur.Type) {
+			break
+		}
+		if p.isBlockEndToken() {
+			break
+		}
+
+		// Parenthesized expression in command args: always evaluated as expression
+		if cur.Type == ast.TLParen {
+			p.advance()
+			expr, err := p.parsePipeline()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(ast.TRParen); err != nil {
+				return nil, err
+			}
+			cmd.Children = append(cmd.Children, expr)
+			continue
+		}
+
+		// Check for redirections BEFORE compound word parsing.
+		// Adjacency matters: 2>file is fd redirect, 2 > file is "2" then redirect.
+		if rs, ok, err := p.tryParseRedir(); ok {
+			if err != nil {
+				return nil, err
+			}
+			cmd.Redirs = append(cmd.Redirs, rs...)
+			continue
+		}
+
+		// Expression-valued args: lambda, data structures, dotted access, keywords
+		if cur.Type == ast.TBackslash || cur.Type == ast.TLBracket ||
+			cur.Type == ast.TLBrace || cur.Type == ast.TPercentLBrace ||
+			cur.Type == ast.TNil || cur.Type == ast.TTrue || cur.Type == ast.TFalse ||
+			(cur.Type == ast.TFn && p.exprContext) ||
+			(cur.Type == ast.TIdent && !cur.SpaceAfter && p.peek(1).Type == ast.TDot) {
+			expr, err := p.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+			cmd.Children = append(cmd.Children, expr)
+			continue
+		}
+
+		// Parse one compound word (one argument)
+		arg, err := p.parseCompoundWord()
+		if err != nil {
+			return nil, err
+		}
+		if arg != nil {
+			cmd.Children = append(cmd.Children, arg)
+		}
+	}
+
+	return cmd, nil
+}
+
+// --- Compound word assembly ---
+
+// parseCompoundWord collects adjacent tokens (no SpaceAfter between them)
+// into a single argument node. This is the parser equivalent of the old lexWord:
+// instead of one opaque string, it produces a structured AST node.
+//
+// If the compound word has one part, returns that part directly.
+// If it has multiple parts, returns NArg with children.
+func (p *Parser) parseCompoundWord() (*ast.Node, error) {
+	var parts []*ast.Node
+
+	// Use cur() to find the first token (skips whitespace like all parser functions)
+	first := p.cur()
+	if first.Type == ast.TEOF || isTerminator(first.Type) || isShellMetachar(first.Type) {
+		return nil, nil
+	}
+
+	// Parse parts. After each part, check if the token just before p.pos
+	// had SpaceAfter — if so, the compound word ends.
+	for {
+		cur := p.cur()
+		if cur.Type == ast.TEOF || isTerminator(cur.Type) || isShellMetachar(cur.Type) {
+			break
+		}
+
+		posBefore := p.pos
+		part, err := p.parseWordPart()
+		if err != nil {
+			return nil, err
+		}
+		if part != nil {
+			parts = append(parts, part)
+		}
+
+		// Check if the last consumed token had space after it → word boundary
+		if p.pos > posBefore {
+			lastConsumed := p.rawAt(p.pos - 1)
+			if lastConsumed.SpaceAfter {
+				break
+			}
+		}
+	}
+
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	if len(parts) == 1 {
+		return parts[0], nil
+	}
+	// Multiple adjacent parts → compound word
+	return &ast.Node{Kind: ast.NArg, Children: parts, Pos: parts[0].Pos}, nil
+}
+
+// parseWordPart parses a single part of a compound word at the raw token level.
+// Does NOT skip whitespace — the caller (parseCompoundWord) handles boundaries.
+func (p *Parser) parseWordPart() (*ast.Node, error) {
+	raw := p.rawAt(p.pos)
+
+	switch raw.Type {
+	case ast.TIdent:
+		p.pos++
+		return ast.IdentNode(raw), nil
+
+	case ast.TDollar:
+		// $var — variable reference
+		p.pos++ // consume $
+		next := p.rawAt(p.pos)
+		if next.Type == ast.TIdent {
+			p.pos++ // consume var name
+			node := &ast.Node{Kind: ast.NVarRef, Tok: next, Pos: raw.Pos}
+			// Check for $var.field (adjacent dot access)
+			for p.rawAt(p.pos).Type == ast.TDot {
+				p.pos++ // consume .
+				field := p.rawAt(p.pos)
+				if field.Type == ast.TIdent || field.Type.IsKeyword() {
+					field.Type = ast.TIdent // normalize keyword to ident for field name
+					p.pos++ // consume field
+					node = &ast.Node{Kind: ast.NAccess, Tok: field, Children: []*ast.Node{node}}
+				} else {
+					// Dot without field — put it back and stop
+					p.pos--
+					break
+				}
+			}
+			return node, nil
+		}
+		// Bare $ — literal
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "$", Pos: raw.Pos}), nil
+
+	case ast.TSpecialVar:
+		p.pos++
+		return &ast.Node{Kind: ast.NVarRef, Tok: raw, Pos: raw.Pos}, nil
+
+	case ast.TDollarLParen:
+		return p.parseCmdSub()
+
+	case ast.TDollarDLParen:
+		return p.parseArithSub()
+
+	case ast.TDollarLBrace:
+		return p.parseParamExpand()
+
+	case ast.THashLBrace:
+		return p.parseInterpolation()
+
+	case ast.TStringStart:
+		return p.parseInterpString()
+
+	case ast.TString:
+		p.pos++
+		return ast.LitNode(raw), nil
+
+	case ast.TDollarDQuote:
+		return p.parseDollarString()
+
+	case ast.TInt, ast.TFloat:
+		p.pos++
+		return ast.LitNode(raw), nil
+
+	case ast.TAtom:
+		p.pos++
+		return ast.LitNode(raw), nil
+
+	case ast.TBackslash:
+		// Escape: \ followed by next token = literal escaped character
+		p.pos++ // consume backslash
+		next := p.rawAt(p.pos)
+		if next.Type != ast.TEOF && next.Type != ast.TNewline {
+			p.pos++
+			// The escaped character — even if it's whitespace
+			return ast.LitNode(ast.Token{Type: ast.TString, Val: next.Val, Pos: next.Pos}), nil
+		}
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "\\", Pos: raw.Pos}), nil
+
+	// Operator tokens that are literal characters in compound words
+	case ast.TDot:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: ".", Pos: raw.Pos}), nil
+	case ast.TDiv:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "/", Pos: raw.Pos}), nil
+	case ast.TMinus:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "-", Pos: raw.Pos}), nil
+	case ast.TPlus:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "+", Pos: raw.Pos}), nil
+	case ast.TTilde:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "~", Pos: raw.Pos}), nil
+	case ast.TAt:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "@", Pos: raw.Pos}), nil
+	case ast.TColon:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: ":", Pos: raw.Pos}), nil
+	case ast.THash:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "#", Pos: raw.Pos}), nil
+	case ast.TEquals:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "=", Pos: raw.Pos}), nil
+	case ast.TMul:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "*", Pos: raw.Pos}), nil
+	case ast.TPercent:
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: "%", Pos: raw.Pos}), nil
+	// TGt, TLt, TAmpersand, TPipe, TLParen, TRParen, TSemicolon are
+	// POSIX shell metacharacters — they break compound words and are
+	// NOT valid word parts. They're caught by the break condition above.
+
+	default:
+		// Keyword tokens in compound word position are literal strings
+		if raw.Type.IsKeyword() {
+			p.pos++
+			return ast.LitNode(ast.Token{Type: ast.TString, Val: raw.Val, Pos: raw.Pos}), nil
+		}
+		// Unknown — consume as literal
+		p.pos++
+		return ast.LitNode(ast.Token{Type: ast.TString, Val: raw.Val, Pos: raw.Pos}), nil
+	}
+}
+
+// nodeToString extracts a string representation from a simple node (for path assembly).
+func nodeToString(n *ast.Node) string {
+	if n == nil {
+		return ""
+	}
+	switch n.Kind {
+	case ast.NLit, ast.NIdent, ast.NPath, ast.NFlag:
+		return n.Tok.Val
+	case ast.NArg:
+		var b strings.Builder
+		for _, c := range n.Children {
+			b.WriteString(nodeToString(c))
+		}
+		return b.String()
+	default:
+		return n.Tok.Val
+	}
+}
+
+// --- Redirection parsing ---
 
 func (p *Parser) tryParseRedir() ([]ast.Redir, bool, error) {
 	cur := p.cur()
 
-	if cur.Type == ast.TAmpersand && (p.peek().Type == ast.TRedirOut || p.peek().Type == ast.TRedirAppend) {
+	// &> file — redirect both stdout and stderr
+	if cur.Type == ast.TAmpersand && (p.peek(1).Type == ast.TGt || p.peek(1).Type == ast.TRedirAppend) {
 		p.advance()
 		r, err := p.parseRedir()
 		if err != nil {
 			return nil, true, err
 		}
 		r.Fd = 1
-		return []ast.Redir{r, {Op: r.Op, Fd: 2, Target: r.Target, Quoted: r.Quoted}}, true, nil
+		return []ast.Redir{r, {Op: r.Op, Fd: 2, TargetNode: r.TargetNode, Quoted: r.Quoted}}, true, nil
 	}
 
-	if cur.Type == ast.TRedirOut || cur.Type == ast.TRedirAppend || cur.Type == ast.TRedirIn || cur.Type == ast.THeredoc || cur.Type == ast.THereString {
+	// > >> < << <<<
+	if cur.Type == ast.TGt || cur.Type == ast.TRedirAppend ||
+		cur.Type == ast.TLt || cur.Type == ast.THeredoc || cur.Type == ast.THereString {
 		r, err := p.parseRedir()
 		if err != nil {
 			return nil, true, err
@@ -585,12 +1250,15 @@ func (p *Parser) tryParseRedir() ([]ast.Redir, bool, error) {
 		return []ast.Redir{r}, true, nil
 	}
 
+	// fd> fd>> fd< — ONLY when TInt is ADJACENT to the redirect token (no whitespace).
+	// "2>file" is fd redirect. "2 > file" is argument "2" followed by redirect.
 	if cur.Type == ast.TInt {
-		next := p.peek()
-		if next.Type == ast.TRedirOut || next.Type == ast.TRedirAppend || next.Type == ast.TRedirIn {
+		// fd redirect: TInt ADJACENT to redirect token (2>file, not 2 > file)
+		rawAfter := p.peek(1)
+		if rawAfter.Type == ast.TGt || rawAfter.Type == ast.TRedirAppend || rawAfter.Type == ast.TLt {
 			fd := 0
 			fmt.Sscanf(cur.Val, "%d", &fd)
-			p.advance()
+			p.advance() // consume TInt
 			r, err := p.parseRedir()
 			if err != nil {
 				return nil, true, err
@@ -603,220 +1271,272 @@ func (p *Parser) tryParseRedir() ([]ast.Redir, bool, error) {
 	return nil, false, nil
 }
 
-func (p *Parser) parseValue(cmdArg bool) (*ast.Node, error) {
-	cur := p.cur()
-	isExpr := p.isExprContext()
-
-	switch cur.Type {
-	case ast.TInt, ast.TFloat:
-		p.advance()
-		return ast.LitNode(cur), nil
-	case ast.TString:
-		p.advance()
-		return ast.LitNode(cur), nil
-	case ast.TAtom:
-		p.advance()
-		return ast.LitNode(cur), nil
-	case ast.TWord:
-		if cur.Val == "fn" {
-			if cmdArg {
-				defer p.restoreMode(p.withMode(ModeExpr))
-			}
-			return p.parseIshFn()
-		}
-		p.advance()
-		return ast.WordNode(cur), nil
-	case ast.TLParen:
-		p.advance()
-		expr, err := p.parsePipeline()
-		if err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(ast.TRParen); err != nil {
-			return nil, err
-		}
-		return expr, nil
-	case ast.TLBrace:
-		if isExpr || !cmdArg {
-			return p.parseTupleExpr()
-		}
-		p.advance()
-		return ast.WordNode(ast.Token{Type: ast.TWord, Val: "{", Pos: cur.Pos}), nil
-	case ast.TLBracket:
-		if isExpr || !cmdArg {
-			return p.parseListExpr()
-		}
-		p.advance()
-		return ast.WordNode(ast.Token{Type: ast.TWord, Val: "[", Pos: cur.Pos}), nil
-	case ast.TPercent:
-		if p.peek().Type == ast.TLBrace {
-			return p.parseMapExpr()
-		}
-		p.advance()
-		return ast.LitNode(cur), nil
-	case ast.TBackslash:
-		return p.parseLambda()
-	case ast.TBang:
-		p.advance()
-		operand, err := p.parseValue(false)
-		if err != nil {
-			return nil, err
-		}
-		return &ast.Node{Kind: ast.NUnary, Tok: cur, Children: []*ast.Node{operand}}, nil
-	case ast.TMinus:
-		p.advance()
-		if cmdArg && p.cur().Type == ast.TInt {
-			merged := ast.Token{Type: ast.TWord, Val: "-" + p.cur().Val, Pos: cur.Pos}
-			p.advance()
-			return ast.WordNode(merged), nil
-		}
-		operand, err := p.parseValue(false)
-		if err != nil {
-			return nil, err
-		}
-		return &ast.Node{Kind: ast.NUnary, Tok: cur, Children: []*ast.Node{operand}}, nil
-	case ast.TComma:
-		if cmdArg {
-			p.advance()
-			return nil, nil
-		}
-		return nil, fmt.Errorf("unexpected comma at pos %d", cur.Pos)
-	default:
-		if cmdArg {
-			p.advance()
-			return ast.WordNode(ast.Token{Type: ast.TWord, Val: cur.Val, Pos: cur.Pos}), nil
-		}
-		return nil, fmt.Errorf("unexpected token: %q at pos %d", cur.Val, cur.Pos)
-	}
-}
-
-func (p *Parser) parseCmdLine() (*ast.Node, error) {
-	startPos := p.cur().Pos
-	assigns := p.collectAssigns()
-	var children []*ast.Node
-	var redirs []ast.Redir
-	exprCtx := p.isExprContext()
-
-	for {
-		cur := p.cur()
-		if p.isStmtEnd(cur) {
-			break
-		}
-		if cur.Type == ast.TWord && p.isBlockEnd(cur.Val) {
-			break
-		}
-		if rs, ok, err := p.tryParseRedir(); ok {
-			if err != nil {
-				return nil, err
-			}
-			redirs = append(redirs, rs...)
-			continue
-		}
-		// First [ in a command line is the test builtin, not a list literal
-		if cur.Type == ast.TLBracket && len(children) == 0 && !cur.ExprHint && p.mode != ModeExpr {
-			p.advance()
-			children = append(children, ast.WordNode(ast.Token{Type: ast.TWord, Val: "[", Pos: cur.Pos}))
-			continue
-		}
-		// In expression context, after the command name (first child),
-		// parse arguments as full expressions separated by commas.
-		// Exception: parenthesized args parse as single values so that
-		// operators after the closing paren stay at the statement level
-		// (e.g. `fib (n - 1) + fib (n - 2)` works correctly).
-		if exprCtx && len(children) > 0 {
-			var arg *ast.Node
-			var err error
-			if p.cur().Type == ast.TLParen {
-				arg, err = p.parseValue(true)
-			} else {
-				arg, err = p.parseExpression()
-			}
-			if err != nil {
-				return nil, err
-			}
-			if arg != nil {
-				children = append(children, arg)
-			}
-			if p.cur().Type == ast.TComma {
-				p.advance()
-			}
-			continue
-		}
-		arg, err := p.parseValue(true)
-		if err != nil {
-			return nil, err
-		}
-		if arg != nil {
-			children = append(children, arg)
-		}
-	}
-
-	if len(children) == 0 && len(redirs) == 0 && len(assigns) == 0 {
-		return nil, nil
-	}
-
-	if len(children) == 0 && len(assigns) > 0 && len(redirs) == 0 {
-		if len(assigns) == 1 {
-			return assigns[0], nil
-		}
-		return &ast.Node{Kind: ast.NBlock, Children: assigns}, nil
-	}
-
-	node := &ast.Node{Kind: ast.NCmd, Children: children, Pos: startPos}
-	node.Assigns = assigns
-	node.Redirs = redirs
-	return node, nil
-}
-
 func (p *Parser) parseRedir() (ast.Redir, error) {
 	r := ast.Redir{Op: p.cur().Type}
 	switch r.Op {
-	case ast.TRedirOut, ast.TRedirAppend:
+	case ast.TGt, ast.TRedirAppend:
 		r.Fd = 1
-	case ast.TRedirIn, ast.THeredoc, ast.THereString:
+	case ast.TLt, ast.THeredoc, ast.THereString:
 		r.Fd = 0
 	}
 	p.advance()
 
 	if p.cur().Type == ast.TAmpersand {
 		p.advance()
-		if p.cur().Type == ast.TInt || p.cur().Type == ast.TWord {
-			r.Target = "&" + p.cur().Val
-			p.advance()
+		if p.cur().Type == ast.TInt || p.cur().Type == ast.TIdent {
+			tok := p.advance()
+			r.TargetNode = ast.LitNode(ast.Token{Type: ast.TString, Val: "&" + tok.Val, Pos: tok.Pos})
 			return r, nil
 		}
 		return r, fmt.Errorf("expected fd number after >& at pos %d", p.cur().Pos)
 	}
 
-	if p.cur().Type == ast.TWord || p.cur().Type == ast.TString || p.cur().Type == ast.TInt {
-		r.Target = p.cur().Val
-		r.Quoted = p.cur().Quoted
-		p.advance()
-	} else {
+	// Target is a compound word (e.g., /dev/null, $file, ${dir}/out)
+	target, err := p.parseCompoundWord()
+	if err != nil {
+		return r, err
+	}
+	if target == nil {
 		return r, fmt.Errorf("expected filename after redirection at pos %d", p.cur().Pos)
 	}
+	r.TargetNode = target
 	return r, nil
 }
 
-func (p *Parser) parsePosixAssign() (*ast.Node, error) {
-	tok := p.advance()
-	return &ast.Node{Kind: ast.NAssign, Tok: tok, Pos: tok.Pos}, nil
+// --- Expansion parsing ---
+
+func (p *Parser) parseVarRef() (*ast.Node, error) {
+	p.advance() // consume TDollar
+	if p.cur().Type == ast.TIdent {
+		nameTok := p.advance()
+		node := &ast.Node{Kind: ast.NVarRef, Tok: nameTok, Pos: nameTok.Pos}
+		// Handle $var.field access
+		for p.cur().Type == ast.TDot && p.peek(1).Type == ast.TIdent {
+			p.advance() // consume .
+			field := p.advance()
+			node = &ast.Node{Kind: ast.NAccess, Tok: field, Children: []*ast.Node{node}}
+		}
+		return node, nil
+	}
+	// Bare $ — return as-is
+	return ast.LitNode(ast.Token{Type: ast.TString, Val: "$"}), nil
 }
 
-func (p *Parser) parseIshBind() (*ast.Node, error) {
-	nameTok := p.advance()
-	p.advance()
-
-	defer p.restoreMode(p.withMode(ModeExpr))
-	rhs, err := p.parsePipeline()
+func (p *Parser) parseCmdSub() (*ast.Node, error) {
+	pos := p.cur().Pos
+	p.advance() // consume $(
+	// Save commitment state — operators inside $() don't affect outer context
+	savedCommitted := p.committed
+	// Parse interior as a full program until )
+	stmts, err := p.parseStmtList(ast.TRParen)
 	if err != nil {
 		return nil, err
 	}
+	p.committed = savedCommitted
+	if _, err := p.expect(ast.TRParen); err != nil {
+		return nil, err
+	}
+	return &ast.Node{Kind: ast.NCmdSub, Children: []*ast.Node{ast.BlockNode(stmts)}, Pos: pos}, nil
+}
 
-	lhs := ast.WordNode(nameTok)
+func (p *Parser) parseArithSub() (*ast.Node, error) {
+	pos := p.cur().Pos
+	p.advance() // consume $((
+	savedCommitted := p.committed
+	expr, err := p.parseExpr(0)
+	p.committed = savedCommitted
+	if err != nil {
+		return nil, err
+	}
+	// Expect ))
+	if _, err := p.expect(ast.TRParen); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(ast.TRParen); err != nil {
+		return nil, err
+	}
+	return &ast.Node{Kind: ast.NArithSub, Children: []*ast.Node{expr}, Pos: pos}, nil
+}
+
+func (p *Parser) parseParamExpand() (*ast.Node, error) {
+	pos := p.cur().Pos
+	p.advance() // consume ${
+	// For now, collect tokens until }
+	var parts []*ast.Node
+	for !p.until(ast.TRBrace, ast.TEOF) {
+		tok := p.advance()
+		parts = append(parts, &ast.Node{Kind: ast.NLit, Tok: tok})
+	}
+	if _, err := p.expect(ast.TRBrace); err != nil {
+		return nil, err
+	}
+	return &ast.Node{Kind: ast.NParamExpand, Children: parts, Pos: pos}, nil
+}
+
+func (p *Parser) parseInterpolation() (*ast.Node, error) {
+	pos := p.cur().Pos
+	p.advance() // consume #{
+	savedCommitted := p.committed
+	expr, err := p.parseExpr(0)
+	p.committed = savedCommitted
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(ast.TRBrace); err != nil {
+		return nil, err
+	}
+	return &ast.Node{Kind: ast.NInterpolation, Children: []*ast.Node{expr}, Pos: pos}, nil
+}
+
+func (p *Parser) parseInterpString() (*ast.Node, error) {
+	pos := p.cur().Pos
+	p.advance() // consume TStringStart
+	savedCommitted := p.committed
+	var segments []*ast.Node
+	for !p.until(ast.TStringEnd, ast.TEOF) {
+		switch p.cur().Type {
+		case ast.TString:
+			tok := p.advance()
+			segments = append(segments, ast.LitNode(tok))
+		case ast.TDollar:
+			node, err := p.parseVarRef()
+			if err != nil {
+				return nil, err
+			}
+			segments = append(segments, node)
+		case ast.TSpecialVar:
+			tok := p.advance()
+			segments = append(segments, &ast.Node{Kind: ast.NVarRef, Tok: tok, Pos: tok.Pos})
+		case ast.TDollarLParen:
+			node, err := p.parseCmdSub()
+			if err != nil {
+				return nil, err
+			}
+			segments = append(segments, node)
+		case ast.TDollarDLParen:
+			node, err := p.parseArithSub()
+			if err != nil {
+				return nil, err
+			}
+			segments = append(segments, node)
+		case ast.TDollarLBrace:
+			node, err := p.parseParamExpand()
+			if err != nil {
+				return nil, err
+			}
+			segments = append(segments, node)
+		case ast.THashLBrace:
+			node, err := p.parseInterpolation()
+			if err != nil {
+				return nil, err
+			}
+			segments = append(segments, node)
+		default:
+			// Skip unexpected tokens inside string
+			p.advance()
+		}
+	}
+	p.committed = savedCommitted
+	if _, err := p.expect(ast.TStringEnd); err != nil {
+		return nil, err
+	}
+	// Optimize: if only one literal segment, just return it as TString
+	if len(segments) == 1 && segments[0].Kind == ast.NLit {
+		return segments[0], nil
+	}
+	return &ast.Node{Kind: ast.NInterpString, Children: segments, Pos: pos}, nil
+}
+
+func (p *Parser) parseDollarString() (*ast.Node, error) {
+	// $"..." uses TDollarDQuote as opener, same segments as regular interpolated string
+	pos := p.cur().Pos
+	p.advance() // consume TDollarDQuote
+	savedCommitted := p.committed
+	var segments []*ast.Node
+	for !p.until(ast.TStringEnd, ast.TEOF) {
+		switch p.cur().Type {
+		case ast.TString:
+			tok := p.advance()
+			segments = append(segments, ast.LitNode(tok))
+		case ast.TDollar:
+			node, err := p.parseVarRef()
+			if err != nil {
+				return nil, err
+			}
+			segments = append(segments, node)
+		case ast.TSpecialVar:
+			tok := p.advance()
+			segments = append(segments, &ast.Node{Kind: ast.NVarRef, Tok: tok, Pos: tok.Pos})
+		case ast.TDollarLParen:
+			node, err := p.parseCmdSub()
+			if err != nil {
+				return nil, err
+			}
+			segments = append(segments, node)
+		case ast.TDollarLBrace:
+			node, err := p.parseParamExpand()
+			if err != nil {
+				return nil, err
+			}
+			segments = append(segments, node)
+		case ast.THashLBrace:
+			node, err := p.parseInterpolation()
+			if err != nil {
+				return nil, err
+			}
+			segments = append(segments, node)
+		default:
+			p.advance()
+		}
+	}
+	p.committed = savedCommitted
+	if _, err := p.expect(ast.TStringEnd); err != nil {
+		return nil, err
+	}
+	if len(segments) == 1 && segments[0].Kind == ast.NLit {
+		return segments[0], nil
+	}
+	return &ast.Node{Kind: ast.NInterpString, Children: segments, Pos: pos}, nil
+}
+
+// --- Binding ---
+
+func (p *Parser) parseIshBind() (*ast.Node, error) {
+	nameTok := p.advance() // consume identifier
+	p.advance()            // consume =
+	p.committed = true     // binding RHS is definitively expression context
+	savedExpr := p.exprContext
+	p.exprContext = true
+	rhs, err := p.parsePipeline()
+	p.exprContext = savedExpr
+	if err != nil {
+		return nil, err
+	}
+	lhs := ast.IdentNode(nameTok)
 	return &ast.Node{Kind: ast.NMatch, Children: []*ast.Node{lhs, rhs}, Pos: nameTok.Pos}, nil
 }
 
+// parseExprPipeline parses an expression that may contain |> pipe arrows.
+// Unlike parsePipeline (which goes through parseStmt), this stays in expression
+// context — fn is anonymous, keywords are values, etc.
+func (p *Parser) parseExprPipeline() (*ast.Node, error) {
+	expr, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	for p.cur().Type == ast.TPipeArrow {
+		p.advance()
+		p.committed = true
+		right, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		expr = &ast.Node{Kind: ast.NPipeFn, Children: []*ast.Node{expr, right}}
+	}
+	return expr, nil
+}
+
+// --- Subshell / Group ---
 
 func (p *Parser) parseSubshell() (*ast.Node, error) {
 	p.advance()
@@ -845,7 +1565,7 @@ func (p *Parser) parseGroup() (*ast.Node, error) {
 func (p *Parser) parseStmtList(terminator ast.TokenType) ([]*ast.Node, error) {
 	var stmts []*ast.Node
 	p.skipNewlines()
-	for p.cur().Type != terminator && p.cur().Type != ast.TEOF {
+	for !p.until(terminator, ast.TEOF) {
 		stmt, err := p.parseList()
 		if err != nil {
 			return nil, err
@@ -860,46 +1580,35 @@ func (p *Parser) parseStmtList(terminator ast.TokenType) ([]*ast.Node, error) {
 	return stmts, nil
 }
 
-func (p *Parser) parseIf() (*ast.Node, error) {
-	p.advance()
-	node := &ast.Node{Kind: ast.NIf}
+// --- If ---
 
-	condMode := p.withMode(ModeCommand)
-	old := p.pushTerminators("then", "do")
+func (p *Parser) parseIf() (*ast.Node, error) {
+	p.advance() // consume TIf
+
+	// Parse condition
+	old := p.pushTerminators(ast.TThen, ast.TDo)
 	cond, err := p.parseList()
 	p.restoreTerminators(old)
-	p.restoreMode(condMode)
 	if err != nil {
 		return nil, err
 	}
 
 	p.skipSeparators()
 
-	if p.isWord("then") {
-		return p.parsePosixIf(cond, node)
-	} else if p.isWord("do") {
-		// Mark as ish-style so evaluator checks value truthiness, not exit code
-		node.Tok.Val = "ish"
-		// Convert bare value-keyword commands (nil, true, false) to word nodes
-		// so the evaluator treats them as values, not commands
-		if cond.Kind == ast.NCmd && len(cond.Children) == 1 {
-			name := cond.Children[0].Tok.Val
-			if name == "nil" || name == "true" || name == "false" {
-				cond = ast.WordNode(cond.Children[0].Tok)
-			}
-		}
-		return p.parseIshIf(cond, node)
+	if p.cur().Type == ast.TThen {
+		return p.parsePosixIf(cond)
+	} else if p.cur().Type == ast.TDo {
+		return p.parseIshIf(cond)
 	}
 	return nil, fmt.Errorf("expected 'then' or 'do' after if condition at pos %d", p.cur().Pos)
 }
 
-func (p *Parser) parsePosixIf(cond *ast.Node, node *ast.Node) (*ast.Node, error) {
-	p.advance()
+func (p *Parser) parsePosixIf(cond *ast.Node) (*ast.Node, error) {
+	node := &ast.Node{Kind: ast.NIf}
+	p.advance() // consume TThen
 	p.skipNewlines()
 
-	oldMode := p.withMode(ModeCommand)
-	defer p.restoreMode(oldMode)
-	old := p.pushTerminators("elif", "else", "fi")
+	old := p.pushTerminators(ast.TElif, ast.TElse, ast.TFi)
 	bodyStmts, err := p.parseBlock()
 	p.restoreTerminators(old)
 	if err != nil {
@@ -912,20 +1621,19 @@ func (p *Parser) parsePosixIf(cond *ast.Node, node *ast.Node) (*ast.Node, error)
 		Body:    ast.BlockNode(bodyStmts),
 	})
 
-	for p.isWord("elif") {
-		p.advance()
-		old = p.pushTerminators("then", "do")
+	for p.match(ast.TElif) {
+		old = p.pushTerminators(ast.TThen, ast.TDo)
 		elifCond, err := p.parseList()
 		p.restoreTerminators(old)
 		if err != nil {
 			return nil, err
 		}
 		p.skipSeparators()
-		if p.isWord("then") {
+		if p.cur().Type == ast.TThen {
 			p.advance()
 		}
 		p.skipNewlines()
-		old = p.pushTerminators("elif", "else", "fi")
+		old = p.pushTerminators(ast.TElif, ast.TElse, ast.TFi)
 		elifBody, err := p.parseBlock()
 		p.restoreTerminators(old)
 		if err != nil {
@@ -938,10 +1646,10 @@ func (p *Parser) parsePosixIf(cond *ast.Node, node *ast.Node) (*ast.Node, error)
 		})
 	}
 
-	if p.isWord("else") {
+	if p.cur().Type == ast.TElse {
 		p.advance()
 		p.skipNewlines()
-		old = p.pushTerminators("fi")
+		old = p.pushTerminators(ast.TFi)
 		elseBody, err := p.parseBlock()
 		p.restoreTerminators(old)
 		if err != nil {
@@ -953,16 +1661,27 @@ func (p *Parser) parsePosixIf(cond *ast.Node, node *ast.Node) (*ast.Node, error)
 		})
 	}
 
-	if p.isWord("fi") {
-		p.advance()
-	} else {
-		return nil, fmt.Errorf("expected 'fi' at pos %d", p.cur().Pos)
+	if _, err := p.expect(ast.TFi); err != nil {
+		return nil, err
 	}
 	return node, nil
 }
 
-func (p *Parser) parseIshIf(cond *ast.Node, node *ast.Node) (*ast.Node, error) {
-	if err := p.ishBlockWithSection("else", func() error {
+func (p *Parser) parseIshIf(cond *ast.Node) (*ast.Node, error) {
+	node := &ast.Node{Kind: ast.NIshIf}
+
+	// Convert bare keyword values to literal nodes
+	if cond.Kind == ast.NCmd && len(cond.Children) == 1 {
+		child := cond.Children[0]
+		if child.Kind == ast.NIdent {
+			switch child.Tok.Type {
+			case ast.TNil, ast.TTrue, ast.TFalse:
+				cond = ast.LitNode(child.Tok)
+			}
+		}
+	}
+
+	if err := p.ishBlockWithSection(ast.TElse, func() error {
 		bodyStmts, err := p.parseBlock()
 		if err != nil {
 			return err
@@ -989,65 +1708,68 @@ func (p *Parser) parseIshIf(cond *ast.Node, node *ast.Node) (*ast.Node, error) {
 	return node, nil
 }
 
+// --- For ---
+
 func (p *Parser) parseFor() (*ast.Node, error) {
-	p.advance()
+	p.advance() // consume TFor
 	node := &ast.Node{Kind: ast.NFor}
 
-	varTok, err := p.expect(ast.TWord)
+	varTok, err := p.expect(ast.TIdent)
 	if err != nil {
 		return nil, fmt.Errorf("expected variable name after 'for' at pos %d", p.cur().Pos)
 	}
 
 	p.skipSeparators()
-	if !p.isWord("in") {
+	if _, err := p.expect(ast.TIn); err != nil {
 		return nil, fmt.Errorf("expected 'in' after 'for %s' at pos %d", varTok.Val, p.cur().Pos)
 	}
-	p.advance()
 
-	old := p.pushTerminators("do")
+	old := p.pushTerminators(ast.TDo)
 	var words []*ast.Node
-	for p.cur().Type != ast.TEOF {
+	for !p.until(ast.TEOF) {
 		if p.cur().Type == ast.TNewline || p.cur().Type == ast.TSemicolon {
 			break
 		}
-		if p.isWord("do") {
+		if p.cur().Type == ast.TDo {
 			break
 		}
-		if p.cur().Type == ast.TWord {
-			words = append(words, ast.WordNode(p.cur()))
-		} else {
-			words = append(words, ast.LitNode(p.cur()))
+		// Parse each word as a compound word
+		arg, err := p.parseCompoundWord()
+		if err != nil {
+			return nil, err
 		}
-		p.advance()
+		if arg != nil {
+			words = append(words, arg)
+		}
 	}
 	p.restoreTerminators(old)
 
 	p.skipSeparators()
-	if p.isWord("do") {
-		p.advance()
-	} else {
+	if _, err := p.expect(ast.TDo); err != nil {
 		return nil, fmt.Errorf("expected 'do' in for loop at pos %d", p.cur().Pos)
 	}
 
 	p.skipNewlines()
-	old = p.pushTerminators("done", "end")
+	old = p.pushTerminators(ast.TDone, ast.TEnd)
 	bodyStmts, err := p.parseBlock()
 	p.restoreTerminators(old)
 	if err != nil {
 		return nil, err
 	}
-	if p.isWord("done") || p.isWord("end") {
+	if p.cur().Type == ast.TDone || p.cur().Type == ast.TEnd {
 		p.advance()
 	} else {
 		return nil, fmt.Errorf("expected 'done' or 'end' at pos %d", p.cur().Pos)
 	}
 
 	markTail(bodyStmts)
-	varNode := &ast.Node{Kind: ast.NWord, Tok: varTok}
+	varNode := ast.IdentNode(varTok)
 	node.Children = append([]*ast.Node{varNode}, words...)
 	node.Clauses = []ast.Clause{{Body: ast.BlockNode(bodyStmts)}}
 	return node, nil
 }
+
+// --- While / Until ---
 
 func (p *Parser) parseWhile() (*ast.Node, error) {
 	return p.parseWhileUntil(ast.NWhile)
@@ -1060,26 +1782,25 @@ func (p *Parser) parseUntil() (*ast.Node, error) {
 func (p *Parser) parseWhileUntil(kind ast.NodeKind) (*ast.Node, error) {
 	p.advance()
 
-	old := p.pushTerminators("do")
+	old := p.pushTerminators(ast.TDo)
 	cond, err := p.parseList()
 	p.restoreTerminators(old)
 	if err != nil {
 		return nil, err
 	}
 	p.skipSeparators()
-	if err := p.expectWord("do"); err != nil {
+	if _, err := p.expect(ast.TDo); err != nil {
 		return nil, err
 	}
-	p.advance()
 
 	p.skipNewlines()
-	old = p.pushTerminators("done", "end")
+	old = p.pushTerminators(ast.TDone, ast.TEnd)
 	bodyStmts, err := p.parseBlock()
 	p.restoreTerminators(old)
 	if err != nil {
 		return nil, err
 	}
-	if p.isWord("done") || p.isWord("end") {
+	if p.cur().Type == ast.TDone || p.cur().Type == ast.TEnd {
 		p.advance()
 	} else {
 		return nil, fmt.Errorf("expected 'done' or 'end' at pos %d", p.cur().Pos)
@@ -1093,50 +1814,64 @@ func (p *Parser) parseWhileUntil(kind ast.NodeKind) (*ast.Node, error) {
 	}, nil
 }
 
+// --- Case ---
+
 func (p *Parser) parseCase() (*ast.Node, error) {
-	p.advance()
+	p.advance() // consume TCase
 	node := &ast.Node{Kind: ast.NCase}
 
-	wordTok := p.advance()
-	node.Children = []*ast.Node{{Kind: ast.NWord, Tok: wordTok}}
+	// case WORD in — the word is a compound word
+	caseWord, err := p.parseCompoundWord()
+	if err != nil {
+		return nil, err
+	}
+	if caseWord == nil {
+		return nil, fmt.Errorf("expected word after 'case' at pos %d", p.cur().Pos)
+	}
+	node.Children = []*ast.Node{caseWord}
 
 	p.skipSeparators()
-	if !p.isWord("in") {
+	if _, err := p.expect(ast.TIn); err != nil {
 		return nil, fmt.Errorf("expected 'in' in case at pos %d", p.cur().Pos)
 	}
-	p.advance()
 	p.skipNewlines()
 
-	for p.cur().Type != ast.TEOF {
-		if p.isWord("esac") {
+	for !p.until(ast.TEOF) {
+		if p.cur().Type == ast.TEsac {
 			p.advance()
 			break
 		}
 		if p.cur().Type == ast.TLParen {
 			p.advance()
 		}
+		// Collect pattern alternatives separated by |
 		var patterns []string
-		for p.cur().Type != ast.TRParen && p.cur().Type != ast.TEOF {
-			patterns = append(patterns, p.cur().Val)
-			p.advance()
+		for !p.until(ast.TRParen, ast.TEOF) {
+			pw, err := p.parseCompoundWord()
+			if err != nil {
+				return nil, err
+			}
+			if pw != nil {
+				patterns = append(patterns, nodeToString(pw))
+			}
 			if p.cur().Type == ast.TPipe {
 				p.advance()
 			}
 		}
 		patVal := strings.Join(patterns, "|")
-		pat := &ast.Node{Kind: ast.NLit, Tok: ast.Token{Type: ast.TWord, Val: patVal}}
+		pat := &ast.Node{Kind: ast.NLit, Tok: ast.Token{Type: ast.TString, Val: patVal}}
 		if p.cur().Type == ast.TRParen {
 			p.advance()
 		}
 		p.skipNewlines()
 
-		old := p.pushTerminators("esac")
+		old := p.pushTerminators(ast.TEsac)
 		var body []*ast.Node
-		for p.cur().Type != ast.TEOF {
-			if p.isWord("esac") {
+		for !p.until(ast.TEOF) {
+			if p.cur().Type == ast.TEsac {
 				break
 			}
-			if p.cur().Type == ast.TSemicolon && p.peek().Type == ast.TSemicolon {
+			if p.cur().Type == ast.TSemicolon && p.peek(1).Type == ast.TSemicolon {
 				p.advance()
 				p.advance()
 				break
@@ -1169,10 +1904,12 @@ func (p *Parser) parseCase() (*ast.Node, error) {
 	return node, nil
 }
 
+// --- POSIX function definition ---
+
 func (p *Parser) parsePosixFnDef() (*ast.Node, error) {
-	nameTok := p.advance()
-	p.advance()
-	p.advance()
+	nameTok := p.advance() // name
+	p.advance()            // (
+	p.advance()            // )
 	p.skipNewlines()
 
 	if p.cur().Type != ast.TLBrace {
@@ -1182,7 +1919,7 @@ func (p *Parser) parsePosixFnDef() (*ast.Node, error) {
 	p.skipNewlines()
 
 	var bodyStmts []*ast.Node
-	for p.cur().Type != ast.TEOF {
+	for !p.until(ast.TEOF) {
 		if p.cur().Type == ast.TRBrace {
 			break
 		}
@@ -1209,31 +1946,21 @@ func (p *Parser) parsePosixFnDef() (*ast.Node, error) {
 	}, nil
 }
 
+// --- ish function ---
+
 func (p *Parser) parseIshFn() (*ast.Node, error) {
 	return p.parseIshFnWith(false)
 }
 
-// parseIshFnWith parses a function definition. When requireName is true
-// (used inside defmodule), a name is always required. Otherwise, anonymous
-// functions are allowed in expression context or with bare "fn do".
-func (p *Parser) parseIshFnWith(requireName bool) (*ast.Node, error) {
-	keyword := p.cur().Val // "fn" or "def"
-	p.advance()
+// parseIshFnAnon parses fn in value/expression position — always anonymous.
+func (p *Parser) parseIshFnAnon() (*ast.Node, error) {
+	p.advance() // consume TFn
 
-	var nameTok ast.Token
-	if !requireName && (p.mode == ModeExpr || p.isWord("do")) {
-		nameTok = ast.Token{Type: ast.TWord, Val: "<anon>"}
-	} else {
-		var err error
-		nameTok, err = p.expect(ast.TWord)
-		if err != nil {
-			return nil, fmt.Errorf("expected function name after '%s' at pos %d", keyword, p.cur().Pos)
-		}
-	}
+	nameTok := ast.Token{Type: ast.TIdent, Val: "<anon>"}
 
 	var params []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.isWord("when") || p.isWord("do") {
+	for !p.until(ast.TEOF) {
+		if p.cur().Type == ast.TDo || p.cur().Val == "when" {
 			break
 		}
 		if p.cur().Type == ast.TComma {
@@ -1248,12 +1975,11 @@ func (p *Parser) parseIshFnWith(requireName bool) (*ast.Node, error) {
 	}
 
 	var guard *ast.Node
-	if p.isWord("when") {
+	if p.cur().Type == ast.TIdent && p.cur().Val == "when" {
 		p.advance()
-		guardMode := p.withMode(ModeExpr)
+		p.committed = true
 		var err error
 		guard, err = p.parseExpr(0)
-		p.restoreMode(guardMode)
 		if err != nil {
 			return nil, err
 		}
@@ -1264,8 +1990,8 @@ func (p *Parser) parseIshFnWith(requireName bool) (*ast.Node, error) {
 		if len(params) == 0 && guard == nil && p.looksLikeClauseStart() {
 			clauses, err := p.parseClauses(func() (*ast.Node, error) {
 				var clauseParams []*ast.Node
-				for p.cur().Type != ast.TEOF {
-					if p.cur().Type == ast.TArrow || p.isWord("when") {
+				for !p.until(ast.TEOF) {
+					if p.cur().Type == ast.TArrow || (p.cur().Type == ast.TIdent && p.cur().Val == "when") {
 						break
 					}
 					if p.cur().Type == ast.TComma {
@@ -1308,38 +2034,130 @@ func (p *Parser) parseIshFnWith(requireName bool) (*ast.Node, error) {
 	return fnNode, nil
 }
 
+func (p *Parser) parseIshFnWith(requireName bool) (*ast.Node, error) {
+	p.advance() // consume TFn
+
+	var nameTok ast.Token
+	if !requireName && (p.cur().Type == ast.TDo || p.cur().Type == ast.TBackslash) {
+		// fn do ... end — anonymous, no params
+		nameTok = ast.Token{Type: ast.TIdent, Val: "<anon>"}
+	} else if !requireName && p.cur().Type == ast.TIdent && (p.peek(1).Type == ast.TComma || p.cur().Val == "when") {
+		// fn a, b do — anonymous with params (comma after first ident means it's a param)
+		nameTok = ast.Token{Type: ast.TIdent, Val: "<anon>"}
+	} else if p.cur().Type == ast.TIdent {
+		nameTok = p.advance()
+	} else if requireName {
+		return nil, fmt.Errorf("expected function name after 'fn' at pos %d", p.cur().Pos)
+	} else {
+		nameTok = ast.Token{Type: ast.TIdent, Val: "<anon>"}
+	}
+
+	var params []*ast.Node
+	for !p.until(ast.TEOF) {
+		if p.cur().Type == ast.TDo || p.cur().Val == "when" {
+			break
+		}
+		if p.cur().Type == ast.TComma {
+			p.advance()
+			continue
+		}
+		param, err := p.parsePattern()
+		if err != nil {
+			return nil, err
+		}
+		params = append(params, param)
+	}
+
+	var guard *ast.Node
+	if p.cur().Type == ast.TIdent && p.cur().Val == "when" {
+		p.advance()
+		p.committed = true // guard expression is definitively expression context
+		var err error
+		guard, err = p.parseExpr(0)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var fnNode *ast.Node
+	if err := p.ishBlock(func() error {
+		if len(params) == 0 && guard == nil && p.looksLikeClauseStart() {
+			clauses, err := p.parseClauses(func() (*ast.Node, error) {
+				var clauseParams []*ast.Node
+				for !p.until(ast.TEOF) {
+					if p.cur().Type == ast.TArrow || (p.cur().Type == ast.TIdent && p.cur().Val == "when") {
+						break
+					}
+					if p.cur().Type == ast.TComma {
+						p.advance()
+						continue
+					}
+					param, err := p.parsePattern()
+					if err != nil {
+						return nil, err
+					}
+					clauseParams = append(clauseParams, param)
+				}
+				return ast.BlockNode(clauseParams), nil
+			})
+			if err != nil {
+				return err
+			}
+			fnNode = &ast.Node{Kind: ast.NIshFn, Tok: nameTok, Clauses: clauses}
+			return nil
+		}
+
+		bodyStmts, err := p.parseBlock()
+		if err != nil {
+			return err
+		}
+		markTail(bodyStmts)
+		fnNode = &ast.Node{
+			Kind: ast.NIshFn,
+			Tok:  nameTok,
+			Clauses: []ast.Clause{{
+				Body:  ast.BlockNode(bodyStmts),
+				Guard: guard,
+			}},
+			Children: params,
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return fnNode, nil
+}
+
+// --- Module ---
+
 func (p *Parser) parseDefModule() (*ast.Node, error) {
 	pos := p.cur().Pos
-	p.advance() // consume "defmodule"
-	if p.cur().Type != ast.TWord {
+	p.advance() // consume TDefModule
+	if p.cur().Type != ast.TIdent {
 		return nil, fmt.Errorf("defmodule: expected module name")
 	}
 	name := p.advance()
-	if !p.matchWord("do") {
+	if _, err := p.expect(ast.TDo); err != nil {
 		return nil, fmt.Errorf("defmodule: expected 'do'")
 	}
 	p.skipNewlines()
 
-	old := p.withMode(ModeExpr)
-	defer p.restoreMode(old)
-	defer p.restoreTerminators(p.pushTerminators("end"))
+	old := p.pushTerminators(ast.TEnd)
+	defer p.restoreTerminators(old)
 
 	var children []*ast.Node
-	for !p.isWord("end") && p.cur().Type != ast.TEOF {
+	for !p.until(ast.TEnd, ast.TEOF) {
 		p.skipNewlines()
-		if p.isWord("end") {
+		if p.cur().Type == ast.TEnd {
 			break
 		}
 		var child *ast.Node
 		var err error
-		switch p.cur().Val {
-		case "def":
+		if p.cur().Type == ast.TFn || (p.cur().Type == ast.TIdent && p.cur().Val == "def") {
 			child, err = p.parseIshFnWith(true)
-		case "fn":
-			child, err = p.parseIshFnWith(true)
-		case "use":
+		} else if p.cur().Type == ast.TUse {
 			child, err = p.parseUse()
-		default:
+		} else {
 			child, err = p.parseStmt()
 		}
 		if err != nil {
@@ -1350,28 +2168,30 @@ func (p *Parser) parseDefModule() (*ast.Node, error) {
 		}
 		p.skipSeparators()
 	}
-	if !p.matchWord("end") {
+	if _, err := p.expect(ast.TEnd); err != nil {
 		return nil, fmt.Errorf("defmodule: expected 'end'")
 	}
 	return &ast.Node{Kind: ast.NDefModule, Pos: pos, Tok: name, Children: children}, nil
 }
 
-
 func (p *Parser) parseUse() (*ast.Node, error) {
 	pos := p.cur().Pos
-	p.advance() // consume "use"
-	if p.cur().Type != ast.TWord {
+	p.advance() // consume TUse
+	if p.cur().Type != ast.TIdent {
 		return nil, fmt.Errorf("use: expected module name")
 	}
 	name := p.advance()
 	return &ast.Node{Kind: ast.NUse, Pos: pos, Tok: name}, nil
 }
 
+// --- Clauses ---
+
 func (p *Parser) parseClauseBody() (*ast.Node, error) {
-	defer p.restoreTerminators(p.pushTerminators("end"))
+	old := p.pushTerminators(ast.TEnd)
+	defer p.restoreTerminators(old)
 	var stmts []*ast.Node
-	for p.cur().Type != ast.TEOF {
-		if p.isWord("end") || p.isWord("after") {
+	for !p.until(ast.TEOF) {
+		if p.cur().Type == ast.TEnd || p.cur().Type == ast.TAfter {
 			break
 		}
 		if p.looksLikeClauseStart() {
@@ -1402,8 +2222,7 @@ func (p *Parser) looksLikeClauseStart() bool {
 		if t.Type == ast.TNewline || t.Type == ast.TSemicolon || t.Type == ast.TEOF {
 			return false
 		}
-		// Stop at keywords that have their own -> syntax
-		if t.Type == ast.TWord && (t.Val == "after" || t.Val == "end" || t.Val == "rescue") {
+		if t.Type == ast.TAfter || t.Type == ast.TEnd || t.Type == ast.TRescue {
 			return false
 		}
 		switch t.Type {
@@ -1415,7 +2234,6 @@ func (p *Parser) looksLikeClauseStart() bool {
 			depth--
 		case ast.TArrow:
 			if inLambda {
-				// This arrow belongs to a lambda, skip it
 				inLambda = false
 				continue
 			}
@@ -1428,8 +2246,8 @@ func (p *Parser) looksLikeClauseStart() bool {
 
 func (p *Parser) parseClauses(parsePattern func() (*ast.Node, error)) ([]ast.Clause, error) {
 	var clauses []ast.Clause
-	for p.cur().Type != ast.TEOF {
-		if p.cur().Type == ast.TWord && p.isBlockEnd(p.cur().Val) {
+	for !p.until(ast.TEOF) {
+		if p.isBlockEndToken() {
 			break
 		}
 		pat, err := parsePattern()
@@ -1437,7 +2255,7 @@ func (p *Parser) parseClauses(parsePattern func() (*ast.Node, error)) ([]ast.Cla
 			return nil, err
 		}
 		var guard *ast.Node
-		if p.isWord("when") {
+		if p.cur().Type == ast.TIdent && p.cur().Val == "when" {
 			p.advance()
 			guard, err = p.parseExpr(0)
 			if err != nil {
@@ -1458,6 +2276,8 @@ func (p *Parser) parseClauses(parsePattern func() (*ast.Node, error)) ([]ast.Cla
 	}
 	return clauses, nil
 }
+
+// --- ish extensions ---
 
 func (p *Parser) parseIshMatchExpr() (*ast.Node, error) {
 	p.advance()
@@ -1526,11 +2346,11 @@ func (p *Parser) parseIshSupervise() (*ast.Node, error) {
 	p.skipSeparators()
 	var workers []*ast.Node
 	if err := p.ishBlock(func() error {
-		for p.cur().Type != ast.TEOF {
-			if p.cur().Type == ast.TWord && p.isBlockEnd(p.cur().Val) {
+		for !p.until(ast.TEOF) {
+			if p.isBlockEndToken() {
 				break
 			}
-			if p.isWord("worker") {
+			if p.cur().Type == ast.TIdent && p.cur().Val == "worker" {
 				p.advance()
 				workerName, err := p.parseExpr(0)
 				if err != nil {
@@ -1585,7 +2405,7 @@ func (p *Parser) parseIshReceive() (*ast.Node, error) {
 	p.skipSeparators()
 
 	node := &ast.Node{Kind: ast.NIshReceive}
-	if err := p.ishBlockWithSection("after", func() error {
+	if err := p.ishBlockWithSection(ast.TAfter, func() error {
 		clauses, err := p.parseClauses(p.parsePattern)
 		if err != nil {
 			return err
@@ -1622,12 +2442,12 @@ func (p *Parser) parseIshTry() (*ast.Node, error) {
 	p.skipSeparators()
 
 	node := &ast.Node{Kind: ast.NIshTry}
-	if err := p.ishBlockWithSection("rescue", func() error {
+	if err := p.ishBlockWithSection(ast.TRescue, func() error {
 		bodyStmts, err := p.parseBlock()
 		if err != nil {
 			return err
 		}
-		markTail(bodyStmts)
+		// Don't markTail in try body — tail calls would bypass error catching
 		node.Children = []*ast.Node{ast.BlockNode(bodyStmts)}
 		return nil
 	}, func() error {
@@ -1643,6 +2463,8 @@ func (p *Parser) parseIshTry() (*ast.Node, error) {
 	return node, nil
 }
 
+// --- Patterns ---
+
 func (p *Parser) parsePattern() (*ast.Node, error) {
 	cur := p.cur()
 	switch cur.Type {
@@ -1652,24 +2474,29 @@ func (p *Parser) parsePattern() (*ast.Node, error) {
 	case ast.TInt, ast.TFloat:
 		p.advance()
 		return ast.LitNode(cur), nil
-	case ast.TString:
-		p.advance()
-		return ast.LitNode(cur), nil
-	case ast.TWord:
-		if cur.Val == "_" {
-			p.advance()
-			return &ast.Node{Kind: ast.NWord, Tok: ast.Token{Type: ast.TWord, Val: "_"}}, nil
+	case ast.TString, ast.TStringStart:
+		if cur.Type == ast.TStringStart {
+			return p.parseInterpString()
 		}
 		p.advance()
-		return ast.WordNode(cur), nil
+		return ast.LitNode(cur), nil
+	case ast.TNil, ast.TTrue, ast.TFalse:
+		p.advance()
+		return ast.LitNode(cur), nil
+	case ast.TIdent:
+		if cur.Val == "_" {
+			p.advance()
+			return ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "_"}), nil
+		}
+		p.advance()
+		return ast.IdentNode(cur), nil
 	case ast.TLBrace:
 		return p.parseTupleExpr()
 	case ast.TLBracket:
 		return p.parseListExpr()
+	case ast.TPercentLBrace:
+		return p.parseMapPattern()
 	case ast.TPercent:
-		if p.peek().Type == ast.TLBrace {
-			return p.parseMapPattern()
-		}
 		return nil, fmt.Errorf("unexpected token in pattern: %%")
 	default:
 		return nil, fmt.Errorf("unexpected token in pattern: %q at pos %d", cur.Val, cur.Pos)
@@ -1677,16 +2504,13 @@ func (p *Parser) parsePattern() (*ast.Node, error) {
 }
 
 func (p *Parser) parseMapPattern() (*ast.Node, error) {
-	p.advance() // skip %
-	p.advance() // skip {
+	p.advance() // skip %{
 	node := &ast.Node{Kind: ast.NMap}
 	p.skipNewlines()
-	for p.cur().Type != ast.TRBrace && p.cur().Type != ast.TEOF {
+	for !p.until(ast.TRBrace, ast.TEOF) {
 		key := p.advance()
 		keyName := key.Val
-		if strings.HasSuffix(keyName, ":") {
-			keyName = keyName[:len(keyName)-1]
-		} else if p.isWord(":") {
+		if p.cur().Type == ast.TColon {
 			p.advance()
 		}
 		key.Val = keyName
@@ -1706,12 +2530,13 @@ func (p *Parser) parseMapPattern() (*ast.Node, error) {
 	return node, nil
 }
 
+// --- Lambda ---
+
 func (p *Parser) parseLambda() (*ast.Node, error) {
 	p.advance() // skip backslash
 
-	// Parse params until ->
 	var params []*ast.Node
-	for p.cur().Type != ast.TEOF && p.cur().Type != ast.TArrow {
+	for !p.until(ast.TEOF, ast.TArrow) {
 		if p.cur().Type == ast.TComma {
 			p.advance()
 			continue
@@ -1726,36 +2551,40 @@ func (p *Parser) parseLambda() (*ast.Node, error) {
 	if p.cur().Type != ast.TArrow {
 		return nil, fmt.Errorf("expected '->' in lambda at pos %d", p.cur().Pos)
 	}
-	p.advance() // skip ->
+	p.advance()
 
 	var body *ast.Node
 	multiLine := p.cur().Type == ast.TNewline
 	if multiLine {
-		// Multi-line lambda: parse block of statements until 'end'
-		if err := p.withExprBlock([]string{"end"}, func() error {
-			p.skipNewlines()
-			stmts, err := p.parseBlock()
-			if err != nil {
-				return err
-			}
-			body = ast.BlockNode(stmts)
-			markTail(stmts)
-			return nil
-		}); err != nil {
+		old := p.pushTerminators(ast.TEnd)
+		savedExpr := p.exprContext
+		p.exprContext = true
+		p.skipNewlines()
+		stmts, err := p.parseBlock()
+		p.exprContext = savedExpr
+		p.restoreTerminators(old)
+		if err != nil {
 			return nil, err
 		}
-		p.matchWord("end")
+		body = ast.BlockNode(stmts)
+		markTail(stmts)
+		p.match(ast.TEnd)
 	} else {
-		// Single-expression lambda
-		if err := p.withExprBlock([]string{"end"}, func() error {
-			var e error
-			body, e = p.parseStmtWithOps()
-			if body != nil {
-				body.Tail = true
-			}
-			return e
-		}); err != nil {
+		// Single-line lambda: parse as statement but don't consume |> or ,
+		// that belong to the outer expression. E.g. in
+		// `list |> List.filter \x -> x > 1 |> length`
+		// the lambda body is just `x > 1`, not `x > 1 |> length`.
+		// Set exprContext so > and < are treated as comparison, not redirect.
+		savedExpr := p.exprContext
+		p.exprContext = true
+		var err error
+		body, err = p.parseStmtWithOps()
+		p.exprContext = savedExpr
+		if err != nil {
 			return nil, err
+		}
+		if body != nil {
+			body.Tail = true
 		}
 	}
 
@@ -1766,16 +2595,21 @@ func (p *Parser) parseLambda() (*ast.Node, error) {
 	}, nil
 }
 
+// --- Expression parsing ---
+
 func (p *Parser) parseExpression() (*ast.Node, error) {
 	expr, err := p.parseExpr(0)
 	if err != nil {
 		return nil, err
 	}
 
+	// |> is handled by parsePipeline at the statement level, not here.
+	// This prevents lambda bodies and nested expressions from consuming
+	// pipe arrows that belong to the outer pipeline.
+
 	if p.cur().Type == ast.TEquals {
 		p.advance()
-		defer p.restoreMode(p.withMode(ModeExpr))
-		rhs, err := p.parsePipeline()
+		rhs, err := p.parseExpression()
 		if err != nil {
 			return nil, err
 		}
@@ -1802,7 +2636,13 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 		if prec <= minPrec {
 			break
 		}
+		// Only commit on spaced operators — adjacent operators (a-z, 3+4)
+		// could be compound word fragments in command context.
+		prevTok := p.rawAt(p.pos - 1)
 		op := p.advance()
+		if prevTok.SpaceAfter {
+			p.committed = true
+		}
 		right, err := p.parseExpr(prec)
 		if err != nil {
 			return nil, err
@@ -1810,8 +2650,8 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 		left = &ast.Node{Kind: ast.NBinOp, Tok: op, Children: []*ast.Node{left, right}}
 
 		// Comparison chaining: desugar a < b < c into (a < b) && (b < c)
-		if p.isComparisonOp(op.Type) {
-			for p.isComparisonOp(p.cur().Type) {
+		if isComparisonOp(op.Type) {
+			for isComparisonOp(p.cur().Type) {
 				nextOp := p.advance()
 				nextRight, err := p.parseExpr(p.precedence(nextOp.Type))
 				if err != nil {
@@ -1824,28 +2664,35 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 		}
 	}
 
+	// Dot access chain — dots must be adjacent (no whitespace). a.b not a . b
+	// After a dot, keywords are treated as field names (Regex.match, List.map, etc.)
 	for p.cur().Type == ast.TDot {
 		p.advance()
-		field := p.advance()
-		left = &ast.Node{Kind: ast.NAccess, Tok: field, Children: []*ast.Node{left}}
+		cur := p.cur()
+		if cur.Type == ast.TIdent || cur.Type.IsKeyword() {
+			field := p.advance()
+			// Normalize keyword token to TIdent for the field name
+			field.Type = ast.TIdent
+			left = &ast.Node{Kind: ast.NAccess, Tok: field, Children: []*ast.Node{left}}
+		} else {
+			return nil, fmt.Errorf("expected field name after '.' at pos %d", p.cur().Pos)
+		}
 	}
 
-	// Function application in expression context: if the left value is a
-	// known command (e.g. module-qualified name), parse as a function call.
-	// Two forms:
-	//   List.hd [1,2]              — juxtaposition, single arg only (no comma)
-	//   List.map ([1,2,3], \x->x)  — parens group multi-arg calls
-	if left.Kind == ast.NWord && p.IsCommand != nil && p.IsCommand(left.Tok.Val) {
-		if p.cur().Type == ast.TLParen {
-			// Parenthesized argument list: fn (arg1, arg2, ...)
-			p.advance() // consume (
-			cmd := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{left}}
-			for p.cur().Type != ast.TRParen && p.cur().Type != ast.TEOF {
+	// Function application: identifier or access chain followed by a value → NCall
+	// Application binds tighter than all binary operators.
+	if (left.Kind == ast.NIdent || left.Kind == ast.NAccess) && isValueStart(p.cur().Type) {
+		call := &ast.Node{Kind: ast.NCall, Children: []*ast.Node{left}}
+		// Adjacent parens: func(a, b) — multi-arg call. Required inside data structures.
+		if p.cur().Type == ast.TLParen && !p.rawAt(p.pos-1).SpaceAfter {
+			p.advance()
+			p.committed = true
+			for !p.until(ast.TRParen, ast.TEOF) {
 				arg, err := p.parseExpr(0)
 				if err != nil {
 					return nil, err
 				}
-				cmd.Children = append(cmd.Children, arg)
+				call.Children = append(call.Children, arg)
 				if p.cur().Type == ast.TComma {
 					p.advance()
 				}
@@ -1853,57 +2700,167 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 			if _, err := p.expect(ast.TRParen); err != nil {
 				return nil, err
 			}
-			// Additional comma-separated args after paren group
-			for p.cur().Type == ast.TComma {
-				p.advance()
-				arg, err := p.parseExpr(0)
-				if err != nil {
-					return nil, err
-				}
-				cmd.Children = append(cmd.Children, arg)
-			}
-			left = cmd
-		} else if isValueStart(p.cur().Type) {
-			// Juxtaposition: bare args, comma-separated
-			cmd := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{left}}
-			arg, err := p.parseExpr(0)
+			left = call
+		} else {
+			// Juxtaposition: func value — single value arg.
+			// func (expr) with spaced parens = grouped expression as single arg.
+			arg, err := p.parseValue(false)
 			if err != nil {
 				return nil, err
 			}
-			cmd.Children = append(cmd.Children, arg)
-			for p.cur().Type == ast.TComma {
-				p.advance()
-				arg, err = p.parseExpr(0)
-				if err != nil {
-					return nil, err
-				}
-				cmd.Children = append(cmd.Children, arg)
+			switch arg.Kind {
+			case ast.NLambda:
+				p.committed = true
 			}
-			left = cmd
+			call.Children = append(call.Children, arg)
+			left = call
+		}
+
+		// After function call, check for more binary operators:
+		// fib(n-1) + fib(n-2) — the + connects two call results
+		for {
+			tt := p.cur().Type
+			if tt == ast.TGt || tt == ast.TLt {
+				if !p.committed && !p.exprContext {
+					break // could be redirect in command context
+				}
+			}
+			prec := p.precedence(tt)
+			if prec <= minPrec {
+				break
+			}
+			prevTok2 := p.rawAt(p.pos - 1)
+			op := p.advance()
+			if prevTok2.SpaceAfter {
+				p.committed = true
+			}
+			right, err := p.parseExpr(prec)
+			if err != nil {
+				return nil, err
+			}
+			left = &ast.Node{Kind: ast.NBinOp, Tok: op, Children: []*ast.Node{left, right}}
 		}
 	}
 
 	return left, nil
 }
 
-// isValueStart returns true if the token type can begin a value expression.
-// Commas are NOT included — they are structural separators in expression context.
-func isValueStart(tt ast.TokenType) bool {
-	switch tt {
-	case ast.TWord, ast.TInt, ast.TFloat, ast.TString, ast.TAtom,
-		ast.TLParen, ast.TLBracket, ast.TLBrace, ast.TPercent,
-		ast.TBackslash:
-		return true
+func (p *Parser) parseValue(cmdArg bool) (*ast.Node, error) {
+	cur := p.cur()
+
+	switch cur.Type {
+	case ast.TInt, ast.TFloat:
+		p.advance()
+		return ast.LitNode(cur), nil
+	case ast.TString:
+		p.advance()
+		return ast.LitNode(cur), nil
+	case ast.TStringStart:
+		return p.parseInterpString()
+	case ast.TDollarDQuote:
+		return p.parseDollarString()
+	case ast.TAtom:
+		p.advance()
+		return ast.LitNode(cur), nil
+	case ast.TNil, ast.TTrue, ast.TFalse:
+		p.advance()
+		return ast.LitNode(cur), nil
+	case ast.TIdent:
+		if cur.Type == ast.TFn {
+			return p.parseIshFnAnon()
+		}
+		p.advance()
+		return ast.IdentNode(cur), nil
+	case ast.TFn:
+		return p.parseIshFnAnon()
+	case ast.TMatch:
+		return p.parseIshMatchExpr()
+	case ast.TIf:
+		return p.parseIf()
+	case ast.TTry:
+		return p.parseIshTry()
+	case ast.TReceive:
+		return p.parseIshReceive()
+	case ast.TSpawn:
+		return p.parseIshSpawn()
+	case ast.TSpawnLink:
+		return p.parseIshSpawnLink()
+	case ast.TAwait:
+		return p.parseIshAwait()
+	case ast.TMonitor:
+		return p.parseIshMonitor()
+	case ast.TSupervise:
+		return p.parseIshSupervise()
+	case ast.TSend:
+		return p.parseIshSend()
+	case ast.TDollar:
+		return p.parseVarRef()
+	case ast.TSpecialVar:
+		tok := p.advance()
+		return &ast.Node{Kind: ast.NVarRef, Tok: tok, Pos: tok.Pos}, nil
+	case ast.TDollarLParen:
+		return p.parseCmdSub()
+	case ast.TDollarDLParen:
+		return p.parseArithSub()
+	case ast.TDollarLBrace:
+		return p.parseParamExpand()
+	case ast.THashLBrace:
+		return p.parseInterpolation()
+	case ast.TLParen:
+		p.advance()
+		savedCommitted := p.committed
+		expr, err := p.parsePipeline()
+		p.committed = savedCommitted
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(ast.TRParen); err != nil {
+			return nil, err
+		}
+		return expr, nil
+	case ast.TLBrace:
+		return p.parseTupleExpr()
+	case ast.TLBracket:
+		return p.parseListExpr()
+	case ast.TPercentLBrace:
+		return p.parseMapExpr()
+	case ast.TPercent:
+		p.advance()
+		return ast.LitNode(cur), nil
+	case ast.TBackslash:
+		return p.parseLambda()
+	case ast.TBang:
+		p.advance()
+		operand, err := p.parseValue(false)
+		if err != nil {
+			return nil, err
+		}
+		return &ast.Node{Kind: ast.NUnary, Tok: cur, Children: []*ast.Node{operand}}, nil
+	case ast.TAmpersand:
+		// &name — capture function reference
+		p.advance()
+		tok := p.advance()
+		return &ast.Node{Kind: ast.NCapture, Tok: tok}, nil
+	case ast.TMinus:
+		p.advance()
+		operand, err := p.parseValue(false)
+		if err != nil {
+			return nil, err
+		}
+		return &ast.Node{Kind: ast.NUnary, Tok: cur, Children: []*ast.Node{operand}}, nil
+	default:
+		if cmdArg {
+			p.advance()
+			return ast.IdentNode(ast.Token{Type: ast.TIdent, Val: cur.Val, Pos: cur.Pos}), nil
+		}
+		return nil, fmt.Errorf("unexpected token: %q at pos %d", cur.Val, cur.Pos)
 	}
-	return false
 }
 
-func (p *Parser) isComparisonOp(tt ast.TokenType) bool {
+func isComparisonOp(tt ast.TokenType) bool {
 	switch tt {
-	case ast.TEq, ast.TNe, ast.TLe, ast.TGe:
+	case ast.TEq, ast.TNe, ast.TLe, ast.TGe, ast.TGt, ast.TLt:
 		return true
-	case ast.TRedirIn, ast.TRedirOut:
-		return p.mode == ModeExpr
 	}
 	return false
 }
@@ -1914,8 +2871,11 @@ func (p *Parser) precedence(tt ast.TokenType) int {
 		return 1
 	case ast.TLe, ast.TGe:
 		return 2
-	case ast.TRedirIn, ast.TRedirOut:
-		if p.mode == ModeExpr {
+	case ast.TGt, ast.TLt:
+		// Only treat > and < as comparison operators when in expression context
+		// (lambda bodies, fn guards, committed expressions). Otherwise they're
+		// ambiguous with POSIX redirects.
+		if p.committed || p.exprContext {
 			return 2
 		}
 		return 0
@@ -1928,11 +2888,14 @@ func (p *Parser) precedence(tt ast.TokenType) int {
 	}
 }
 
+// --- Tuple / List / Map expressions ---
+
 func (p *Parser) parseTupleExpr() (*ast.Node, error) {
 	p.advance()
+	savedCommitted := p.committed
 	var elems []*ast.Node
 	p.skipNewlines()
-	for p.cur().Type != ast.TRBrace && p.cur().Type != ast.TEOF {
+	for !p.until(ast.TRBrace, ast.TEOF) {
 		elem, err := p.parseExpr(0)
 		if err != nil {
 			return nil, err
@@ -1943,6 +2906,7 @@ func (p *Parser) parseTupleExpr() (*ast.Node, error) {
 			p.skipNewlines()
 		}
 	}
+	p.committed = savedCommitted
 	if _, err := p.expect(ast.TRBrace); err != nil {
 		return nil, err
 	}
@@ -1951,10 +2915,11 @@ func (p *Parser) parseTupleExpr() (*ast.Node, error) {
 
 func (p *Parser) parseListExpr() (*ast.Node, error) {
 	p.advance()
+	savedCommitted := p.committed
 	var elems []*ast.Node
 	var rest *ast.Node
 	p.skipNewlines()
-	for p.cur().Type != ast.TRBracket && p.cur().Type != ast.TEOF {
+	for !p.until(ast.TRBracket, ast.TEOF) {
 		elem, err := p.parseExpr(0)
 		if err != nil {
 			return nil, err
@@ -1975,6 +2940,7 @@ func (p *Parser) parseListExpr() (*ast.Node, error) {
 			p.skipNewlines()
 		}
 	}
+	p.committed = savedCommitted
 	if _, err := p.expect(ast.TRBracket); err != nil {
 		return nil, err
 	}
@@ -1982,16 +2948,16 @@ func (p *Parser) parseListExpr() (*ast.Node, error) {
 }
 
 func (p *Parser) parseMapExpr() (*ast.Node, error) {
-	p.advance()
-	p.advance()
+	p.advance() // %{
+	savedCommitted := p.committed
 	node := &ast.Node{Kind: ast.NMap}
 	p.skipNewlines()
-	for p.cur().Type != ast.TRBrace && p.cur().Type != ast.TEOF {
+	for !p.until(ast.TRBrace, ast.TEOF) {
+		// Key: either IDENT COLON or ATOM (which already has no colon prefix)
 		key := p.advance()
 		keyName := key.Val
-		if strings.HasSuffix(keyName, ":") {
-			keyName = keyName[:len(keyName)-1]
-		} else if p.isWord(":") {
+		// Expect TColon after key identifier
+		if p.cur().Type == ast.TColon {
 			p.advance()
 		}
 		key.Val = keyName
@@ -2005,6 +2971,7 @@ func (p *Parser) parseMapExpr() (*ast.Node, error) {
 			p.skipNewlines()
 		}
 	}
+	p.committed = savedCommitted
 	if _, err := p.expect(ast.TRBrace); err != nil {
 		return nil, err
 	}

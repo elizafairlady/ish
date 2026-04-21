@@ -18,6 +18,18 @@ import (
 	"ish/internal/parser"
 )
 
+// evalRedirTarget evaluates a redirect's target node to a string.
+func evalRedirTarget(r ast.Redir, env *core.Env) (string, error) {
+	if r.TargetNode == nil {
+		return "", nil
+	}
+	v, err := Eval(r.TargetNode, env)
+	if err != nil {
+		return "", err
+	}
+	return v.ToStr(), nil
+}
+
 func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 	if len(node.Children) == 0 {
 		return core.Nil, nil
@@ -31,17 +43,29 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 
 	nameNode := node.Children[0]
 	var name string
-	if nameNode.Kind == ast.NWord {
-		name = env.Expand(nameNode.Tok.Val)
+	if nameNode.Kind == ast.NIdent {
+		name = nameNode.Tok.Val
 	} else {
 		v, err := Eval(nameNode, env)
 		if err != nil {
 			return core.Nil, err
 		}
+		if v.Kind == core.VFn && v.Fn != nil {
+			// Callee evaluated to a function (e.g., NAccess → module.func)
+			argVals, err := evalFnArgs(node, env)
+			if err != nil {
+				return core.Nil, err
+			}
+			if node.Tail {
+				return core.TailCallVal(v.Fn, argVals), nil
+			}
+			return CallFn(v.Fn, argVals, env)
+		}
 		name = v.ToStr()
 	}
 
-	if nameNode.Kind == ast.NWord && !strings.Contains(nameNode.Tok.Val, "$") {
+	// Alias expansion
+	if nameNode.Kind == ast.NIdent {
 		if aliasVal, ok := env.GetAlias(name); ok {
 			firstWord := aliasVal
 			if sp := strings.IndexByte(aliasVal, ' '); sp >= 0 {
@@ -54,12 +78,40 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 					argStr.WriteString(child.Tok.Val)
 				}
 				newSrc := aliasVal + argStr.String()
-				newNode, err := parser.ParseWithCommands(lexer.New(newSrc), MakeIsCommand(env))
+				newNode, err := parser.Parse(lexer.New(newSrc))
 				if err != nil {
 					return core.Nil, err
 				}
 				return Eval(newNode, env)
 			}
+		}
+	}
+
+	// Handle `self` keyword — returns current process pid
+	if name == "self" && len(node.Children) == 1 {
+		if proc := env.GetProc(); proc != nil {
+			return core.Value{Kind: core.VPid, Pid: proc}, nil
+		}
+		return core.Nil, nil
+	}
+
+	// Check if name is a variable. If it holds a function, call it.
+	// If it holds another value and there are no args, return it.
+	// This handles standalone variable references (returning parameter values)
+	// and calling function values stored in variables.
+	if v, ok := env.Get(name); ok {
+		if v.Kind == core.VFn && v.Fn != nil {
+			argVals, err := evalFnArgs(node, env)
+			if err != nil {
+				return core.Nil, err
+			}
+			if node.Tail {
+				return core.TailCallVal(v.Fn, argVals), nil
+			}
+			return CallFn(v.Fn, argVals, env)
+		}
+		if len(node.Children) == 1 {
+			return v, nil
 		}
 	}
 
@@ -103,32 +155,69 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 		return CallFn(r.Fn, argVals, env)
 	}
 
-	argVals := make([]core.Value, 0, len(node.Children)-1)
+	// Build string arguments for builtins and external commands.
+	// Each argument node evaluates to one or more string args depending on type:
+	// - NLit (quoted string): one arg, no word splitting, no glob
+	// - NIdent: literal string, eligible for glob expansion
+	// - NVarRef ($var): expand variable, word split on IFS, glob eligible
+	// - NPath, NFlag, NArg: literal string, glob eligible
+	// - NAccess ($var.field): evaluate, word split, glob eligible
+	// - NInterpString: quoted context, no word splitting
+	// - Special: $@ expands to separate args preserving boundaries
+	strArgs := make([]string, 0, len(node.Children)-1)
+	quotedFlags := make([]bool, 0, len(node.Children)-1)
 	for _, child := range node.Children[1:] {
-		v, err := evalCmdArg(child, env)
-		if err != nil {
-			return core.Nil, err
-		}
-		argVals = append(argVals, v)
-	}
-
-	strArgs := make([]string, 0, len(argVals))
-	quotedFlags := make([]bool, 0, len(argVals))
-	for i, v := range argVals {
-		s := v.ToStr()
-		argNode := node.Children[i+1]
-		if argNode.Kind == ast.NLit && argNode.Tok.Type == ast.TString {
-			strArgs = append(strArgs, s)
-			quotedFlags = append(quotedFlags, true)
-		} else if argNode.Kind == ast.NWord && argNode.Tok.Val == "$@" {
-			for _, arg := range env.PosArgs() {
-				strArgs = append(strArgs, arg)
-				quotedFlags = append(quotedFlags, true)
+		switch child.Kind {
+		case ast.NLit:
+			// Quoted strings: no splitting, no globbing
+			v, err := Eval(child, env)
+			if err != nil {
+				return core.Nil, err
 			}
-		} else if argNode.Kind == ast.NWord && !strings.Contains(argNode.Tok.Val, "$") {
-			strArgs = append(strArgs, s)
+			strArgs = append(strArgs, v.ToStr())
+			quotedFlags = append(quotedFlags, true)
+		case ast.NInterpString:
+			// Interpolated strings: quoted context
+			v, err := Eval(child, env)
+			if err != nil {
+				return core.Nil, err
+			}
+			strArgs = append(strArgs, v.ToStr())
+			quotedFlags = append(quotedFlags, true)
+		case ast.NVarRef:
+			// $@ expands to separate args
+			if child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
+				for _, arg := range env.PosArgs() {
+					strArgs = append(strArgs, arg)
+					quotedFlags = append(quotedFlags, true)
+				}
+				continue
+			}
+			// Other variables: expand, word split, glob eligible
+			v, err := Eval(child, env)
+			if err != nil {
+				return core.Nil, err
+			}
+			s := v.ToStr()
+			fields := env.SplitFieldsIFS(s)
+			for range fields {
+				quotedFlags = append(quotedFlags, false)
+			}
+			strArgs = append(strArgs, fields...)
+		case ast.NIdent:
+			// Bare identifiers in command args are literal strings, not variable lookups
+			strArgs = append(strArgs, child.Tok.Val)
 			quotedFlags = append(quotedFlags, false)
-		} else {
+		case ast.NPath, ast.NFlag:
+			strArgs = append(strArgs, child.Tok.Val)
+			quotedFlags = append(quotedFlags, false)
+		default:
+			// Everything else: evaluate, word split, glob eligible
+			v, err := Eval(child, env)
+			if err != nil {
+				return core.Nil, err
+			}
+			s := v.ToStr()
 			fields := env.SplitFieldsIFS(s)
 			for range fields {
 				quotedFlags = append(quotedFlags, false)
@@ -144,9 +233,9 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 
 	if name == "exec" && len(expanded) == 0 && len(node.Redirs) > 0 {
 		for _, r := range node.Redirs {
-			target := env.Expand(r.Target)
+			target, _ := evalRedirTarget(r, env)
 			switch r.Op {
-			case ast.TRedirOut:
+			case ast.TGt:
 				f, err := os.Create(target)
 				if err != nil {
 					return core.Nil, err
@@ -168,7 +257,7 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 				case 2:
 					os.Stderr = f
 				}
-			case ast.TRedirIn:
+			case ast.TLt:
 				f, err := os.Open(target)
 				if err != nil {
 					return core.Nil, err
@@ -186,7 +275,7 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 			oldStdout := env.Stdout()
 			var files []*os.File
 			for _, r := range node.Redirs {
-				target := env.Expand(r.Target)
+				target, _ := evalRedirTarget(r, env)
 				// Handle fd duplication: >&2, 2>&1, etc.
 				if strings.HasPrefix(target, "&") {
 					fdStr := target[1:]
@@ -201,7 +290,7 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 					continue
 				}
 				switch r.Op {
-				case ast.TRedirOut:
+				case ast.TGt:
 					f, ferr := os.Create(target)
 					if ferr != nil {
 						return core.Nil, ferr
@@ -250,16 +339,6 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 		if v, ok := env.Get(name); ok {
 			return v, nil
 		}
-		// Handle m.x dot access for maps
-		if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-			objName := name[:dotIdx]
-			field := name[dotIdx+1:]
-			if obj, ok := env.Get(objName); ok && obj.Kind == core.VMap && obj.Map != nil {
-				if v, ok := obj.Map.Get(field); ok {
-					return v, nil
-				}
-			}
-		}
 	}
 
 	result, err := evalExternalCmd(name, expanded, node.Redirs, env)
@@ -270,7 +349,7 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 func evalFnArgs(node *ast.Node, env *core.Env) ([]core.Value, error) {
 	argVals := make([]core.Value, 0, len(node.Children)-1)
 	for _, child := range node.Children[1:] {
-		if child.Kind == ast.NWord && child.Tok.Val == "$@" {
+		if child.Kind == ast.NVarRef && child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
 			for _, arg := range env.PosArgs() {
 				argVals = append(argVals, core.StringVal(arg))
 			}
@@ -285,58 +364,6 @@ func evalFnArgs(node *ast.Node, env *core.Env) ([]core.Value, error) {
 	return argVals, nil
 }
 
-func evalCmdArg(node *ast.Node, env *core.Env) (core.Value, error) {
-	switch node.Kind {
-	case ast.NWord:
-		name := node.Tok.Val
-		switch name {
-		case "nil":
-			return core.Nil, nil
-		case "true":
-			return core.True, nil
-		case "false":
-			return core.False, nil
-		case "self":
-			if proc := env.GetProc(); proc != nil {
-				return core.Value{Kind: core.VPid, Pid: proc}, nil
-			}
-			return core.Nil, nil
-		}
-		if strings.HasPrefix(name, "~") {
-			return core.StringVal(env.ExpandTilde(name)), nil
-		}
-		if strings.HasPrefix(name, "$((") && strings.HasSuffix(name, "))") {
-			return evalArithExpansion(name, env)
-		}
-		if strings.HasPrefix(name, "$(") && strings.HasSuffix(name, ")") {
-			return evalCmdSub(name[2:len(name)-1], env)
-		}
-		if strings.Contains(name, "$") || strings.Contains(name, "#{") {
-			// Simple $var reference: try type-preserving resolution
-			// including dot-access for $map.field.subfield
-			if len(name) > 1 && name[0] == '$' && !strings.ContainsAny(name[1:], "$#{") {
-				varName := name[1:]
-				if v, ok := env.Get(varName); ok {
-					return v, nil
-				}
-				if strings.ContainsRune(varName, '.') {
-					varNode := &ast.Node{Kind: ast.NWord, Tok: ast.Token{Type: ast.TWord, Val: varName}}
-					return evalWord(varNode, env)
-				}
-			}
-			return core.StringVal(env.Expand(name)), nil
-		}
-		if strings.ContainsAny(name, "'\"") {
-			name = stripAssignQuotes(name)
-		}
-		return core.StringVal(name), nil
-	case ast.NLit:
-		return evalLit(node, env)
-	default:
-		return Eval(node, env)
-	}
-}
-
 func applyRedirects(cmd *exec.Cmd, redirs []ast.Redir, env *core.Env) (cleanup func(), err error) {
 	var files []*os.File
 	cleanup = func() {
@@ -346,7 +373,7 @@ func applyRedirects(cmd *exec.Cmd, redirs []ast.Redir, env *core.Env) (cleanup f
 	}
 
 	for _, r := range redirs {
-		target := env.Expand(r.Target)
+		target, _ := evalRedirTarget(r, env)
 
 		if strings.HasPrefix(target, "&") {
 			fdStr := target[1:]
@@ -364,7 +391,7 @@ func applyRedirects(cmd *exec.Cmd, redirs []ast.Redir, env *core.Env) (cleanup f
 		}
 
 		switch r.Op {
-		case ast.TRedirOut:
+		case ast.TGt:
 			f, ferr := os.Create(target)
 			if ferr != nil {
 				cleanup()
@@ -392,7 +419,7 @@ func applyRedirects(cmd *exec.Cmd, redirs []ast.Redir, env *core.Env) (cleanup f
 			case 2:
 				cmd.Stderr = f
 			}
-		case ast.TRedirIn:
+		case ast.TLt:
 			f, ferr := os.Open(target)
 			if ferr != nil {
 				cleanup()
@@ -401,16 +428,10 @@ func applyRedirects(cmd *exec.Cmd, redirs []ast.Redir, env *core.Env) (cleanup f
 			files = append(files, f)
 			cmd.Stdin = f
 		case ast.THeredoc:
-			content := r.Target
-			if !r.Quoted {
-				content = env.Expand(content)
-			}
+			content, _ := evalRedirTarget(r, env)
 			cmd.Stdin = strings.NewReader(content)
 		case ast.THereString:
-			content := r.Target
-			if !r.Quoted {
-				content = env.Expand(content)
-			}
+			content, _ := evalRedirTarget(r, env)
 			cmd.Stdin = strings.NewReader(content + "\n")
 		}
 	}
@@ -586,21 +607,21 @@ func stripAssignQuotes(s string) string {
 }
 
 func evalPosixAssign(node *ast.Node, env *core.Env) (core.Value, error) {
-	s := node.Tok.Val
-	i := strings.IndexByte(s, '=')
-	if i < 0 {
-		return core.Nil, fmt.Errorf("invalid assignment: %s", s)
+	name := node.Tok.Val
+	var val core.Value
+	if len(node.Children) > 0 {
+		v, err := Eval(node.Children[0], env)
+		if err != nil {
+			return core.Nil, err
+		}
+		val = v
+	} else {
+		val = core.StringVal("")
 	}
-	name := s[:i]
-	raw := s[i+1:]
-	raw = stripAssignQuotes(raw)
-	val := raw
-	if len(s) > i+1 && s[i+1] != '\'' {
-		val = env.Expand(raw)
-	}
-	if err := env.Set(name, core.StringVal(val)); err != nil {
+	if err := env.Set(name, val); err != nil {
 		return core.Nil, err
 	}
+	env.SetExit(0)
 	return core.Nil, nil
 }
 
@@ -622,8 +643,8 @@ func evalBg(node *ast.Node, env *core.Env) (core.Value, error) {
 	if child.Kind == ast.NCmd && len(child.Children) > 0 {
 		nameNode := child.Children[0]
 		var name string
-		if nameNode.Kind == ast.NWord {
-			name = env.Expand(nameNode.Tok.Val)
+		if nameNode.Kind == ast.NIdent {
+			name = nameNode.Tok.Val
 		} else {
 			v, err := Eval(nameNode, env)
 			if err != nil {
@@ -636,7 +657,7 @@ func evalBg(node *ast.Node, env *core.Env) (core.Value, error) {
 		if r.Kind == KindExternal || r.Kind == KindNotFound {
 			var args []string
 			for _, c := range child.Children[1:] {
-				v, err := evalCmdArg(c, env)
+				v, err := Eval(c, env)
 				if err != nil {
 					return core.Nil, err
 				}

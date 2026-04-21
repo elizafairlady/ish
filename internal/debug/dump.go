@@ -72,7 +72,11 @@ func dumpNode(node *ast.Node, sm *SourceMap, w io.Writer, depth int) {
 
 	// Redirections
 	for _, r := range node.Redirs {
-		fmt.Fprintf(w, "%s  Redir: fd=%d op=%d target=%q\n", indent, r.Fd, r.Op, r.Target)
+		targetStr := ""
+		if r.TargetNode != nil {
+			targetStr = r.TargetNode.Tok.Val
+		}
+		fmt.Fprintf(w, "%s  Redir: fd=%d op=%d target=%q\n", indent, r.Fd, r.Op, targetStr)
 	}
 
 	// Timeout
@@ -90,7 +94,7 @@ func nodeKindString(k ast.NodeKind) string {
 	switch k {
 	case ast.NLit:
 		return "NLit"
-	case ast.NWord:
+	case ast.NIdent:
 		return "NWord"
 	case ast.NCmd:
 		return "NCmd"
@@ -110,8 +114,26 @@ func nodeKindString(k ast.NodeKind) string {
 		return "NAssign"
 	case ast.NMatch:
 		return "NMatch"
-	case ast.NRedir:
-		return "NRedir"
+	case ast.NVarRef:
+		return "NVarRef"
+	case ast.NCall:
+		return "NCall"
+	case ast.NCmdSub:
+		return "NCmdSub"
+	case ast.NArithSub:
+		return "NArithSub"
+	case ast.NParamExpand:
+		return "NParamExpand"
+	case ast.NInterpolation:
+		return "NInterpolation"
+	case ast.NInterpString:
+		return "NInterpString"
+	case ast.NPath:
+		return "NPath"
+	case ast.NFlag:
+		return "NFlag"
+	case ast.NIshIf:
+		return "NIshIf"
 	case ast.NSubshell:
 		return "NSubshell"
 	case ast.NGroup:

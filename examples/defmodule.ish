@@ -50,14 +50,14 @@ end
 shapes = [{:circle, 5}, {:rect, 3, 4}, {:square, 6}]
 echo ""
 echo "=== shapes ==="
-List.each $shapes, fn shape do
+$shapes |> List.each \shape ->
   echo "$(Shape.describe $shape): area = $(Shape.area $shape)"
 end
 
 # Modules calling other modules
 defmodule Stats do
   def sum list do
-    List.reduce $list, 0, \acc, x -> acc + x
+    $list |> List.reduce(0, \acc, x -> acc + x)
   end
 
   def mean list do

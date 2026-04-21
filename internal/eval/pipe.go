@@ -25,7 +25,7 @@ func isCommandNode(node *ast.Node, env *core.Env) bool {
 			return true
 		}
 		name := ""
-		if node.Children[0].Kind == ast.NWord {
+		if node.Children[0].Kind == ast.NIdent {
 			name = node.Children[0].Tok.Val
 		}
 		if name == "" {
@@ -39,15 +39,29 @@ func isCommandNode(node *ast.Node, env *core.Env) bool {
 
 // isBridgeFn returns true if the node is a call to an explicit bridge
 // function (from_json, from_csv, etc.) that should override auto-coercion.
+func accessName(node *ast.Node) string {
+	if node.Kind == ast.NAccess && len(node.Children) > 0 && node.Children[0].Kind == ast.NIdent {
+		return node.Children[0].Tok.Val + "." + node.Tok.Val
+	}
+	return ""
+}
+
 func isBridgeFn(node *ast.Node) bool {
 	var name string
 	switch node.Kind {
 	case ast.NCmd:
-		if len(node.Children) > 0 && node.Children[0].Kind == ast.NWord {
-			name = node.Children[0].Tok.Val
+		if len(node.Children) > 0 {
+			child := node.Children[0]
+			if child.Kind == ast.NIdent {
+				name = child.Tok.Val
+			} else if child.Kind == ast.NAccess {
+				name = accessName(child)
+			}
 		}
-	case ast.NWord:
+	case ast.NIdent:
 		name = node.Tok.Val
+	case ast.NAccess:
+		name = accessName(node)
 	}
 	switch name {
 	case "from_json", "from_csv", "from_tsv", "from_lines",
@@ -138,8 +152,8 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 		}
 		nameNode := node.Children[0]
 		var name string
-		if nameNode.Kind == ast.NWord {
-			name = env.Expand(nameNode.Tok.Val)
+		if nameNode.Kind == ast.NIdent {
+			name = nameNode.Tok.Val
 		} else {
 			v, err := Eval(nameNode, env)
 			if err != nil {
@@ -154,7 +168,7 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 			pipeEnv.Stdout_ = stdout
 			argVals := make([]core.Value, 0, len(node.Children)-1)
 			for _, child := range node.Children[1:] {
-				if child.Kind == ast.NWord && child.Tok.Val == "$@" {
+				if child.Kind == ast.NVarRef && child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
 					for _, arg := range env.PosArgs() {
 						argVals = append(argVals, core.StringVal(arg))
 					}
@@ -176,11 +190,11 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 
 		var strArgs []string
 		for _, child := range node.Children[1:] {
-			if child.Kind == ast.NWord && child.Tok.Val == "$@" {
+			if child.Kind == ast.NVarRef && child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
 				strArgs = append(strArgs, env.PosArgs()...)
 				continue
 			}
-			v, err := evalCmdArg(child, env)
+			v, err := Eval(child, env)
 			if err != nil {
 				return core.Nil, err
 			}
@@ -317,7 +331,30 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	switch right.Kind {
-	case ast.NCmd, ast.NWord:
+	case ast.NCall:
+		// Function call on right side of |>: prepend pipe value as first arg.
+		// e.g. list |> List.filter \x -> x > 1 → List.filter(list, \x -> x > 1)
+		callee, err := Eval(right.Children[0], env)
+		if err != nil {
+			return core.Nil, err
+		}
+		if callee.Kind != core.VFn || callee.Fn == nil {
+			return core.Nil, fmt.Errorf("pipe arrow: not a function: %s", callee.Inspect())
+		}
+		argVals := []core.Value{left}
+		for _, child := range right.Children[1:] {
+			v, err := Eval(child, env)
+			if err != nil {
+				return core.Nil, err
+			}
+			argVals = append(argVals, v)
+		}
+		if node.Tail {
+			return core.TailCallVal(callee.Fn, argVals), nil
+		}
+		return CallFn(callee.Fn, argVals, env)
+
+	case ast.NCmd, ast.NIdent:
 		var name string
 		argVals := []core.Value{left}
 

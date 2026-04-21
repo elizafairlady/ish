@@ -56,8 +56,10 @@ func traceDescription(node *ast.Node) string {
 	case ast.NLit:
 		return node.Tok.Val
 
-	case ast.NWord:
+	case ast.NIdent:
 		return node.Tok.Val
+	case ast.NVarRef:
+		return "$" + node.Tok.Val
 
 	case ast.NBinOp:
 		left := ""
@@ -148,8 +150,14 @@ func traceDescription(node *ast.Node) string {
 	case ast.NIshTry:
 		return "try"
 
-	case ast.NRedir:
-		return "redirect"
+	case ast.NCall:
+		return "call"
+	case ast.NPath:
+		return "path"
+	case ast.NFlag:
+		return "flag"
+	case ast.NIshIf:
+		return "ish_if"
 
 	case ast.NBg:
 		return "background"

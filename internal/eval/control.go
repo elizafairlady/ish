@@ -91,35 +91,22 @@ func evalIf(node *ast.Node, env *core.Env) (core.Value, error) {
 			return Eval(clause.Body, env)
 		}
 	}
+	env.SetExit(0)
 	return core.Nil, nil
 }
 
 // evalForWord resolves a for-loop word, preserving list values for bare
-// $var references instead of stringifying them the way evalCmdArg does.
+// $var references instead of stringifying them.
 func evalForWord(w *ast.Node, env *core.Env) (core.Value, error) {
-	if w.Kind == ast.NWord {
+	// NVarRef preserves the value type (lists stay as lists)
+	if w.Kind == ast.NVarRef {
 		name := w.Tok.Val
-		if len(name) > 1 && name[0] == '$' && isBareVarRef(name[1:]) {
-			varName := name[1:]
-			if v, ok := env.Get(varName); ok {
-				return v, nil
-			}
-			return core.StringVal(""), nil
+		if v, ok := env.Get(name); ok {
+			return v, nil
 		}
+		return core.StringVal(""), nil
 	}
-	return evalCmdArg(w, env)
-}
-
-func isBareVarRef(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-			return false
-		}
-	}
-	return true
+	return Eval(w, env)
 }
 
 func evalFor(node *ast.Node, env *core.Env) (core.Value, error) {
@@ -206,7 +193,11 @@ func evalWhileUntil(node *ast.Node, env *core.Env, invert bool) (core.Value, err
 }
 
 func evalCase(node *ast.Node, env *core.Env) (core.Value, error) {
-	word := env.Expand(node.Children[0].Tok.Val)
+	wordVal, err := Eval(node.Children[0], env)
+	if err != nil {
+		return core.Nil, err
+	}
+	word := wordVal.ToStr()
 	for _, clause := range node.Clauses {
 		patStr := clause.Pattern.Tok.Val
 		alternatives := strings.Split(patStr, "|")

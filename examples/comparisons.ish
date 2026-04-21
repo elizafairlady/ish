@@ -9,8 +9,8 @@ fn min a, b do
   if a < b do a else b end
 end
 
-echo "max(3,7) = $(max 3, 7)"
-echo "min(3,7) = $(min 3, 7)"
+echo "max(3,7) = $(max(3, 7))"
+echo "min(3,7) = $(min(3, 7))"
 
 # Comparison as return value from function body
 fn is_positive n do

@@ -8,10 +8,10 @@ fn kv_loop state do
   receive do
     {:put, key, val, sender} ->
       send sender, :ok
-      kv_loop (Map.put state, key, val)
+      kv_loop Map.put(state, key, val)
 
     {:get, key, sender} ->
-      val = Map.get state, key
+      val = Map.get(state, key)
       send sender, {:ok, val}
       kv_loop state
 

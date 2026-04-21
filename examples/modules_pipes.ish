@@ -8,7 +8,7 @@ echo "=== value pipes with modules ==="
 r = [3, 1, 4, 1, 5] |> List.sort |> List.reverse
 echo "sort then reverse: $r"
 
-r = List.range 1, 11 |> List.filter \x -> x > 5 |> List.map \x -> x * x
+r = List.range(1, 11) |> List.filter \x -> x > 5 |> List.map \x -> x * x
 echo "filter > 5, square: $r"
 
 r = ["hello", "world"] |> List.map \s -> String.upcase s
@@ -22,7 +22,7 @@ r = printf "hello\nworld\n" |> List.map \line -> String.upcase line
 echo "printf |> List.map upcase: $r"
 
 # Module function output into shell pipe
-echo "sort and pipe to wc:" $(List.range 1, 4 |> List.map \x -> x * 10 | wc -w)
+echo "sort and pipe to wc:" $(List.range(1, 4) |> List.map \x -> x * 10 | wc -w)
 
 echo ""
 echo "=== command substitution ==="
@@ -30,7 +30,7 @@ echo "=== command substitution ==="
 # Module calls inside $()
 echo "hd: $(hd [10, 20, 30])"
 echo "tl: $(tl [10, 20, 30])"
-echo "join: $(String.join ["a", "b", "c"], ":")"
+echo "join: $(String.join(["a", "b", "c"], ":"))"
 echo "nested: $(String.downcase "$(String.upcase "hello")")"
 
 echo ""
@@ -39,7 +39,7 @@ echo "=== JSON pipeline ==="
 json = '{"name": "ish", "version": 4}'
 data = echo $json |> JSON.parse
 echo "parsed: $data"
-echo "name: $(Map.get $data, "name")"
+echo "name: $(Map.get($data, "name"))"
 
 echo ""
 echo "=== mixed defmodule + pipes ==="

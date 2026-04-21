@@ -5,19 +5,19 @@
 nums = [1, 2, 3, 4, 5]
 
 # Sum
-sum = List.reduce nums, 0, \acc, x -> acc + x
+sum = List.reduce(nums, 0, \acc, x -> acc + x)
 echo "sum = $sum"
 
 # Product
-product = List.reduce nums, 1, \acc, x -> acc * x
+product = List.reduce(nums, 1, \acc, x -> acc * x)
 echo "product = $product"
 
 # Max
 fn max_of a, b when a > b do a end
 fn max_of a, b do b end
-maximum = List.reduce (tl nums), (hd nums), \acc, x -> max_of acc, x
+maximum = List.reduce(tl nums, hd nums, \acc, x -> max_of(acc, x))
 echo "max = $maximum"
 
 # Reverse via reduce
-reversed = List.reduce nums, [], \acc, x -> List.concat [x], acc
+reversed = List.reduce(nums, [], \acc, x -> List.concat([x], acc))
 echo "reversed = $reversed"

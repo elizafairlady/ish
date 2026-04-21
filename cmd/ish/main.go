@@ -25,7 +25,7 @@ import (
 	"ish/internal/stdlib"
 )
 
-var Version = "0.5.1"
+var Version = "0.6.0"
 
 func main() {
 	// Wire up eval <-> builtin cycle via Init
@@ -105,7 +105,7 @@ func main() {
 			os.Exit(1)
 		}
 		l := lexer.New(src)
-		node, err := parser.ParseWithCommands(l, eval.MakeIsCommand(env))
+		node, err := parser.Parse(l)
 		if l.Error() != "" {
 			fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 			os.Exit(2)
@@ -296,7 +296,7 @@ func hasStoppedJobs() bool {
 }
 
 func needsMore(input string, env *core.Env) bool {
-	_, err := parser.ParseWithCommands(lexer.New(input), eval.MakeIsCommand(env))
+	_, err := parser.Parse(lexer.New(input))
 	if err == nil {
 		return false
 	}

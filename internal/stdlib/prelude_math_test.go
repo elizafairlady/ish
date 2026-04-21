@@ -12,9 +12,9 @@ func TestPreludeMathClamp(t *testing.T) {
 		script string
 		want   int64
 	}{
-		{`result = Math.clamp 5, 0, 10`, 5},
-		{`result = Math.clamp 15, 0, 10`, 10},
-		{`result = Math.clamp (0 - 5), 0, 10`, 0},
+		{`result = Math.clamp(5, 0, 10)`, 5},
+		{`result = Math.clamp(15, 0, 10)`, 10},
+		{`result = Math.clamp(0 - 5, 0, 10)`, 0},
 	}
 	for _, c := range cases {
 		env := testutil.TestEnv()

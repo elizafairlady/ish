@@ -9,7 +9,7 @@ import (
 
 func TestPreludeListZip(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.zip [1, 2, 3], ["a", "b", "c"]`)
+	evalScript(t, env, `result = List.zip([1, 2, 3], ["a", "b", "c"])`)
 	got, _ := env.Get("result")
 	want := core.ListVal(
 		core.TupleVal(core.IntVal(1), core.StringVal("a")),
@@ -34,8 +34,8 @@ func TestPreludeListFlatten(t *testing.T) {
 func TestPreludeListTakeDrop(t *testing.T) {
 	env := testutil.TestEnv()
 	evalScript(t, env, `
-t = List.take [1, 2, 3, 4, 5], 3
-d = List.drop [1, 2, 3, 4, 5], 3
+t = List.take([1, 2, 3, 4, 5], 3)
+d = List.drop([1, 2, 3, 4, 5], 3)
 `)
 	if got, _ := env.Get("t"); !got.Equal(core.ListVal(core.IntVal(1), core.IntVal(2), core.IntVal(3))) {
 		t.Errorf("take = %s", got.Inspect())
@@ -47,7 +47,7 @@ d = List.drop [1, 2, 3, 4, 5], 3
 
 func TestPreludeListChunk(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.chunk [1, 2, 3, 4, 5], 2`)
+	evalScript(t, env, `result = List.chunk([1, 2, 3, 4, 5], 2)`)
 	got, _ := env.Get("result")
 	want := core.ListVal(
 		core.ListVal(core.IntVal(1), core.IntVal(2)),
@@ -85,7 +85,7 @@ p = List.product [1, 2, 3, 4]
 
 func TestPreludeListFlatMap(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.flat_map [1, 2, 3], \x -> [x, x]`)
+	evalScript(t, env, `result = [1, 2, 3] |> List.flat_map \x -> [x, x]`)
 	got, _ := env.Get("result")
 	want := core.ListVal(core.IntVal(1), core.IntVal(1), core.IntVal(2), core.IntVal(2), core.IntVal(3), core.IntVal(3))
 	if !got.Equal(want) {
@@ -95,7 +95,7 @@ func TestPreludeListFlatMap(t *testing.T) {
 
 func TestPreludeListIntersperse(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.intersperse [1, 2, 3], 0`)
+	evalScript(t, env, `result = List.intersperse([1, 2, 3], 0)`)
 	got, _ := env.Get("result")
 	want := core.ListVal(core.IntVal(1), core.IntVal(0), core.IntVal(2), core.IntVal(0), core.IntVal(3))
 	if !got.Equal(want) {

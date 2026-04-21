@@ -12,9 +12,9 @@ func TestPreludeStringRepeat(t *testing.T) {
 		script string
 		want   string
 	}{
-		{`result = String.repeat "ab", 3`, "ababab"},
-		{`result = String.repeat "x", 0`, ""},
-		{`result = String.repeat "", 5`, ""},
+		{`result = String.repeat("ab", 3)`, "ababab"},
+		{`result = String.repeat("x", 0)`, ""},
+		{`result = String.repeat("", 5)`, ""},
 	}
 	for _, c := range cases {
 		env := testutil.TestEnv()

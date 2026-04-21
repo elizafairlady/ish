@@ -7,11 +7,11 @@ file_count = $(ls /tmp | wc -l)
 echo "Files in /tmp: $file_count"
 
 # Value pipe: values through functions
-result = List.range 1, 21 |> List.filter \x -> x > 10 |> length
+result = List.range(1, 21) |> List.filter \x -> x > 10 |> length
 echo "Numbers > 10 in 1..20: $result"
 
 # Value pipe with map
-squares = List.range 1, 6 |> List.map \x -> x * x
+squares = List.range(1, 6) |> List.map \x -> x * x
 echo "Squares of 1..5: $squares"
 
 # Bridge: bytes to values via JSON.parse

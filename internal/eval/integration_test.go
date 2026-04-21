@@ -151,7 +151,7 @@ func TestIntegration(t *testing.T) {
 		// Function capture with &
 		{"fn capture with &", "fn greet do \"hello\" end\nf = &greet\necho $f", "#Function<greet/1>\n"},
 		// Expression-mode fn body args
-		{"fn body arithmetic arg", "fn countdown 0 do echo done end\nfn countdown n do countdown n - 1 end\ncountdown 3", "done\n"},
+		{"fn body arithmetic arg", "fn countdown 0 do echo done end\nfn countdown n do countdown (n - 1) end\ncountdown 3", "done\n"},
 		// For-in native list iteration
 		{"for-in list iteration", "xs = [10, 20, 30]\nfor x in $xs do\necho $x\nend", "10\n20\n30\n"},
 		// Map patterns

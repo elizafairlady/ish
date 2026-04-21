@@ -612,10 +612,6 @@ func (e *Env) Expand(s string) string {
 				continue
 			}
 
-			if handled := e.expandParamOp(expr, &buf); handled {
-				continue
-			}
-
 			if idx := strings.IndexAny(expr, ":-+?="); idx > 0 {
 				name := expr[:idx]
 				op := expr[idx:]
@@ -663,6 +659,9 @@ func (e *Env) Expand(s string) string {
 					}
 				}
 			} else {
+				if handled := e.expandParamOp(expr, &buf); handled {
+					continue
+				}
 				if v, ok := e.Get(expr); ok {
 					buf.WriteString(v.ToStr())
 				}

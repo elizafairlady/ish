@@ -9,16 +9,16 @@ echo "sorted: $sorted"
 reversed = List.reverse nums
 echo "reverse: $reversed"
 
-r = List.any nums, \x -> x > 3
+r = $nums |> List.any \x -> x > 3
 echo "any > 3: $r"
 
-r = List.all nums, \x -> x > 0
+r = $nums |> List.all \x -> x > 0
 echo "all > 0: $r"
 
-r = List.all nums, \x -> x > 3
+r = $nums |> List.all \x -> x > 3
 echo "all > 3: $r"
 
-r = List.find nums, \x -> x > 3
+r = $nums |> List.find \x -> x > 3
 echo "first > 3: $r"
 
 m = %{name: "fox", age: 3, speed: 42}
@@ -26,17 +26,17 @@ m = %{name: "fox", age: 3, speed: 42}
 p = Map.pairs m
 echo "pairs: $p"
 
-v1 = Map.get m, "name"
+v1 = Map.get(m, "name")
 echo "get name: $v1"
 
-v2 = Map.get m, "missing"
+v2 = Map.get(m, "missing")
 echo "get missing: $v2"
 
 e = List.with_index ["a", "b", "c"]
 echo "with_index: $e"
 
 echo "each:"
-List.each [1, 2, 3], \x -> echo "  item: $x"
+[1, 2, 3] |> List.each \x -> echo "  item: $x"
 
 Process.sleep 50
 echo "delayed 50ms"

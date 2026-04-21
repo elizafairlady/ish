@@ -228,9 +228,9 @@ func TestDumpASTFnDef(t *testing.T) {
 func TestNodeKindStringCoverage(t *testing.T) {
 	// Verify all known kinds produce a non-Unknown string
 	kinds := []ast.NodeKind{
-		ast.NLit, ast.NWord, ast.NCmd, ast.NPipe, ast.NPipeFn,
+		ast.NLit, ast.NIdent, ast.NCmd, ast.NPipe, ast.NPipeFn,
 		ast.NAndList, ast.NOrList, ast.NBg, ast.NBlock, ast.NAssign,
-		ast.NMatch, ast.NRedir, ast.NSubshell, ast.NGroup,
+		ast.NMatch, ast.NVarRef, ast.NSubshell, ast.NGroup,
 		ast.NIf, ast.NFor, ast.NWhile, ast.NUntil, ast.NCase, ast.NFnDef,
 		ast.NIshFn, ast.NIshMatch, ast.NIshSpawn, ast.NIshSpawnLink,
 		ast.NIshSend, ast.NIshReceive, ast.NIshMonitor, ast.NIshAwait,

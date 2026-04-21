@@ -60,8 +60,6 @@ func Eval(node *ast.Node, env *core.Env) (core.Value, error) {
 		return evalSubshell(node, env)
 	case ast.NGroup:
 		return evalGroup(node, env)
-	case ast.NRedir:
-		return evalRedir(node, env)
 	case ast.NIf:
 		return evalIf(node, env)
 	case ast.NFor:
@@ -74,8 +72,30 @@ func Eval(node *ast.Node, env *core.Env) (core.Value, error) {
 		return evalCase(node, env)
 	case ast.NLit:
 		return evalLit(node, env)
-	case ast.NWord:
-		return evalWord(node, env)
+	case ast.NIdent:
+		return evalIdent(node, env)
+	case ast.NVarRef:
+		return evalVarRef(node, env)
+	case ast.NCall:
+		return evalCall(node, env)
+	case ast.NCmdSub:
+		return evalCmdSubNode(node, env)
+	case ast.NArithSub:
+		return evalArithSubNode(node, env)
+	case ast.NParamExpand:
+		return evalParamExpandNode(node, env)
+	case ast.NInterpolation:
+		return evalInterpolationNode(node, env)
+	case ast.NInterpString:
+		return evalInterpStringNode(node, env)
+	case ast.NArg:
+		return evalArg(node, env)
+	case ast.NPath:
+		return core.StringVal(node.Tok.Val), nil
+	case ast.NFlag:
+		return core.StringVal(node.Tok.Val), nil
+	case ast.NIshIf:
+		return evalIshIf(node, env)
 	case ast.NBinOp:
 		return evalBinOp(node, env)
 	case ast.NUnary:
@@ -189,6 +209,12 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 	}
 
 	for {
+		// Check Native at the top of the loop — a tail call may have
+		// replaced fn with a native function.
+		if fn.Native != nil {
+			return fn.Native(vals, env)
+		}
+
 		strArgs := make([]string, len(vals))
 		for i, v := range vals {
 			strArgs[i] = v.ToStr()
@@ -336,7 +362,7 @@ func RunSource(src string, env *core.Env) (core.Value, error) {
 		defer d.PopSource()
 	}
 	l := lexer.New(src)
-	node, err := parser.ParseWithCommands(l, MakeIsCommand(env))
+	node, err := parser.Parse(l)
 	if l.Error() != "" {
 		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 		env.SetExit(2)

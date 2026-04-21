@@ -25,8 +25,8 @@ func TestPreludeMapFromPairs(t *testing.T) {
 func TestPreludeMapFetch(t *testing.T) {
 	env := testutil.TestEnv()
 	evalScript(t, env, `
-hit = Map.fetch %{a: 1}, "a"
-miss = Map.fetch %{a: 1}, "b"
+hit = Map.fetch(%{a: 1}, "a")
+miss = Map.fetch(%{a: 1}, "b")
 `)
 	want := core.TupleVal(core.AtomVal("ok"), core.IntVal(1))
 	if got, _ := env.Get("hit"); !got.Equal(want) {
@@ -39,7 +39,7 @@ miss = Map.fetch %{a: 1}, "b"
 
 func TestPreludeMapUpdate(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = Map.update %{a: 1, b: 2}, "a", \v -> v * 100`)
+	evalScript(t, env, `result = Map.update(%{a: 1, b: 2}, "a", \v -> v * 100)`)
 	got, _ := env.Get("result")
 	if v, _ := got.Map.Get("a"); !v.Equal(core.IntVal(100)) {
 		t.Errorf("a = %s", v.Inspect())

@@ -100,7 +100,7 @@ func TestKernelApply(t *testing.T) {
 f = fn do
   x, y -> x + y
 end
-result = Kernel.apply f, [3, 4]
+result = Kernel.apply(f, [3, 4])
 `)
 	got, _ := env.Get("result")
 	if !got.Equal(core.IntVal(7)) {
@@ -172,12 +172,12 @@ func TestKernelMinMax(t *testing.T) {
 		script string
 		want   core.Value
 	}{
-		{`result = Kernel.min 3, 5`, core.IntVal(3)},
-		{`result = Kernel.min 5, 3`, core.IntVal(3)},
-		{`result = Kernel.max 3, 5`, core.IntVal(5)},
-		{`result = Kernel.max 5, 3`, core.IntVal(5)},
-		{`result = Kernel.min 1.5, 2.5`, core.FloatVal(1.5)},
-		{`result = Kernel.max 1, 2.5`, core.FloatVal(2.5)},
+		{`result = Kernel.min(3, 5)`, core.IntVal(3)},
+		{`result = Kernel.min(5, 3)`, core.IntVal(3)},
+		{`result = Kernel.max(3, 5)`, core.IntVal(5)},
+		{`result = Kernel.max(5, 3)`, core.IntVal(5)},
+		{`result = Kernel.min(1.5, 2.5)`, core.FloatVal(1.5)},
+		{`result = Kernel.max(1, 2.5)`, core.FloatVal(2.5)},
 	}
 	for _, c := range cases {
 		env := testutil.TestEnv()
@@ -197,8 +197,8 @@ r2 = is_list [1]
 r3 = hd [9, 8, 7]
 r4 = length "hello"
 r5 = abs (0 - 3)
-r6 = min 3, 7
-r7 = max 3, 7
+r6 = min(3, 7)
+r7 = max(3, 7)
 `)
 	cases := []struct {
 		name string

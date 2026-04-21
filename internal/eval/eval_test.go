@@ -147,7 +147,7 @@ func TestEvalUnary(t *testing.T) {
 func TestPatternBind(t *testing.T) {
 	t.Run("variable binding", func(t *testing.T) {
 		env := testEnv()
-		pat := ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"})
+		pat := ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"})
 		err := PatternBind(pat, core.IntVal(42), env)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -160,7 +160,7 @@ func TestPatternBind(t *testing.T) {
 
 	t.Run("wildcard _", func(t *testing.T) {
 		env := testEnv()
-		pat := ast.WordNode(ast.Token{Type: ast.TWord, Val: "_"})
+		pat := ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "_"})
 		err := PatternBind(pat, core.IntVal(99), env)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -188,8 +188,8 @@ func TestPatternBind(t *testing.T) {
 	t.Run("tuple destructuring", func(t *testing.T) {
 		env := testEnv()
 		pat := &ast.Node{Kind: ast.NTuple, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "a"}),
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "b"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "a"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "b"}),
 		}}
 		val := core.TupleVal(core.IntVal(1), core.IntVal(2))
 		err := PatternBind(pat, val, env)
@@ -206,8 +206,8 @@ func TestPatternBind(t *testing.T) {
 	t.Run("tuple mismatch - wrong size", func(t *testing.T) {
 		env := testEnv()
 		pat := &ast.Node{Kind: ast.NTuple, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "a"}),
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "b"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "a"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "b"}),
 		}}
 		val := core.TupleVal(core.IntVal(1))
 		err := PatternBind(pat, val, env)
@@ -219,8 +219,8 @@ func TestPatternBind(t *testing.T) {
 	t.Run("list destructuring", func(t *testing.T) {
 		env := testEnv()
 		pat := &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"}),
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "y"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "y"}),
 		}}
 		val := core.ListVal(core.StringVal("hello"), core.StringVal("world"))
 		err := PatternBind(pat, val, env)
@@ -237,7 +237,7 @@ func TestPatternBind(t *testing.T) {
 	t.Run("list mismatch - not a list", func(t *testing.T) {
 		env := testEnv()
 		pat := &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"}),
 		}}
 		err := PatternBind(pat, core.IntVal(42), env)
 		if err == nil {
@@ -248,10 +248,10 @@ func TestPatternBind(t *testing.T) {
 	t.Run("nested tuple", func(t *testing.T) {
 		env := testEnv()
 		pat := &ast.Node{Kind: ast.NTuple, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "a"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "a"}),
 			{Kind: ast.NTuple, Children: []*ast.Node{
-				ast.WordNode(ast.Token{Type: ast.TWord, Val: "b"}),
-				ast.WordNode(ast.Token{Type: ast.TWord, Val: "c"}),
+				ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "b"}),
+				ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "c"}),
 			}},
 		}}
 		val := core.TupleVal(core.IntVal(1), core.TupleVal(core.IntVal(2), core.IntVal(3)))
@@ -270,8 +270,8 @@ func TestPatternBind(t *testing.T) {
 	t.Run("list head|tail", func(t *testing.T) {
 		env := testEnv()
 		pat := &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "h"}),
-		}, Rest: ast.WordNode(ast.Token{Type: ast.TWord, Val: "t"})}
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "h"}),
+		}, Rest: ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "t"})}
 		val := core.ListVal(core.IntVal(1), core.IntVal(2), core.IntVal(3))
 		err := PatternBind(pat, val, env)
 		if err != nil {
@@ -291,9 +291,9 @@ func TestPatternBind(t *testing.T) {
 	t.Run("list head|tail multiple heads", func(t *testing.T) {
 		env := testEnv()
 		pat := &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "a"}),
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "b"}),
-		}, Rest: ast.WordNode(ast.Token{Type: ast.TWord, Val: "rest"})}
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "a"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "b"}),
+		}, Rest: ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "rest"})}
 		val := core.ListVal(core.IntVal(1), core.IntVal(2), core.IntVal(3), core.IntVal(4))
 		err := PatternBind(pat, val, env)
 		if err != nil {
@@ -314,8 +314,8 @@ func TestPatternBind(t *testing.T) {
 	t.Run("list head|tail empty rest", func(t *testing.T) {
 		env := testEnv()
 		pat := &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "h"}),
-		}, Rest: ast.WordNode(ast.Token{Type: ast.TWord, Val: "t"})}
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "h"}),
+		}, Rest: ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "t"})}
 		val := core.ListVal(core.IntVal(1))
 		err := PatternBind(pat, val, env)
 		if err != nil {
@@ -335,8 +335,8 @@ func TestPatternBind(t *testing.T) {
 	t.Run("list head|tail mismatch", func(t *testing.T) {
 		env := testEnv()
 		pat := &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "h"}),
-		}, Rest: ast.WordNode(ast.Token{Type: ast.TWord, Val: "t"})}
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "h"}),
+		}, Rest: ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "t"})}
 		val := core.ListVal()
 		err := PatternBind(pat, val, env)
 		if err == nil {
@@ -356,36 +356,36 @@ func TestPatternMatches(t *testing.T) {
 		val  core.Value
 		want bool
 	}{
-		{"variable always matches", ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"}), core.IntVal(42), true},
+		{"variable always matches", ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"}), core.IntVal(42), true},
 		{"literal match", ast.LitNode(ast.Token{Type: ast.TInt, Val: "42"}), core.IntVal(42), true},
 		{"literal mismatch", ast.LitNode(ast.Token{Type: ast.TInt, Val: "42"}), core.IntVal(99), false},
 		{"atom match", ast.LitNode(ast.Token{Type: ast.TAtom, Val: "ok"}), core.AtomVal("ok"), true},
 		{"atom mismatch", ast.LitNode(ast.Token{Type: ast.TAtom, Val: "ok"}), core.AtomVal("err"), false},
 		{"tuple match", &ast.Node{Kind: ast.NTuple, Children: []*ast.Node{
 			ast.LitNode(ast.Token{Type: ast.TInt, Val: "1"}),
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"}),
 		}}, core.TupleVal(core.IntVal(1), core.IntVal(2)), true},
 		{"tuple size mismatch", &ast.Node{Kind: ast.NTuple, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "a"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "a"}),
 		}}, core.TupleVal(core.IntVal(1), core.IntVal(2)), false},
 		{"list match", &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"}),
 		}}, core.ListVal(core.IntVal(1)), true},
 		{"list mismatch - not list", &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"}),
 		}}, core.IntVal(1), false},
 		{"list head|tail matches", &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "h"}),
-		}, Rest: ast.WordNode(ast.Token{Type: ast.TWord, Val: "t"})}, core.ListVal(core.IntVal(1), core.IntVal(2), core.IntVal(3)), true},
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "h"}),
+		}, Rest: ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "t"})}, core.ListVal(core.IntVal(1), core.IntVal(2), core.IntVal(3)), true},
 		{"list head|tail too few", &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "h"}),
-		}, Rest: ast.WordNode(ast.Token{Type: ast.TWord, Val: "t"})}, core.ListVal(), false},
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "h"}),
+		}, Rest: ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "t"})}, core.ListVal(), false},
 		{"list head|tail exact", &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "h"}),
-		}, Rest: ast.WordNode(ast.Token{Type: ast.TWord, Val: "t"})}, core.ListVal(core.IntVal(1)), true},
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "h"}),
+		}, Rest: ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "t"})}, core.ListVal(core.IntVal(1)), true},
 		{"list head|tail not a list", &ast.Node{Kind: ast.NList, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "h"}),
-		}, Rest: ast.WordNode(ast.Token{Type: ast.TWord, Val: "t"})}, core.IntVal(42), false},
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "h"}),
+		}, Rest: ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "t"})}, core.IntVal(42), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -406,8 +406,8 @@ func TestCallFn(t *testing.T) {
 	t.Run("POSIX-style fn uses positional args", func(t *testing.T) {
 		env := testEnv()
 		body := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "echo"}),
-			ast.WordNode(ast.Token{Type: ast.TWord, Val: "$1"}),
+			ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "echo"}),
+			{Kind: ast.NVarRef, Tok: ast.Token{Type: ast.TSpecialVar, Val: "$1"}},
 		}}
 		fn := &core.FnValue{Name: "greet", Clauses: []core.FnClause{{Body: body}}}
 
@@ -426,12 +426,12 @@ func TestCallFn(t *testing.T) {
 		env := testEnv()
 		body := &ast.Node{Kind: ast.NBinOp, Tok: ast.Token{Type: ast.TMul, Val: "*"},
 			Children: []*ast.Node{
-				ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"}),
+				ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"}),
 				ast.LitNode(ast.Token{Type: ast.TInt, Val: "2"}),
 			},
 		}
 		fn := &core.FnValue{Name: "double", Clauses: []core.FnClause{{
-			Params: []ast.Node{*ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"})},
+			Params: []ast.Node{*ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"})},
 			Body:   body,
 		}}}
 		val, err := CallFn(fn, []core.Value{core.IntVal(5)}, env)
@@ -474,15 +474,15 @@ func TestCallFn(t *testing.T) {
 
 	t.Run("guard", func(t *testing.T) {
 		env := testEnv()
-		guard := &ast.Node{Kind: ast.NBinOp, Tok: ast.Token{Type: ast.TRedirOut, Val: ">"},
+		guard := &ast.Node{Kind: ast.NBinOp, Tok: ast.Token{Type: ast.TGt, Val: ">"},
 			Children: []*ast.Node{
-				ast.WordNode(ast.Token{Type: ast.TWord, Val: "n"}),
+				ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "n"}),
 				ast.LitNode(ast.Token{Type: ast.TInt, Val: "0"}),
 			},
 		}
 		body := ast.LitNode(ast.Token{Type: ast.TAtom, Val: "yes"})
 		fn := &core.FnValue{Name: "positive", Clauses: []core.FnClause{{
-			Params: []ast.Node{*ast.WordNode(ast.Token{Type: ast.TWord, Val: "n"})},
+			Params: []ast.Node{*ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "n"})},
 			Guard:  guard,
 			Body:   body,
 		}}}
@@ -504,7 +504,7 @@ func TestCallFn(t *testing.T) {
 	t.Run("arity mismatch", func(t *testing.T) {
 		env := testEnv()
 		fn := &core.FnValue{Name: "unary", Clauses: []core.FnClause{{
-			Params: []ast.Node{*ast.WordNode(ast.Token{Type: ast.TWord, Val: "x"})},
+			Params: []ast.Node{*ast.IdentNode(ast.Token{Type: ast.TIdent, Val: "x"})},
 			Body:   ast.LitNode(ast.Token{Type: ast.TInt, Val: "1"}),
 		}}}
 
@@ -988,7 +988,7 @@ func TestEvalIshFn(t *testing.T) {
 		script := `fn add a, b do
 a + b
 end
-r = add 3, 4
+r = add(3, 4)
 echo $r`
 		got := captureOutput(env, func() {
 			runSource(script, env)

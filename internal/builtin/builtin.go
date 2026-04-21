@@ -5,7 +5,10 @@ import (
 	"ish/internal/jobs"
 )
 
-// BuiltinFunc is the signature for all builtin commands.
+// BuiltinFunc is the signature for POSIX shell builtins.
+// Builtins are commands — they receive string arguments, same as any external
+// command. The evaluator converts values to strings before calling builtins,
+// just as it does for exec.Command.
 type BuiltinFunc func(args []string, env *core.Env) (int, error)
 
 // EvalContext provides callbacks that builtins need from eval, breaking the import cycle.

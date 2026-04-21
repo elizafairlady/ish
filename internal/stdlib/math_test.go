@@ -15,7 +15,7 @@ func TestMathFunctions(t *testing.T) {
 	}{
 		{`result = Math.sqrt 16.0`, core.FloatVal(4.0)},
 		{`result = Math.sqrt 2.0`, core.FloatVal(math.Sqrt(2.0))},
-		{`result = Math.pow 2.0, 10.0`, core.FloatVal(1024.0)},
+		{`result = Math.pow(2.0, 10.0)`, core.FloatVal(1024.0)},
 		{`result = Math.log 2.718281828459045`, core.FloatVal(1.0)},
 		{`result = Math.log2 8.0`, core.FloatVal(3.0)},
 		{`result = Math.log10 1000.0`, core.FloatVal(3.0)},

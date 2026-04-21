@@ -43,7 +43,7 @@ r2 = Path.extname "README"
 
 func TestPathJoin(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = Path.join "/foo", "bar", "baz.txt"`)
+	evalScript(t, env, `result = Path.join("/foo", "bar", "baz.txt")`)
 	got, _ := env.Get("result")
 	if got.Kind != core.VString || got.Str != filepath.Join("/foo", "bar", "baz.txt") {
 		t.Errorf("join = %s", got.Inspect())

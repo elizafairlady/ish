@@ -13,7 +13,7 @@ import (
 
 func evalScript(t *testing.T, env *core.Env, script string) {
 	t.Helper()
-	node, err := parser.ParseWithCommands(lexer.New(script), eval.MakeIsCommand(env))
+	node, err := parser.Parse(lexer.New(script))
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
@@ -25,7 +25,7 @@ func evalScript(t *testing.T, env *core.Env, script string) {
 
 func evalScriptErr(t *testing.T, env *core.Env, script string) error {
 	t.Helper()
-	node, err := parser.ParseWithCommands(lexer.New(script), eval.MakeIsCommand(env))
+	node, err := parser.Parse(lexer.New(script))
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
@@ -97,17 +97,17 @@ func TestStdlibLength(t *testing.T) {
 
 func TestStdlibAppend(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.append [1, 2], 3`)
+	evalScript(t, env, `result = List.append([1, 2], 3)`)
 	got, _ := env.Get("result")
 	want := core.ListVal(core.IntVal(1), core.IntVal(2), core.IntVal(3))
 	if !got.Equal(want) {
-		t.Errorf("List.append [1,2], 3 = %s, want %s", got.Inspect(), want.Inspect())
+		t.Errorf("List.append = %s, want %s", got.Inspect(), want.Inspect())
 	}
 }
 
 func TestStdlibConcat(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.concat [1, 2], [3, 4]`)
+	evalScript(t, env, `result = List.concat([1, 2], [3, 4])`)
 	got, _ := env.Get("result")
 	want := core.ListVal(core.IntVal(1), core.IntVal(2), core.IntVal(3), core.IntVal(4))
 	if !got.Equal(want) {
@@ -121,7 +121,7 @@ func TestStdlibMap(t *testing.T) {
 f = fn do
   x -> x * 2
 end
-result = List.map [1, 2, 3], f
+result = [1, 2, 3] |> List.map f
 `)
 	got, _ := env.Get("result")
 	want := core.ListVal(core.IntVal(2), core.IntVal(4), core.IntVal(6))
@@ -136,7 +136,7 @@ func TestStdlibFilter(t *testing.T) {
 f = fn do
   x -> x >= 3
 end
-result = List.filter [1, 2, 3, 4], f
+result = [1, 2, 3, 4] |> List.filter f
 `)
 	got, _ := env.Get("result")
 	want := core.ListVal(core.IntVal(3), core.IntVal(4))
@@ -151,7 +151,7 @@ func TestStdlibReduce(t *testing.T) {
 f = fn do
   acc, x -> acc + x
 end
-result = List.reduce [1, 2, 3, 4], 0, f
+result = [1, 2, 3, 4] |> List.reduce(0, f)
 `)
 	got, _ := env.Get("result")
 	if !got.Equal(core.IntVal(10)) {
@@ -161,36 +161,36 @@ result = List.reduce [1, 2, 3, 4], 0, f
 
 func TestStdlibRange(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.range 0, 5`)
+	evalScript(t, env, `result = List.range(0, 5)`)
 	got, _ := env.Get("result")
 	want := core.ListVal(core.IntVal(0), core.IntVal(1), core.IntVal(2), core.IntVal(3), core.IntVal(4))
 	if !got.Equal(want) {
-		t.Errorf("List.range 0,5 = %s, want %s", got.Inspect(), want.Inspect())
+		t.Errorf("List.range = %s, want %s", got.Inspect(), want.Inspect())
 	}
 }
 
 func TestStdlibRangeEmpty(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.range 5, 3`)
+	evalScript(t, env, `result = List.range(5, 3)`)
 	got, _ := env.Get("result")
 	want := core.ListVal()
 	if !got.Equal(want) {
-		t.Errorf("List.range 5,3 = %s, want %s", got.Inspect(), want.Inspect())
+		t.Errorf("List.range = %s, want %s", got.Inspect(), want.Inspect())
 	}
 }
 
 func TestStdlibAt(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = List.at [10, 20, 30], 1`)
+	evalScript(t, env, `result = List.at([10, 20, 30], 1)`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.IntVal(20)) {
-		t.Errorf("List.at [10,20,30], 1 = %s, want 20", got.Inspect())
+		t.Errorf("List.at = %s, want 20", got.Inspect())
 	}
 }
 
 func TestStdlibAtOutOfBounds(t *testing.T) {
 	env := testutil.TestEnv()
-	err := evalScriptErr(t, env, `result = List.at [10, 20], 5`)
+	err := evalScriptErr(t, env, `result = List.at([10, 20], 5)`)
 	if err == nil {
 		t.Fatal("expected error for out-of-bounds index")
 	}
@@ -202,7 +202,7 @@ func TestStdlibAtOutOfBounds(t *testing.T) {
 
 func TestStdlibSplit(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.split "a,b,c", ","`)
+	evalScript(t, env, `result = String.split("a,b,c", ",")`)
 	got, _ := env.Get("result")
 	want := core.ListVal(core.StringVal("a"), core.StringVal("b"), core.StringVal("c"))
 	if !got.Equal(want) {
@@ -212,7 +212,7 @@ func TestStdlibSplit(t *testing.T) {
 
 func TestStdlibJoin(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.join ["a", "b", "c"], "-"`)
+	evalScript(t, env, `result = String.join(["a", "b", "c"], "-")`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.StringVal("a-b-c")) {
 		t.Errorf("String.join = %s, want \"a-b-c\"", got.Inspect())
@@ -248,7 +248,7 @@ func TestStdlibDowncase(t *testing.T) {
 
 func TestStdlibReplaceStr(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.replace "hello world hello", "hello", "bye"`)
+	evalScript(t, env, `result = String.replace("hello world hello", "hello", "bye")`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.StringVal("bye world hello")) {
 		t.Errorf("String.replace = %s, want \"bye world hello\"", got.Inspect())
@@ -257,7 +257,7 @@ func TestStdlibReplaceStr(t *testing.T) {
 
 func TestStdlibReplaceAllStr(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.replace_all "hello world hello", "hello", "bye"`)
+	evalScript(t, env, `result = String.replace_all("hello world hello", "hello", "bye")`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.StringVal("bye world bye")) {
 		t.Errorf("String.replace_all = %s, want \"bye world bye\"", got.Inspect())
@@ -266,7 +266,7 @@ func TestStdlibReplaceAllStr(t *testing.T) {
 
 func TestStdlibStartsWith(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.starts_with "hello world", "hello"`)
+	evalScript(t, env, `result = String.starts_with("hello world", "hello")`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.AtomVal("true")) {
 		t.Errorf("String.starts_with = %s, want :true", got.Inspect())
@@ -275,7 +275,7 @@ func TestStdlibStartsWith(t *testing.T) {
 
 func TestStdlibEndsWith(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.ends_with "hello world", "world"`)
+	evalScript(t, env, `result = String.ends_with("hello world", "world")`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.AtomVal("true")) {
 		t.Errorf("String.ends_with = %s, want :true", got.Inspect())
@@ -284,7 +284,7 @@ func TestStdlibEndsWith(t *testing.T) {
 
 func TestStdlibContains(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.contains "hello world", "lo wo"`)
+	evalScript(t, env, `result = String.contains("hello world", "lo wo")`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.AtomVal("true")) {
 		t.Errorf("String.contains = %s, want :true", got.Inspect())
@@ -293,7 +293,7 @@ func TestStdlibContains(t *testing.T) {
 
 func TestStdlibSlice(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.slice "hello world", 6, 5`)
+	evalScript(t, env, `result = String.slice("hello world", 6, 5)`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.StringVal("world")) {
 		t.Errorf("String.slice = %s, want \"world\"", got.Inspect())
@@ -302,7 +302,7 @@ func TestStdlibSlice(t *testing.T) {
 
 func TestStdlibIndexOf(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.index_of "hello world", "world"`)
+	evalScript(t, env, `result = String.index_of("hello world", "world")`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.IntVal(6)) {
 		t.Errorf("String.index_of = %s, want 6", got.Inspect())
@@ -311,7 +311,7 @@ func TestStdlibIndexOf(t *testing.T) {
 
 func TestStdlibIndexOfNotFound(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = String.index_of "hello", "xyz"`)
+	evalScript(t, env, `result = String.index_of("hello", "xyz")`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.IntVal(-1)) {
 		t.Errorf("String.index_of = %s, want -1", got.Inspect())
@@ -411,7 +411,7 @@ end
 func TestStdlibPut(t *testing.T) {
 	env := testutil.TestEnv()
 	evalScript(t, env, `m = %{a: 1, b: 2}
-result = Map.put m, "c", 3`)
+result = Map.put(m, "c", 3)`)
 	got, _ := env.Get("result")
 	if got.Kind != core.VMap {
 		t.Fatalf("expected map, got %s", got.Inspect())
@@ -427,7 +427,7 @@ result = Map.put m, "c", 3`)
 func TestStdlibDelete(t *testing.T) {
 	env := testutil.TestEnv()
 	evalScript(t, env, `m = %{a: 1, b: 2, c: 3}
-result = Map.delete m, "b"`)
+result = Map.delete(m, "b")`)
 	got, _ := env.Get("result")
 	if got.Kind != core.VMap {
 		t.Fatalf("expected map, got %s", got.Inspect())
@@ -444,7 +444,7 @@ func TestStdlibMerge(t *testing.T) {
 	env := testutil.TestEnv()
 	evalScript(t, env, `m1 = %{a: 1, b: 2}
 m2 = %{b: 99, c: 3}
-result = Map.merge m1, m2`)
+result = Map.merge(m1, m2)`)
 	got, _ := env.Get("result")
 	if got.Kind != core.VMap {
 		t.Fatalf("expected map, got %s", got.Inspect())
@@ -483,8 +483,8 @@ result = Map.values m`)
 func TestStdlibHasKey(t *testing.T) {
 	env := testutil.TestEnv()
 	evalScript(t, env, `m = %{x: 1, y: 2}
-r1 = Map.has_key m, "x"
-r2 = Map.has_key m, "z"`)
+r1 = Map.has_key(m, "x")
+r2 = Map.has_key(m, "z")`)
 	r1, _ := env.Get("r1")
 	r2, _ := env.Get("r2")
 	if !r1.Equal(core.True) {
@@ -498,9 +498,7 @@ r2 = Map.has_key m, "z"`)
 func TestListEachReturnsOk(t *testing.T) {
 	env := testutil.TestEnv()
 	evalScript(t, env, `
-result = List.each [1, 2, 3], fn do
-  _ -> nil
-end
+result = [1, 2, 3] |> List.each \_ -> nil
 `)
 	got, _ := env.Get("result")
 	if !got.Equal(core.AtomVal("ok")) {
@@ -552,10 +550,10 @@ func TestStringPad(t *testing.T) {
 		script string
 		want   string
 	}{
-		{`result = String.pad_left "7", 3, "0"`, "007"},
-		{`result = String.pad_right "7", 3, "0"`, "700"},
-		{`result = String.pad_left "hello", 3, "x"`, "hello"},
-		{`result = String.pad_left "", 3, "x"`, "xxx"},
+		{`result = String.pad_left("7", 3, "0")`, "007"},
+		{`result = String.pad_right("7", 3, "0")`, "700"},
+		{`result = String.pad_left("hello", 3, "x")`, "hello"},
+		{`result = String.pad_left("", 3, "x")`, "xxx"},
 	}
 	for _, c := range cases {
 		env := testutil.TestEnv()

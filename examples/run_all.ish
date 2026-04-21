@@ -51,7 +51,7 @@ for script in examples/*.ish do
   test "$name" = "run_all.ish" && continue
 
   result = run_script "$script"
-  status = report $result, "$name"
+  status = report($result, "$name")
 
   match $status do
     :pass  -> pass=$((pass + 1))

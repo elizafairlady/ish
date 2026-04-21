@@ -16,11 +16,11 @@ echo ""
 echo "=== passing functions to map ==="
 
 # All forms can be passed directly to higher-order functions
-echo "map with named fn:  $(List.map [1, 2, 3], double_named)"
-echo "map with fn expr:   $(List.map [1, 2, 3], double_expr)"
-echo "map with lambda:    $(List.map [1, 2, 3], double_lambda)"
-echo "map inline lambda:  $(List.map [1, 2, 3], \x -> x * 2)"
-echo "map inline fn:      $(List.map [1, 2, 3], fn x do x * 2 end)"
+echo "map with named fn:  $([1, 2, 3] |> List.map double_named)"
+echo "map with fn expr:   $([1, 2, 3] |> List.map double_expr)"
+echo "map with lambda:    $([1, 2, 3] |> List.map double_lambda)"
+echo "map inline lambda:  $([1, 2, 3] |> List.map \x -> x * 2)"
+echo "map inline fn:      $([1, 2, 3] |> List.map fn x do x * 2 end)"
 
 echo ""
 echo "=== composing functions ==="
@@ -39,8 +39,8 @@ inc = \x -> x + 1
 dbl = \x -> x * 2
 
 # compose returns a function — bind it, then call
-inc_then_dbl = compose dbl, inc
-inc_then_dbl2 = compose2 dbl, inc
+inc_then_dbl = compose(dbl, inc)
+inc_then_dbl2 = compose2(dbl, inc)
 
 echo "compose:  dbl(inc(3)) = $(inc_then_dbl 3)"
 echo "compose2: dbl(inc(3)) = $(inc_then_dbl2 3)"
@@ -70,10 +70,10 @@ echo "=== list of functions ==="
 
 # fn expressions work inside list literals
 ops = [fn x do x + 1 end, fn x do x * 2 end, fn x do x * x end]
-results = List.map ops, \op -> op 5
+results = $ops |> List.map \op -> op 5
 echo "fn exprs applied to 5: $results"
 
 # lambdas too
 ops2 = [\x -> x + 1, \x -> x * 2, \x -> x * x]
-results2 = List.map ops2, \op -> op 5
+results2 = $ops2 |> List.map \op -> op 5
 echo "lambdas applied to 5: $results2"

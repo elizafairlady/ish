@@ -5,33 +5,33 @@
 echo "=== native module calls ==="
 
 # All stdlib is now module-qualified
-nums = List.range 1, 6
+nums = List.range(1, 6)
 echo "range:   $nums"
-echo "map:     $(List.map $nums, \x -> x * x)"
-echo "filter:  $(List.filter $nums, \x -> x > 3)"
-echo "reduce:  $(List.reduce $nums, 0, \acc, x -> acc + x)"
+echo "map:     $($nums |> List.map \x -> x * x)"
+echo "filter:  $($nums |> List.filter \x -> x > 3)"
+echo "reduce:  $($nums |> List.reduce(0, \acc, x -> acc + x))"
 echo "sort:    $(List.sort [5, 3, 1, 4, 2])"
 echo "reverse: $(List.reverse $nums)"
-echo "find:    $(List.find $nums, \x -> x > 3)"
-echo "any:     $(List.any $nums, \x -> x > 4)"
-echo "all:     $(List.all $nums, \x -> x > 0)"
+echo "find:    $($nums |> List.find \x -> x > 3)"
+echo "any:     $($nums |> List.any \x -> x > 4)"
+echo "all:     $($nums |> List.all \x -> x > 0)"
 
 echo ""
 echo "=== string module ==="
 echo "upcase:  $(String.upcase "hello")"
-echo "split:   $(String.split "a,b,c", ",")"
-echo "join:    $(String.join ["x", "y", "z"], "-")"
-echo "slice:   $(String.slice "hello world", 6, 11)"
-echo "replace: $(String.replace_all "aabaa", "a", "z")"
+echo "split:   $(String.split("a,b,c", ","))"
+echo "join:    $(String.join(["x", "y", "z"], "-"))"
+echo "slice:   $(String.slice("hello world", 6, 11))"
+echo "replace: $(String.replace_all("aabaa", "a", "z"))"
 
 echo ""
 echo "=== map module ==="
 m = %{name: "ish", version: "0.4"}
 echo "keys:    $(Map.keys $m)"
 echo "values:  $(Map.values $m)"
-m2 = Map.put $m, "lang", "go"
+m2 = Map.put($m, "lang", "go")
 echo "put:     $(Map.keys $m2)"
-echo "has_key: $(Map.has_key $m, "name")"
+echo "has_key: $(Map.has_key($m, "name"))"
 
 echo ""
 echo "=== defmodule ==="
@@ -47,7 +47,7 @@ defmodule Math do
   def max _, b do b end
 
   def clamp val, lo, hi do
-    Math.max lo, (Math.min val, hi)
+    val |> Math.min(hi) |> Math.max(lo)
   end
 
   def min a, b when a <= b do a end
@@ -56,15 +56,15 @@ end
 
 echo "abs(-3):      $(Math.abs (0 - 3))"
 echo "abs(7):       $(Math.abs 7)"
-echo "max(3, 5):    $(Math.max 3, 5)"
-echo "min(3, 5):    $(Math.min 3, 5)"
-echo "clamp(10,0,5):$(Math.clamp 10, 0, 5)"
+echo "max(3, 5):    $(Math.max(3, 5))"
+echo "min(3, 5):    $(Math.min(3, 5))"
+echo "clamp(10,0,5):$(Math.clamp(10, 0, 5))"
 
 echo ""
 echo "=== use (import) ==="
 
 # Import List functions into local scope
 use List
-r = map [10, 20, 30], \x -> x + 1
+r = [10, 20, 30] |> map \x -> x + 1
 echo "bare map after use: $r"
 echo "bare hd: $(hd [1, 2, 3])"

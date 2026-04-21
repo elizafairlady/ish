@@ -3,6 +3,6 @@
 defmodule String do
   def repeat _, 0 do "" end
   def repeat s, n do
-    String.join (List.map (List.range 0, n), \_ -> s), ""
+    List.range(0, n) |> List.map \_ -> s |> String.join ""
   end
 end

@@ -56,16 +56,16 @@ func TestTutorialExamples(t *testing.T) {
 
 		// === Section 6: Functions ===
 		{"s6 greet", "fn greet name do\necho \"Hello, $name!\"\nend\ngreet world", "Hello, world!\n"},
-		{"s6 add", "fn add a, b do\na + b\nend\nr = add 3, 4\necho $r", "7\n"},
+		{"s6 add", "fn add a, b do\na + b\nend\nr = add(3, 4)\necho $r", "7\n"},
 		{"s6 fib", "fn fib 0 do 0 end\nfn fib 1 do 1 end\nfn fib n when n > 1 do\nfib (n - 1) + fib (n - 2)\nend\nr = fib 10\necho $r", "55\n"},
 		{"s6 abs", "fn abs n when n < 0 do 0 - n end\nfn abs n do n end\nr = abs (-5)\necho $r", "5\n"},
 		{"s6 multi-clause block", "fn classify do\n0 -> :zero\n1 -> :one\n_ -> :other\nend\necho $(classify 0)", ":zero\n"},
 		{"s6 anon dispatch", "f = fn do\n0 -> :zero\nn when n > 0 -> :positive\n_ -> :negative\nend\necho $(f 0)", ":zero\n"},
 		{"s6 lambda single", "doubled = \\x -> x * 2\necho $(doubled 5)", "10\n"},
-		{"s6 lambda multi param", "sum = \\a, b -> a + b\necho $(sum 3 4)", "7\n"},
+		{"s6 lambda multi param", "sum = \\a, b -> a + b\necho $(sum(3, 4))", "7\n"},
 		{"s6 lambda zero param", "greet = \\ -> echo \"hello\"\ngreet", "hello\n"},
 		{"s6 posix fn", "greet() { echo \"hi $1\"; }\ngreet world", "hi world\n"},
-		{"s6 anon with params", "f = fn a, b do\na + b\nend\nr = f 3, 4\necho $r", "7\n"},
+		{"s6 anon with params", "f = fn a, b do\na + b\nend\nr = f(3, 4)\necho $r", "7\n"},
 		{"s6 anon single param", "doubled = fn x do x * 2 end\necho $(doubled 5)", "10\n"},
 
 		// === Section 7: Two Kinds of Pipes ===
@@ -87,10 +87,10 @@ func TestTutorialExamples(t *testing.T) {
 		{"s11 supervisor", "sup = supervise :one_for_one do\nworker :greeter fn do\necho \"worker started\"\nend\nend\nawait sup", "worker started\n"},
 
 		// === Section 12: The Toolbox ===
-		{"s12 map lambda", "r = List.map [1, 2, 3], \\x -> x * 2\necho $r", "[2, 4, 6]\n"},
-		{"s12 filter lambda", "r = List.filter [1, 2, 3, 4, 5], \\x -> x >= 4\necho $r", "[4, 5]\n"},
-		{"s12 reduce lambda", "r = List.reduce [1, 2, 3, 4], 0, \\acc, x -> acc + x\necho $r", "10\n"},
-		{"s12 range filter length", "r = List.range 1, 11 |> List.filter \\x -> x >= 6 |> length\necho $r", "5\n"},
+		{"s12 map lambda", "r = [1, 2, 3] |> List.map \\x -> x * 2\necho $r", "[2, 4, 6]\n"},
+		{"s12 filter lambda", "r = [1, 2, 3, 4, 5] |> List.filter \\x -> x >= 4\necho $r", "[4, 5]\n"},
+		{"s12 reduce lambda", "r = [1, 2, 3, 4] |> List.reduce(0, \\acc, x -> acc + x)\necho $r", "10\n"},
+		{"s12 range filter length", "r = List.range(1, 11) |> List.filter \\x -> x >= 6 |> length\necho $r", "5\n"},
 
 		// === Script safety ===
 		{"pipefail catches left failure", "set -o pipefail\nfalse | true\necho $?", "1\n"},
@@ -124,7 +124,7 @@ func TestTutorialExamples(t *testing.T) {
 		{"pipe value to cmd", "[1, 2, 3] | cat", "1\n2\n3\n"},
 		{"pipe scalar to cmd", "42 | cat", "42\n"},
 		{"pipe tuple to cmd", "{:ok, \"hi\"} | cat", "{:ok, \"hi\"}\n"},
-		{"pipe value chain to cmd", "List.range 1, 4 |> List.filter \\x -> x > 1 | cat", "2\n3\n"},
+		{"pipe value chain to cmd", "List.range(1, 4) |> List.filter \\x -> x > 1 | cat", "2\n3\n"},
 		{"pipefn cmd to map", "r = printf \"a\\nb\\nc\\n\" |> List.map \\f -> String.upcase f\necho $r", "[\"A\", \"B\", \"C\"]\n"},
 		{"pipefn cmd to length", "r = printf \"a\\nb\\nc\\n\" |> length\necho $r", "3\n"},
 		{"pipefn explicit from_json", "r = echo \"{\\\"x\\\":1}\" |> JSON.parse\necho $r", "%{x: 1}\n"},

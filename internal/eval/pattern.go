@@ -9,7 +9,7 @@ import (
 
 func PatternBind(pat *ast.Node, val core.Value, env *core.Env) error {
 	switch pat.Kind {
-	case ast.NWord:
+	case ast.NIdent:
 		if pat.Tok.Val == "_" {
 			return nil
 		}
@@ -80,7 +80,7 @@ func PatternBind(pat *ast.Node, val core.Value, env *core.Env) error {
 
 func PatternMatches(pat *ast.Node, val core.Value, env *core.Env) bool {
 	switch pat.Kind {
-	case ast.NWord:
+	case ast.NIdent:
 		return true
 	case ast.NLit:
 		expected, _ := litToValue(pat)

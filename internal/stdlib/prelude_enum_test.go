@@ -10,13 +10,13 @@ import (
 func TestPreludeEnumList(t *testing.T) {
 	env := testutil.TestEnv()
 	evalScript(t, env, `
-mapped  = Enum.map    [1, 2, 3], \x -> x * 10
-filtered = Enum.filter [1, 2, 3, 4], \x -> x > 2
-reduced = Enum.reduce [1, 2, 3], 0, \a, x -> a + x
-counted = Enum.count  [1, 2, 3, 4, 5]
-anyed   = Enum.any    [1, 2, 3], \x -> x > 2
-alled   = Enum.all    [1, 2, 3], \x -> x > 0
-found   = Enum.find   [1, 2, 3], \x -> x > 1
+mapped  = [1, 2, 3] |> Enum.map \x -> x * 10
+filtered = [1, 2, 3, 4] |> Enum.filter \x -> x > 2
+reduced = [1, 2, 3] |> Enum.reduce(0, \a, x -> a + x)
+counted = Enum.count [1, 2, 3, 4, 5]
+anyed   = [1, 2, 3] |> Enum.any \x -> x > 2
+alled   = [1, 2, 3] |> Enum.all \x -> x > 0
+found   = [1, 2, 3] |> Enum.find \x -> x > 1
 `)
 	type tc struct {
 		name string
@@ -40,7 +40,7 @@ found   = Enum.find   [1, 2, 3], \x -> x > 1
 
 func TestPreludeEnumEach(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = Enum.each [1, 2, 3], \x -> x`)
+	evalScript(t, env, `result = [1, 2, 3] |> Enum.each \x -> x`)
 	got, _ := env.Get("result")
 	if !got.Equal(core.AtomVal("ok")) {
 		t.Errorf("each = %s, want :ok", got.Inspect())
@@ -63,7 +63,7 @@ func TestPreludeEnumWithIndex(t *testing.T) {
 
 func TestPreludeEnumZip(t *testing.T) {
 	env := testutil.TestEnv()
-	evalScript(t, env, `result = Enum.zip [1, 2, 3], ["a", "b", "c"]`)
+	evalScript(t, env, `result = Enum.zip([1, 2, 3], ["a", "b", "c"])`)
 	got, _ := env.Get("result")
 	want := core.ListVal(
 		core.TupleVal(core.IntVal(1), core.StringVal("a")),

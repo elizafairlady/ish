@@ -16,9 +16,8 @@ import (
 )
 
 func evalLit(node *ast.Node, env *core.Env) (core.Value, error) {
-	if node.Tok.Type == ast.TString && !node.Tok.Quoted {
-		return core.StringVal(env.Expand(node.Tok.Val)), nil
-	}
+	// With the new parser, string interpolation is handled by NInterpString.
+	// NLit strings are plain literal segments — no expansion needed.
 	return litToValue(node)
 }
 
@@ -40,119 +39,15 @@ func litToValue(node *ast.Node) (core.Value, error) {
 		return core.StringVal(node.Tok.Val), nil
 	case ast.TAtom:
 		return core.AtomVal(node.Tok.Val), nil
+	case ast.TNil:
+		return core.Nil, nil
+	case ast.TTrue:
+		return core.True, nil
+	case ast.TFalse:
+		return core.False, nil
 	default:
 		return core.StringVal(node.Tok.Val), nil
 	}
-}
-
-func evalWord(node *ast.Node, env *core.Env) (core.Value, error) {
-	name := node.Tok.Val
-	if name == "nil" {
-		return core.Nil, nil
-	}
-	if name == "true" {
-		return core.True, nil
-	}
-	if name == "false" {
-		return core.False, nil
-	}
-	if name == "self" {
-		if proc := env.GetProc(); proc != nil {
-			return core.Value{Kind: core.VPid, Pid: proc}, nil
-		}
-		return core.Nil, nil
-	}
-
-	if strings.HasPrefix(name, "~") {
-		return core.StringVal(env.ExpandTilde(name)), nil
-	}
-
-	if strings.HasPrefix(name, "$((") && strings.HasSuffix(name, "))") {
-		return evalArithExpansion(name, env)
-	}
-
-	if strings.HasPrefix(name, "$(") && strings.HasSuffix(name, ")") {
-		inner := name[2 : len(name)-1]
-		return evalCmdSub(inner, env)
-	}
-
-	if strings.Contains(name, "$") || strings.Contains(name, "#{") {
-		if env.HasFlag('u') {
-			if err := checkUnsetVars(name, env); err != nil {
-				return core.Nil, err
-			}
-		}
-		// Simple $var reference: preserve the value type instead of stringifying.
-		// Only stringify when $ is part of a larger interpolation.
-		if len(name) > 1 && name[0] == '$' && !strings.ContainsAny(name[1:], "$#{") {
-			varName := name[1:]
-			if v, ok := env.Get(varName); ok {
-				return v, nil
-			}
-			// Try dot-access resolution for $map.field.subfield
-			if strings.ContainsRune(varName, '.') {
-				varNode := &ast.Node{Kind: ast.NWord, Tok: ast.Token{Type: ast.TWord, Val: varName}}
-				return evalWord(varNode, env)
-			}
-		}
-		expanded := env.Expand(name)
-		return core.StringVal(expanded), nil
-	}
-
-	if v, ok := env.Get(name); ok {
-		return v, nil
-	}
-
-	r := ResolveCmd(name, env)
-	switch r.Kind {
-	case KindUserFn:
-		if env.InExprMode() && isZeroArity(r.Fn) {
-			return CallFn(r.Fn, nil, env)
-		}
-		return core.Value{Kind: core.VFn, Fn: r.Fn}, nil
-	case KindNativeFn:
-		return core.StringVal(name), nil
-	case KindModuleFn:
-		if env.InExprMode() && isZeroArity(r.Fn) {
-			return CallFn(r.Fn, nil, env)
-		}
-		return core.Value{Kind: core.VFn, Fn: r.Fn}, nil
-	case KindModuleNativeFn:
-		return core.Value{Kind: core.VFn, Fn: &core.FnValue{
-			Name: r.ModName + "." + r.FnName, Native: r.NativeFn,
-		}}, nil
-	}
-
-	// Map field access and chained dot resolution (not covered by ResolveCmd)
-	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-		modName := name[:dotIdx]
-		fnName := name[dotIdx+1:]
-		if obj, ok := env.Get(modName); ok && obj.Kind == core.VMap && obj.Map != nil {
-			if v, ok := obj.Map.Get(fnName); ok {
-				return v, nil
-			}
-		}
-		// Recursive dot resolution for chained access like m.a.b
-		if lastDot := strings.LastIndexByte(name, '.'); lastDot > 0 && lastDot != dotIdx {
-			leftName := name[:lastDot]
-			rightField := name[lastDot+1:]
-			leftNode := &ast.Node{Kind: ast.NWord, Tok: ast.Token{Type: ast.TWord, Val: leftName}}
-			obj, err := evalWord(leftNode, env)
-			if err != nil {
-				return core.Nil, err
-			}
-			if obj.Kind == core.VMap && obj.Map != nil {
-				if v, ok := obj.Map.Get(rightField); ok {
-					return v, nil
-				}
-			}
-		}
-	}
-
-	if env.InExprMode() {
-		fmt.Fprintf(os.Stderr, "ish: warning: undefined variable '%s' used as string\n", name)
-	}
-	return core.StringVal(name), nil
 }
 
 // isZeroArity returns true if all clauses of a function accept 0 parameters.
@@ -234,9 +129,9 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 			return core.BoolVal(left.Int == right.Int), nil
 		case ast.TNe:
 			return core.BoolVal(left.Int != right.Int), nil
-		case ast.TRedirIn:
+		case ast.TLt:
 			return core.BoolVal(left.Int < right.Int), nil
-		case ast.TRedirOut:
+		case ast.TGt:
 			return core.BoolVal(left.Int > right.Int), nil
 		case ast.TLe:
 			return core.BoolVal(left.Int <= right.Int), nil
@@ -276,9 +171,9 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 			return core.BoolVal(lf == rf), nil
 		case ast.TNe:
 			return core.BoolVal(lf != rf), nil
-		case ast.TRedirIn:
+		case ast.TLt:
 			return core.BoolVal(lf < rf), nil
-		case ast.TRedirOut:
+		case ast.TGt:
 			return core.BoolVal(lf > rf), nil
 		case ast.TLe:
 			return core.BoolVal(lf <= rf), nil
@@ -290,9 +185,9 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 	// String comparison
 	if left.Kind == core.VString && right.Kind == core.VString {
 		switch node.Tok.Type {
-		case ast.TRedirIn:
+		case ast.TLt:
 			return core.BoolVal(left.Str < right.Str), nil
-		case ast.TRedirOut:
+		case ast.TGt:
 			return core.BoolVal(left.Str > right.Str), nil
 		case ast.TLe:
 			return core.BoolVal(left.Str <= right.Str), nil
@@ -384,11 +279,14 @@ func evalMap(node *ast.Node, env *core.Env) (core.Value, error) {
 
 func evalAccess(node *ast.Node, env *core.Env) (core.Value, error) {
 	// Module-qualified reference: Module.func
-	if node.Children[0].Kind == ast.NWord {
+	if node.Children[0].Kind == ast.NIdent {
 		modName := node.Children[0].Tok.Val
 		if mod, ok := env.GetModule(modName); ok {
 			field := node.Tok.Val
 			if fn, ok := mod.Fns[field]; ok {
+				if isZeroArity(fn) {
+					return CallFn(fn, nil, env)
+				}
 				return core.Value{Kind: core.VFn, Fn: fn}, nil
 			}
 			if nfn, ok := mod.NativeFns[field]; ok {
@@ -412,30 +310,10 @@ func evalAccess(node *ast.Node, env *core.Env) (core.Value, error) {
 	return core.Nil, fmt.Errorf("no field %s on %s", field, obj.Inspect())
 }
 
-func evalArithExpansion(name string, env *core.Env) (core.Value, error) {
-	inner := name[3 : len(name)-2]
-	inner = env.Expand(inner)
-	tokens := lexer.Lex(inner)
-	for i := range tokens {
-		if tokens[i].Type == ast.TWord {
-			if v, ok := env.Get(tokens[i].Val); ok {
-				tokens[i] = ast.Token{Type: ast.TInt, Val: v.ToStr(), Pos: tokens[i].Pos}
-			}
-		}
-	}
-	node, err := parser.Parse(lexer.NewFromTokens(tokens))
-	if err != nil {
-		return core.Nil, err
-	}
-	val, err := Eval(node, env)
-	if err != nil {
-		return core.Nil, err
-	}
-	return core.StringVal(val.ToStr()), nil
-}
+
 
 func evalCmdSub(cmdStr string, env *core.Env) (core.Value, error) {
-	node, err := parser.ParseWithCommands(lexer.New(cmdStr), MakeIsCommand(env))
+	node, err := parser.Parse(lexer.New(cmdStr))
 	if err != nil {
 		return core.Nil, err
 	}
