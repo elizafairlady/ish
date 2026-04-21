@@ -322,9 +322,19 @@ func (l *Lexer) lexStep() bool {
 
 	// Backslash
 	case ch == '\\':
-		if l.peek(1) == '\n' {
+		next := l.peek(1)
+		if next == '\n' {
 			l.pos += 2 // line continuation
+		} else if next != 0 && !isIdentStart(next) && next != '-' &&
+			len(l.tokens) > 0 && !l.tokens[len(l.tokens)-1].SpaceAfter {
+			// Escaped character mid-word: e.g. `hello\ world` keeps the space.
+			// Only applies when adjacent to a preceding token (no space before \).
+			l.pos += 2
+			tok := ast.Token{Type: ast.TString, Val: string(next), Pos: l.pos - 1, Quoted: true}
+			l.tokens = append(l.tokens, tok)
+			l.lastEmitted = ast.TString
 		} else {
+			// At word boundary: \ident → lambda, \ -> → zero-arity lambda
 			l.emit(ast.TBackslash, "\\")
 			l.pos++
 		}

@@ -228,6 +228,7 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 				fnEnv.Args = strArgs
 				val, err := Eval(clause.Body, fnEnv)
 				if err == core.ErrReturn {
+					env.SetExit(fnEnv.ExitCode())
 					return val, nil
 				}
 				if err != nil {
@@ -285,6 +286,7 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 
 			val, err := Eval(clause.Body, fnEnv)
 			if err == core.ErrReturn {
+				env.SetExit(fnEnv.ExitCode())
 				return val, nil
 			}
 			if err != nil {
