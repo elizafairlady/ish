@@ -215,15 +215,15 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 			return fn.Native(vals, env)
 		}
 
-		strArgs := make([]string, len(vals))
-		for i, v := range vals {
-			strArgs[i] = v.ToStr()
-		}
-
 		matched := false
 		var guardErr error
 		for _, clause := range fn.Clauses {
 			if len(clause.Params) == 0 {
+				// POSIX function path: convert args to strings for $1/$@ access.
+				strArgs := make([]string, len(vals))
+				for i, v := range vals {
+					strArgs[i] = v.ToStr()
+				}
 				fnEnv := core.NewFlatEnv(parentEnv)
 				fnEnv.Args = strArgs
 				val, err := Eval(clause.Body, fnEnv)
@@ -266,9 +266,8 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 			}
 
 			fnEnv := core.NewFlatEnv(parentEnv)
-			fnEnv.Args = strArgs
 			for i := range clause.Params {
-				PatternBind(&clause.Params[i], vals[i], fnEnv)
+				PatternBind(&clause.Params[i], vals[i], fnEnv) //nolint: errcheck — match already verified
 			}
 
 			if clause.Guard != nil {
