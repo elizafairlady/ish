@@ -1026,12 +1026,16 @@ func (p *Parser) parseInvocationWithName(nameNode *ast.Node) (*ast.Node, error) 
 			continue
 		}
 
-		// Expression-valued args: lambda, data structures, dotted access, keywords
+		// Expression-valued args: lambda, data structures, keywords, module-qualified names.
+		// Dotted idents with uppercase first letter (Module.func) are module access.
+		// Lowercase dotted idents (file.txt) go through compound word as paths.
+		isModuleAccess := cur.Type == ast.TIdent && !cur.SpaceAfter &&
+			p.peek(1).Type == ast.TDot && len(cur.Val) > 0 && cur.Val[0] >= 'A' && cur.Val[0] <= 'Z'
 		if cur.Type == ast.TBackslash || cur.Type == ast.TLBracket ||
 			cur.Type == ast.TLBrace || cur.Type == ast.TPercentLBrace ||
 			cur.Type == ast.TNil || cur.Type == ast.TTrue || cur.Type == ast.TFalse ||
 			(cur.Type == ast.TFn && p.exprContext) ||
-			(cur.Type == ast.TIdent && !cur.SpaceAfter && p.peek(1).Type == ast.TDot) {
+			isModuleAccess {
 			expr, err := p.parseExpr(0)
 			if err != nil {
 				return nil, err

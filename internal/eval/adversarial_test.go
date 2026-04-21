@@ -134,6 +134,15 @@ func TestAdversarialPOSIX(t *testing.T) {
 		{"hash is not comment mid-word", "echo foo#bar", "foo#bar\n"},
 
 		// ---------------------------------------------------------------
+		// Dotted filenames vs module access
+		// ---------------------------------------------------------------
+		{"dotted filename as argument", "echo file.txt", "file.txt\n"},
+		{"dotted path as argument", "echo src/main.go", "src/main.go\n"},
+		{"multiple dots in filename", "echo archive.tar.gz", "archive.tar.gz\n"},
+		{"dotfile as argument", "echo .gitignore", ".gitignore\n"},
+		{"IP address as argument", "echo 192.168.1.120", "192.168.1.120\n"},
+
+		// ---------------------------------------------------------------
 		// Subshell isolation
 		// ---------------------------------------------------------------
 		{"subshell does not leak variables", "X=before\n(X=after)\necho $X", "before\n"},

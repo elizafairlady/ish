@@ -71,7 +71,6 @@ func (e *Env) Stdout() io.Writer {
 func NewEnv(parent *Env) *Env {
 	env := &Env{
 		Bindings: make(map[string]Value),
-		Fns:      make(map[string]*FnValue),
 		Parent:   parent,
 	}
 	// Inherit CallFn and Debugger from parent
@@ -88,7 +87,6 @@ func NewEnv(parent *Env) *Env {
 func CopyEnv(src *Env) *Env {
 	e := &Env{
 		Bindings: make(map[string]Value),
-		Fns:      make(map[string]*FnValue),
 		Exported: make(map[string]bool),
 	}
 	// Walk the chain from outermost to innermost so inner values shadow outer
@@ -103,6 +101,9 @@ func CopyEnv(src *Env) *Env {
 		}
 		// Deep-copy FnValues to prevent cross-process mutation
 		for k, v := range c.Fns {
+			if e.Fns == nil {
+				e.Fns = make(map[string]*FnValue)
+			}
 			copied := &FnValue{Name: v.Name, Clauses: make([]FnClause, len(v.Clauses))}
 			copy(copied.Clauses, v.Clauses)
 			e.Fns[k] = copied
@@ -335,8 +336,10 @@ func (e *Env) DeleteTrap(sig string) {
 }
 
 func (e *Env) GetFn(name string) (*FnValue, bool) {
-	if f, ok := e.Fns[name]; ok {
-		return f, true
+	if e.Fns != nil {
+		if f, ok := e.Fns[name]; ok {
+			return f, true
+		}
 	}
 	if e.Parent != nil {
 		return e.Parent.GetFn(name)
@@ -368,6 +371,9 @@ func (e *Env) SetNativeFn(name string, fn NativeFn) {
 // fresh if no function with that name exists yet. Use this for sequential
 // single-clause definitions (fn fib 0 do...end; fn fib 1 do...end).
 func (e *Env) AddFnClauses(name string, f *FnValue) {
+	if e.Fns == nil {
+		e.Fns = make(map[string]*FnValue)
+	}
 	if existing, ok := e.Fns[name]; ok {
 		existing.Clauses = append(existing.Clauses, f.Clauses...)
 		return
@@ -380,6 +386,9 @@ func (e *Env) AddFnClauses(name string, f *FnValue) {
 // and for POSIX function redefinitions (name() { ... }), where a new
 // definition should fully replace the old one.
 func (e *Env) SetFnClauses(name string, f *FnValue) {
+	if e.Fns == nil {
+		e.Fns = make(map[string]*FnValue)
+	}
 	e.Fns[name] = f
 }
 
@@ -1035,6 +1044,9 @@ func (e *Env) DeleteVar(name string) error {
 
 func (e *Env) DeleteFn(name string) {
 	for c := e; c != nil; c = c.Parent {
+		if c.Fns == nil {
+			continue
+		}
 		if _, ok := c.Fns[name]; ok {
 			delete(c.Fns, name)
 			return

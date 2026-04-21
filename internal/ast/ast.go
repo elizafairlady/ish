@@ -306,7 +306,8 @@ type Node struct {
 	Redirs      []Redir  // attached redirections
 	Timeout     *Node    // for receive: after timeout expression
 	TimeoutBody *Node    // for receive: after timeout body
-	Tail        bool     // true when this node is in tail position (for TCO)
+	Tail        bool        // true when this node is in tail position (for TCO)
+	CachedVal   interface{} // cached literal value (set on first eval, avoids repeated strconv)
 }
 
 type Clause struct {

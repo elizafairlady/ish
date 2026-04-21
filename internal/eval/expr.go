@@ -22,32 +22,38 @@ func evalLit(node *ast.Node, env *core.Env) (core.Value, error) {
 }
 
 func litToValue(node *ast.Node) (core.Value, error) {
+	if node.CachedVal != nil {
+		return node.CachedVal.(core.Value), nil
+	}
+	var v core.Value
 	switch node.Tok.Type {
 	case ast.TInt:
 		n, err := strconv.ParseInt(node.Tok.Val, 10, 64)
 		if err != nil {
 			return core.Nil, fmt.Errorf("integer literal out of range: %s", node.Tok.Val)
 		}
-		return core.IntVal(n), nil
+		v = core.IntVal(n)
 	case ast.TFloat:
 		f, err := strconv.ParseFloat(node.Tok.Val, 64)
 		if err != nil {
 			return core.Nil, fmt.Errorf("float literal out of range: %s", node.Tok.Val)
 		}
-		return core.FloatVal(f), nil
+		v = core.FloatVal(f)
 	case ast.TString:
-		return core.StringVal(node.Tok.Val), nil
+		v = core.StringVal(node.Tok.Val)
 	case ast.TAtom:
-		return core.AtomVal(node.Tok.Val), nil
+		v = core.AtomVal(node.Tok.Val)
 	case ast.TNil:
-		return core.Nil, nil
+		v = core.Nil
 	case ast.TTrue:
-		return core.True, nil
+		v = core.True
 	case ast.TFalse:
-		return core.False, nil
+		v = core.False
 	default:
-		return core.StringVal(node.Tok.Val), nil
+		v = core.StringVal(node.Tok.Val)
 	}
+	node.CachedVal = v
+	return v, nil
 }
 
 // isZeroArity returns true if all clauses of a function accept 0 parameters.

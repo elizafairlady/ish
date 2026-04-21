@@ -254,8 +254,8 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 			}
 
 			matches := true
-			for i, param := range clause.Params {
-				if !PatternMatches(&param, vals[i], env) {
+			for i := range clause.Params {
+				if !PatternMatches(&clause.Params[i], vals[i], env) {
 					matches = false
 					break
 				}
@@ -264,11 +264,13 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 				continue
 			}
 
+			fnEnv := core.NewEnv(parentEnv)
+			fnEnv.Args = strArgs
+			for i := range clause.Params {
+				PatternBind(&clause.Params[i], vals[i], fnEnv)
+			}
+
 			if clause.Guard != nil {
-				fnEnv := core.NewEnv(parentEnv)
-				for i, param := range clause.Params {
-					PatternBind(&param, vals[i], fnEnv)
-				}
 				guardVal, err := Eval(clause.Guard, fnEnv)
 				if err != nil {
 					if guardErr == nil {
@@ -281,11 +283,6 @@ func CallFn(fn *core.FnValue, vals []core.Value, env *core.Env) (retVal core.Val
 				}
 			}
 
-			fnEnv := core.NewEnv(parentEnv)
-			fnEnv.Args = strArgs
-			for i, param := range clause.Params {
-				PatternBind(&param, vals[i], fnEnv)
-			}
 			val, err := Eval(clause.Body, fnEnv)
 			if err == core.ErrReturn {
 				return val, nil
