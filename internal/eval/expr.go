@@ -92,6 +92,13 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 		return core.Nil, err
 	}
 
+	// Auto-coerce numeric strings for arithmetic operators.
+	// This bridges the POSIX world (everything is a string) and ish expressions.
+	if isArithOp(node.Tok.Type) {
+		left = coerceNumeric(left)
+		right = coerceNumeric(right)
+	}
+
 	if left.Kind == core.VInt && right.Kind == core.VInt {
 		switch node.Tok.Type {
 		case ast.TPlus:
@@ -208,6 +215,32 @@ func evalBinOp(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	return core.Nil, fmt.Errorf("unsupported operation: %s %s %s", left.Inspect(), node.Tok.Val, right.Inspect())
+}
+
+// isArithOp returns true for operators where numeric coercion makes sense.
+func isArithOp(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TPlus, ast.TMinus, ast.TMul, ast.TDiv, ast.TPercent,
+		ast.TLt, ast.TGt, ast.TLe, ast.TGe:
+		return true
+	}
+	return false
+}
+
+// coerceNumeric attempts to convert a string value to int or float.
+// Non-numeric strings are returned unchanged.
+func coerceNumeric(v core.Value) core.Value {
+	if v.Kind != core.VString {
+		return v
+	}
+	s := strings.TrimSpace(v.Str)
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return core.IntVal(n)
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return core.FloatVal(f)
+	}
+	return v
 }
 
 func evalUnary(node *ast.Node, env *core.Env) (core.Value, error) {

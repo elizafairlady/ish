@@ -35,10 +35,32 @@ func evalCmd(node *ast.Node, env *core.Env) (core.Value, error) {
 		return core.Nil, nil
 	}
 
-	for _, assign := range node.Assigns {
-		if _, err := evalPosixAssign(assign, env); err != nil {
-			return core.Nil, err
+	// Prefix assignments: save old values and restore after the command
+	// completes (POSIX: prefix assigns are scoped to the command).
+	if len(node.Assigns) > 0 {
+		type savedVar struct {
+			name string
+			val  core.Value
+			had  bool
 		}
+		saved := make([]savedVar, 0, len(node.Assigns))
+		for _, assign := range node.Assigns {
+			varName := assign.Tok.Val
+			oldVal, had := env.Get(varName)
+			saved = append(saved, savedVar{varName, oldVal, had})
+			if _, err := evalPosixAssign(assign, env); err != nil {
+				return core.Nil, err
+			}
+		}
+		defer func() {
+			for _, s := range saved {
+				if s.had {
+					env.Set(s.name, s.val)
+				} else {
+					env.DeleteVar(s.name) //nolint: errcheck
+				}
+			}
+		}()
 	}
 
 	nameNode := node.Children[0]
@@ -666,7 +688,7 @@ func evalBg(node *ast.Node, env *core.Env) (core.Value, error) {
 			expanded := expandGlobs(args)
 			cmd := exec.Command(name, expanded...)
 			cmd.Stdin = os.Stdin
-			cmd.Stdout = os.Stdout
+			cmd.Stdout = env.Stdout()
 			cmd.Stderr = os.Stderr
 			cmd.Env = env.BuildEnv()
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -703,8 +725,20 @@ func evalBg(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	bgEnv := core.NewEnv(env)
+	cmdStr := "builtin"
+	if child.Kind == ast.NCmd && len(child.Children) > 0 {
+		cmdStr = child.Children[0].Tok.Val
+	}
+	jobID := jobs.AddJob(0, cmdStr, nil)
+	j := jobs.FindJob(jobID)
 	go func() {
 		Eval(child, bgEnv)
+		if j != nil {
+			j.Mu.Lock()
+			j.Status = "Done"
+			j.Mu.Unlock()
+			close(j.Done)
+		}
 	}()
 	return core.Nil, nil
 }

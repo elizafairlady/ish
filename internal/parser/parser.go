@@ -17,41 +17,57 @@ func IsAssignment(tok ast.Token) bool {
 // parsePosixAssign handles FOO=bar (no whitespace around =).
 // Also handles FOO= (empty value) and prefix assignments (FOO=bar cmd args).
 func (p *Parser) parsePosixAssign() (*ast.Node, error) {
-	nameTok := p.advance() // consume IDENT
-	eqTok := p.advance()  // consume EQUALS (adjacent to ident — no space)
+	// Collect one or more consecutive VAR=val assignments.
+	var assigns []*ast.Node
+	for {
+		nameTok := p.advance() // consume IDENT
+		eqTok := p.advance()   // consume EQUALS (adjacent to ident — no space)
 
-	// Collect value as compound word if adjacent to =
-	var val *ast.Node
-	if !eqTok.SpaceAfter && p.cur().Type != ast.TNewline &&
-		p.cur().Type != ast.TSemicolon && p.cur().Type != ast.TEOF {
-		var err error
-		val, err = p.parseCompoundWord()
-		if err != nil {
-			return nil, err
+		// Collect value as compound word if adjacent to =
+		var val *ast.Node
+		if !eqTok.SpaceAfter && p.cur().Type != ast.TNewline &&
+			p.cur().Type != ast.TSemicolon && p.cur().Type != ast.TEOF {
+			var err error
+			val, err = p.parseCompoundWord()
+			if err != nil {
+				return nil, err
+			}
 		}
+
+		node := &ast.Node{Kind: ast.NAssign, Tok: nameTok, Pos: nameTok.Pos}
+		if val != nil {
+			node.Children = []*ast.Node{val}
+		}
+		assigns = append(assigns, node)
+
+		// If next is another IDENT with adjacent =, loop to collect it
+		if p.cur().Type == ast.TIdent && !p.cur().SpaceAfter && p.peek(1).Type == ast.TEquals {
+			continue
+		}
+		break
 	}
 
-	// NAssign: Tok.Val = variable name, Children[0] = value node (if any)
-	node := &ast.Node{Kind: ast.NAssign, Tok: nameTok, Pos: nameTok.Pos}
-	if val != nil {
-		node.Children = []*ast.Node{val}
-	}
-
-	// Check for prefix assignment: FOO=bar cmd args
+	// Check for prefix assignment: FOO=bar [BAR=baz] cmd args
+	// A command can start with an identifier, keyword (true/false), path, or dot.
 	cur := p.cur()
-	if cur.Type == ast.TIdent || cur.Type == ast.TDiv || cur.Type == ast.TDot || cur.Type == ast.TTilde {
+	if cur.Type == ast.TIdent || cur.Type == ast.TDiv || cur.Type == ast.TDot || cur.Type == ast.TTilde ||
+		cur.Type == ast.TTrue || cur.Type == ast.TFalse || cur.Type == ast.TNil ||
+		(cur.Type.IsKeyword() && !isBlockEnd(cur.Type)) {
 		cmd, err := p.parseStmt()
 		if err != nil {
 			return nil, err
 		}
 		if cmd != nil && cmd.Kind == ast.NCmd {
-			cmd.Assigns = append([]*ast.Node{node}, cmd.Assigns...)
+			cmd.Assigns = append(assigns, cmd.Assigns...)
 			return cmd, nil
 		}
-		return node, nil
 	}
 
-	return node, nil
+	// No command follows — return assignments as standalone statements
+	if len(assigns) == 1 {
+		return assigns[0], nil
+	}
+	return &ast.Node{Kind: ast.NBlock, Children: assigns, Pos: assigns[0].Pos}, nil
 }
 
 func isBlockEnd(tt ast.TokenType) bool {
@@ -840,7 +856,7 @@ func (p *Parser) looksLikeTuple() bool {
 
 // looksLikeTest peeks inside [ ] for POSIX test patterns (flags like -n, operators like =).
 func (p *Parser) looksLikeTest() bool {
-	// [ followed by flag (-n, -f, etc.) or containing = / != at depth 1
+	// Scan tokens between [ and ] looking for test-like patterns.
 	for i := p.pos + 1; ; i++ {
 		p.fillTo(i)
 		idx := i - p.base
@@ -851,13 +867,29 @@ func (p *Parser) looksLikeTest() bool {
 		if t.Type == ast.TRBracket || t.Type == ast.TEOF || t.Type == ast.TNewline {
 			return false
 		}
-		// Flag like -n, -f, -d → test command
+		// Flag like -n, -f, -d at start → test command
 		if t.Type == ast.TMinus && i == p.pos+1 {
 			return true
 		}
 		// = or != between values → test command
 		if t.Type == ast.TEquals || t.Type == ast.TNe || t.Type == ast.TBang {
 			return true
+		}
+		// -gt, -lt, -eq, -ne, -ge, -le, -nt, -ot, -ef, -a, -o → test operators
+		// These appear as TMinus followed by TIdent (adjacent, no space).
+		if t.Type == ast.TMinus {
+			p.fillTo(i + 1)
+			idx2 := i + 1 - p.base
+			if idx2 < len(p.tokens) {
+				next := p.tokens[idx2]
+				if next.Type == ast.TIdent {
+					switch next.Val {
+					case "gt", "lt", "eq", "ne", "ge", "le", "nt", "ot", "ef", "a", "o",
+						"n", "z", "f", "d", "e", "s", "r", "w", "x", "L", "p", "S", "t":
+						return true
+					}
+				}
+			}
 		}
 	}
 }
@@ -1212,6 +1244,9 @@ func nodeToString(n *ast.Node) string {
 	}
 	switch n.Kind {
 	case ast.NLit, ast.NIdent, ast.NPath, ast.NFlag:
+		if n.Tok.Type == ast.TAtom {
+			return ":" + n.Tok.Val
+		}
 		return n.Tok.Val
 	case ast.NArg:
 		var b strings.Builder
@@ -1585,9 +1620,31 @@ func (p *Parser) parseStmtList(terminator ast.TokenType) ([]*ast.Node, error) {
 func (p *Parser) parseIf() (*ast.Node, error) {
 	p.advance() // consume TIf
 
+	// Lookahead: scan to determine if this is `if ... then` (POSIX) or `if ... do` (ish).
+	// If ish-style, parse condition in expression context so > and < are comparisons.
+	isIshStyle := false
+	for i := p.pos; ; i++ {
+		t := p.rawAt(i)
+		if t.Type == ast.TEOF {
+			break
+		}
+		if t.Type == ast.TDo {
+			isIshStyle = true
+			break
+		}
+		if t.Type == ast.TThen {
+			break
+		}
+	}
+
 	// Parse condition
 	old := p.pushTerminators(ast.TThen, ast.TDo)
+	savedExpr := p.exprContext
+	if isIshStyle {
+		p.exprContext = true
+	}
 	cond, err := p.parseList()
+	p.exprContext = savedExpr
 	p.restoreTerminators(old)
 	if err != nil {
 		return nil, err

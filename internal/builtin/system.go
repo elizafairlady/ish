@@ -23,7 +23,7 @@ func builtinType(args []string, env *core.Env) (int, error) {
 		} else if path, err := exec.LookPath(name); err == nil {
 			fmt.Fprintf(env.Stdout(), "%s is %s\n", name, path)
 		} else {
-			fmt.Fprintf(env.Stdout(), "ish: type: %s: not found\n", name)
+			fmt.Fprintf(os.Stderr, "ish: type: %s: not found\n", name)
 			code = 1
 		}
 	}

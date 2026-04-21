@@ -820,11 +820,32 @@ func (l *Lexer) lexHeredoc() {
 	l.emit(ast.THeredoc, "<<")
 	if quoted {
 		l.tokens = append(l.tokens, ast.Token{Type: ast.TString, Val: content, Pos: l.pos, Quoted: true})
+		l.lastEmitted = ast.TString
 	} else {
-		l.tokens = append(l.tokens, ast.Token{Type: ast.TString, Val: content, Pos: l.pos})
+		// Unquoted heredoc: process content for $variable and $(cmd) expansion,
+		// emitting the same token sequence as a double-quoted string.
+		l.lexHeredocInterp(content)
 	}
-	l.lastEmitted = ast.TString
 }
+
+// lexHeredocInterp processes an unquoted heredoc body for variable/command
+// expansion by temporarily splicing the content into the lexer's source
+// and reusing the double-quote interpolation machinery.
+func (l *Lexer) lexHeredocInterp(content string) {
+	// Save lexer state
+	savedSrc := l.src
+	savedPos := l.pos
+
+	// Inject content wrapped in double quotes so lexDoubleQuote handles it
+	l.src = `"` + content + `"`
+	l.pos = 0
+	l.lexDoubleQuote()
+
+	// Restore lexer state
+	l.src = savedSrc
+	l.pos = savedPos
+}
+
 
 // lexBacktick handles `...` legacy command substitution.
 // Emits as TDollarLParen + TString(content) + TRParen to represent $(content).
@@ -847,11 +868,22 @@ func (l *Lexer) lexBacktick() {
 		l.pos++
 	}
 	// Emit as command substitution: $( content )
-	// For now, emit the content as a single string token that the evaluator
-	// will re-parse. Future: recursively lex the backtick interior.
+	// Recursively lex the backtick content so the parser sees real tokens.
 	content := buf.String()
 	l.emit(ast.TDollarLParen, "$(")
-	l.emit(ast.TString, content)
+
+	savedSrc := l.src
+	savedPos := l.pos
+	l.src = content
+	l.pos = 0
+	for l.pos < len(l.src) {
+		if l.lexStep() {
+			break
+		}
+	}
+	l.src = savedSrc
+	l.pos = savedPos
+
 	l.emit(ast.TRParen, ")")
 }
 
