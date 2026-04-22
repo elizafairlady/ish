@@ -488,7 +488,7 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 			modName := prefix[:dotIdx]
 			fnPrefix := prefix[dotIdx+1:]
 			if mod, ok := env.GetModule(modName); ok {
-				for name := range mod.NativeFns {
+				for name := range mod.Fns {
 					if strings.HasPrefix(name, fnPrefix) {
 						candidates = append(candidates, modName+"."+name)
 					}

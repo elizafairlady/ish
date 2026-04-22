@@ -1,4 +1,4 @@
-# List extensions written in ish.
+# List: list-specific operations.
 
 defmodule List do
   def zip [], _ do [] end
@@ -56,17 +56,13 @@ defmodule List do
 
   def min_by [h | t], f do
     t |> List.reduce(h, \acc, x ->
-      fx = f x
-      facc = f acc
-      if fx < facc do x else acc end
+      if f(x) < f(acc) do x else acc end
     end)
   end
 
   def max_by [h | t], f do
     t |> List.reduce(h, \acc, x ->
-      fx = f x
-      facc = f acc
-      if fx > facc do x else acc end
+      if f(x) > f(acc) do x else acc end
     end)
   end
 

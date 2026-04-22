@@ -260,36 +260,82 @@ func formatDelimited(v core.Value, delim rune) (core.Value, error) {
 	return core.StringVal(result), nil
 }
 
-func stdlibFromLines(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("from_lines: expected 1 argument, got %d", len(args))
+// Lines converts an ish value to text for shell output (pipes, redirects).
+// Protocol-based: each type converts to its natural text representation.
+//   - String → the string itself
+//   - List   → each element on its own line (strings raw, compounds inspected)
+//   - Map    → JSON encoding
+//   - Tuple  → inspect representation
+//   - Nil    → empty string
+//   - other  → ToStr()
+func Lines(val core.Value) string {
+	switch val.Kind {
+	case core.VNil:
+		return ""
+	case core.VString:
+		return val.ToStr()
+	case core.VList:
+		elems := val.GetElems()
+		parts := make([]string, len(elems))
+		for i, elem := range elems {
+			parts[i] = elemToLine(elem)
+		}
+		return strings.Join(parts, "\n")
+	case core.VMap:
+		raw := valueToJSON(val)
+		bs, err := json.MarshalIndent(raw, "", "  ")
+		if err != nil {
+			return val.Inspect()
+		}
+		return string(bs)
+	case core.VTuple:
+		return val.Inspect()
+	default:
+		return val.ToStr()
 	}
-	s := args[0].ToStr()
-	if s == "" {
-		return core.ListVal(), nil
+}
+
+// elemToLine converts a single list element to its line representation.
+// Strings are raw (no quotes), everything else uses its natural format.
+func elemToLine(val core.Value) string {
+	if val.Kind == core.VString {
+		return val.Str
 	}
-	lines := strings.Split(s, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
+	return val.ToStr()
+}
+
+// Unlines converts shell text (byte stream) to an ish value.
+// Default: splits on newlines into a list of strings.
+// Bridge functions (JSON.parse, CSV.parse) override this with their own parsing.
+func Unlines(text string) core.Value {
+	if text == "" {
+		return core.ListVal()
 	}
+	if strings.HasSuffix(text, "\n") {
+		text = text[:len(text)-1]
+	}
+	lines := strings.Split(text, "\n")
 	elems := make([]core.Value, len(lines))
 	for i, line := range lines {
 		elems[i] = core.StringVal(line)
 	}
-	return core.ListVal(elems...), nil
+	return core.ListVal(elems...)
 }
 
-func stdlibToLines(args []core.Value, scope core.Scope) (core.Value, error) {
+func stdlibLines(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("to_lines: expected 1 argument, got %d", len(args))
+		return core.Nil, fmt.Errorf("IO.lines: expected 1 argument, got %d", len(args))
 	}
-	if args[0].Kind != core.VList {
-		return core.Nil, fmt.Errorf("to_lines: expected a list, got %s", args[0].Inspect())
+	return core.StringVal(Lines(args[0])), nil
+}
+
+func stdlibUnlines(args []core.Value, scope core.Scope) (core.Value, error) {
+	if len(args) != 1 {
+		return core.Nil, fmt.Errorf("IO.unlines: expected 1 argument, got %d", len(args))
 	}
-	a0Elems := args[0].GetElems()
-	parts := make([]string, len(a0Elems))
-	for i, elem := range a0Elems {
-		parts[i] = elem.ToStr()
+	// If already a list, pass through (protocol: no double conversion)
+	if args[0].Kind == core.VList {
+		return args[0], nil
 	}
-	return core.StringVal(strings.Join(parts, "\n")), nil
+	return Unlines(args[0].ToStr()), nil
 }

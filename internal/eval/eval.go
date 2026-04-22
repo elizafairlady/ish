@@ -50,114 +50,158 @@ func Eval(node *ast.Node, scope core.Scope) (core.Value, error) {
 		}
 	}
 
+	var val core.Value
+	var err error
+
 	switch node.Kind {
 	case ast.NBlock:
-		return evalBlock(node, scope)
+		val, err = evalBlock(node, scope)
 	case ast.NLit:
-		return evalLit(node, scope)
+		val, err = evalLit(node, scope)
 	case ast.NIdent:
-		return evalIdent(node, scope)
+		val, err = evalIdent(node, scope)
 	case ast.NBinOp:
-		return evalBinOp(node, scope)
+		val, err = evalBinOp(node, scope)
 	case ast.NUnary:
-		return evalUnary(node, scope)
+		val, err = evalUnary(node, scope)
 	case ast.NMatch:
-		return evalMatch(node, scope)
+		val, err = evalMatch(node, scope)
 	case ast.NTuple:
-		return evalTuple(node, scope)
+		val, err = evalTuple(node, scope)
 	case ast.NList:
-		return evalList(node, scope)
+		val, err = evalList(node, scope)
 	case ast.NCall:
-		return evalCall(node, scope)
+		val, err = evalCall(node, scope)
 	case ast.NIshFn:
-		return evalIshFn(node, scope)
+		val, err = evalIshFn(node, scope)
 	case ast.NLambda:
-		return evalLambda(node, scope)
+		val, err = evalLambda(node, scope)
 	case ast.NAccess:
-		return evalAccess(node, scope)
+		val, err = evalAccess(node, scope)
 	case ast.NIshIf:
-		return evalIshIf(node, scope)
+		val, err = evalIshIf(node, scope)
 	case ast.NIshMatch:
-		return evalIshMatch(node, scope)
+		val, err = evalIshMatch(node, scope)
 	case ast.NCmd:
-		return evalCmd(node, scope)
+		val, err = evalCmd(node, scope)
 	case ast.NVarRef:
-		return evalVarRef(node, scope)
+		val, err = evalVarRef(node, scope)
 	case ast.NPath:
-		return core.StringVal(node.Tok.Val), nil
+		val, err = core.StringVal(expandTilde(node.Tok.Val)), nil
+	case ast.NIPv4, ast.NIPv6:
+		val, err = core.StringVal(node.Tok.Val), nil
 	case ast.NFlag:
-		return core.StringVal(node.Tok.Val), nil
+		val, err = core.StringVal(node.Tok.Val), nil
 	case ast.NAssign:
-		return evalPosixAssign(node, scope)
+		val, err = evalPosixAssign(node, scope)
 	case ast.NPipeFn:
-		return evalPipeFn(node, scope)
+		val, err = evalPipeFn(node, scope)
 	case ast.NAndList:
-		return evalAndList(node, scope)
+		val, err = evalAndList(node, scope)
 	case ast.NOrList:
-		return evalOrList(node, scope)
+		val, err = evalOrList(node, scope)
 	case ast.NIf:
-		return evalIf(node, scope)
+		val, err = evalIf(node, scope)
 	case ast.NFor:
-		return evalFor(node, scope)
+		val, err = evalFor(node, scope)
 	case ast.NWhile:
-		return evalWhileUntil(node, scope, false)
+		val, err = evalWhileUntil(node, scope, false)
 	case ast.NUntil:
-		return evalWhileUntil(node, scope, true)
+		val, err = evalWhileUntil(node, scope, true)
 	case ast.NCase:
-		return evalCase(node, scope)
+		val, err = evalCase(node, scope)
 	case ast.NSubshell:
-		return evalSubshell(node, scope)
+		val, err = evalSubshell(node, scope)
 	case ast.NGroup:
-		return Eval(node.Children[0], scope)
+		val, err = Eval(node.Children[0], scope)
 	case ast.NCmdSub:
-		return evalCmdSubNode(node, scope)
+		val, err = evalCmdSubNode(node, scope)
 	case ast.NArithSub:
-		if len(node.Children) == 0 { return core.IntVal(0), nil }
-		return Eval(node.Children[0], scope)
+		if len(node.Children) == 0 {
+			val, err = core.IntVal(0), nil
+		} else {
+			val, err = Eval(node.Children[0], scope)
+		}
 	case ast.NInterpString:
-		return evalInterpString(node, scope)
+		val, err = evalInterpString(node, scope)
 	case ast.NInterpolation:
-		if len(node.Children) == 0 { return core.StringVal(""), nil }
-		v, err := Eval(node.Children[0], scope)
-		if err != nil { return core.Nil, err }
-		return core.StringVal(v.ToStr()), nil
+		if len(node.Children) == 0 {
+			val, err = core.StringVal(""), nil
+		} else {
+			v, e := Eval(node.Children[0], scope)
+			if e != nil {
+				val, err = core.Nil, e
+			} else {
+				val, err = core.StringVal(v.ToStr()), nil
+			}
+		}
 	case ast.NParamExpand:
-		return evalParamExpand(node, scope)
+		val, err = evalParamExpand(node, scope)
 	case ast.NArg:
-		return evalArg(node, scope)
+		val, err = evalArg(node, scope)
 	case ast.NMap:
-		return evalMap(node, scope)
+		val, err = evalMap(node, scope)
 	case ast.NFnDef:
-		return evalPosixFnDef(node, scope)
+		val, err = evalPosixFnDef(node, scope)
 	case ast.NCapture:
-		return evalCapture(node, scope)
+		val, err = evalCapture(node, scope)
 	case ast.NPipe:
-		return evalPipe(node, scope)
+		val, err = evalPipe(node, scope)
 	case ast.NBg:
-		return evalBg(node, scope)
+		val, err = evalBg(node, scope)
 	case ast.NIshSpawn:
-		return evalIshSpawn(node, scope)
+		val, err = evalIshSpawn(node, scope)
 	case ast.NIshSpawnLink:
-		return evalIshSpawnLink(node, scope)
+		val, err = evalIshSpawnLink(node, scope)
 	case ast.NIshSend:
-		return evalIshSend(node, scope)
+		val, err = evalIshSend(node, scope)
 	case ast.NIshReceive:
-		return evalIshReceive(node, scope)
+		val, err = evalIshReceive(node, scope)
 	case ast.NIshMonitor:
-		return evalIshMonitor(node, scope)
+		val, err = evalIshMonitor(node, scope)
 	case ast.NIshAwait:
-		return evalIshAwait(node, scope)
+		val, err = evalIshAwait(node, scope)
 	case ast.NIshSupervise:
-		return evalIshSupervise(node, scope)
+		val, err = evalIshSupervise(node, scope)
 	case ast.NIshTry:
-		return evalIshTry(node, scope)
+		val, err = evalIshTry(node, scope)
 	case ast.NDefModule:
-		return evalDefModule(node, scope)
+		val, err = evalDefModule(node, scope)
 	case ast.NUse:
-		return evalUse(node, scope)
+		val, err = evalUse(node, scope)
+	case ast.NImport:
+		val, err = evalImport(node, scope)
 	default:
 		return core.Nil, fmt.Errorf("unhandled node kind %d (%q)", node.Kind, node.Tok.Val)
 	}
+
+	if err != nil {
+		return val, err
+	}
+
+	// Value redirect: when a value-producing node has redirects, apply
+	// IO.unlines to convert the value to text and write it to the target.
+	// External commands and builtins return core.Nil (their redirects are
+	// already handled by applyRedirects on the exec.Cmd), so this only fires
+	// for function calls, pipelines, and other expression nodes.
+	if len(node.Redirs) > 0 && val.Kind != core.VNil {
+		if rerr := writeValueRedirs(val, node.Redirs, scope); rerr != nil {
+			return core.Nil, rerr
+		}
+		return core.Nil, nil
+	}
+
+	return val, nil
+}
+
+// expandTilde replaces a leading ~ with the user's home directory.
+func expandTilde(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home + path[1:]
+		}
+	}
+	return path
 }
 
 func evalBlock(node *ast.Node, scope core.Scope) (core.Value, error) {
@@ -313,6 +357,29 @@ func RunCmdSub(cmd string, scope core.Scope) (string, error) {
 	return result, nil
 }
 
+// makeSymbolLookup creates a parser.SymbolLookup that resolves names from the
+// runtime scope. This lets the parser know about functions defined in previous
+// RunSource calls without copying the entire env.
+func makeSymbolLookup(scope core.Scope) parser.SymbolLookup {
+	return func(name string) *parser.Symbol {
+		// Check for user-defined or variable-bound function
+		if v, ok := scope.Get(name); ok && v.Kind == core.VFn {
+			return &parser.Symbol{Kind: parser.SymFn}
+		}
+		if _, ok := scope.GetFn(name); ok {
+			return &parser.Symbol{Kind: parser.SymFn}
+		}
+		if _, ok := scope.GetNativeFn(name); ok {
+			return &parser.Symbol{Kind: parser.SymFn}
+		}
+		// Check for module
+		if _, ok := scope.GetModule(name); ok {
+			return &parser.Symbol{Kind: parser.SymModule}
+		}
+		return nil
+	}
+}
+
 // RunSource parses and evaluates a source string.
 func RunSource(src string, scope core.Scope) (core.Value, error) {
 	scope.GetCtx().Source = src
@@ -324,7 +391,7 @@ func RunSource(src string, scope core.Scope) (core.Value, error) {
 		defer d.PopSource()
 	}
 	l := lexer.New(src)
-	node, err := parser.Parse(l)
+	node, err := parser.ParseWithEnv(l, makeSymbolLookup(scope))
 	if l.Error() != "" {
 		fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
 		scope.GetCtx().SetExit(2)

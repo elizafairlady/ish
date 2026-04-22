@@ -246,6 +246,33 @@ func TestPOSIX_Pipelines(t *testing.T) {
 	})
 }
 
+// TestPOSIX_PipeWithDottedFilename tests that commands with uppercase-dotted
+// filename arguments (README.md, Makefile.bak) work correctly when piped.
+// Regression: evalWithIO didn't handle NAccess args with the same
+// try-eval-then-stringify fallback that evalCmd uses, so "cat README.md | grep foo"
+// would silently produce no output because Eval(NAccess("README","md")) fails
+// and the arg is lost.
+func TestPOSIX_PipeWithDottedFilename(t *testing.T) {
+	// Create a temp dir and cd into it so bare "README.md" resolves
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/README.md", []byte("line1 hello\nline2 world\nline3 hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+
+	posixRun(t, []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{"uppercase dotted file piped to grep", "cat README.md | grep world", "line2 world\nline3 hello world\n"},
+		{"uppercase dotted file piped to cat", "cat README.md | cat", "line1 hello\nline2 world\nline3 hello world\n"},
+		{"uppercase dotted file piped to wc -l", "cat README.md | wc -l", "3\n"},
+	})
+}
+
 // =========================================================================
 // Chapter 9: Lists (&&, ||, ;, &)
 // =========================================================================
@@ -577,7 +604,7 @@ func TestPOSIX_Filenames(t *testing.T) {
 		{"IP address", "echo 192.168.1.120", "192.168.1.120\n"},
 		{"user@host", "echo user@host.example.com", "user@host.example.com\n"},
 		{"url-like path", "echo https://example.com", "https://example.com\n"},
-		{"tilde path", "echo ~/Documents", "~/Documents\n"},
+		{"tilde path", "echo ~/Documents", os.Getenv("HOME") + "/Documents\n"},
 	})
 }
 

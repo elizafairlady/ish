@@ -12,17 +12,47 @@ import (
 	"ish/internal/stdlib"
 )
 
-// TestEnv creates a fully-initialized environment for tests.
+var baseTestEnv *core.Env
+
+func init() {
+	baseTestEnv = core.TopEnv()
+	baseTestEnv.Ctx.Proc = process.NewProcess()
+	stdlib.Register(baseTestEnv)
+	builtin.Init(builtin.EvalContext{RunSource: eval.RunSource})
+	baseTestEnv.Ctx.CmdSub = eval.RunCmdSub
+	baseTestEnv.Ctx.CallFn = eval.CallFn
+	stdlib.LoadPrelude(baseTestEnv, func(src string, e *core.Env) {
+		eval.RunSource(src, e) //nolint: errcheck
+	})
+}
+
+// TestEnv creates a fresh top-level environment for tests with shared
+// module/function definitions from the prelude. Each test gets its own
+// ExecCtx so exit codes, process state, etc. don't leak.
 func TestEnv() *core.Env {
 	env := core.TopEnv()
 	env.Ctx.Proc = process.NewProcess()
-	stdlib.Register(env)
-	builtin.Init(builtin.EvalContext{RunSource: eval.RunSource})
 	env.Ctx.CmdSub = eval.RunCmdSub
 	env.Ctx.CallFn = eval.CallFn
-	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
-		eval.RunSource(src, e) //nolint: errcheck
-	})
+	// Copy modules, functions, and native functions from the prelude-loaded base
+	if baseTestEnv.Modules != nil {
+		env.Modules = make(map[string]*core.Module, len(baseTestEnv.Modules))
+		for name, mod := range baseTestEnv.Modules {
+			env.Modules[name] = mod
+		}
+	}
+	if baseTestEnv.Fns != nil {
+		env.Fns = make(map[string]*core.FnValue, len(baseTestEnv.Fns))
+		for name, fn := range baseTestEnv.Fns {
+			env.Fns[name] = fn
+		}
+	}
+	if baseTestEnv.NativeFns != nil {
+		env.NativeFns = make(map[string]core.NativeFn, len(baseTestEnv.NativeFns))
+		for name, nfn := range baseTestEnv.NativeFns {
+			env.NativeFns[name] = nfn
+		}
+	}
 	return env
 }
 

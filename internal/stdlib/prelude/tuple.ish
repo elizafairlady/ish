@@ -1,0 +1,4 @@
+# Tuple: type-specific operations only. Enum handles polymorphic operations.
+
+defmodule Tuple do
+end

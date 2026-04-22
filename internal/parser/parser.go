@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"ish/internal/ast"
@@ -146,6 +147,11 @@ func isValueStart(tt ast.TokenType) bool {
 
 const maxParseDepth = 1000
 
+// SymbolLookup is a callback that resolves names from the runtime environment.
+// Returns nil if the name is unknown. Used to feed the env's function registry
+// back into the parser without creating an import dependency on eval/core.
+type SymbolLookup func(name string) *Symbol
+
 type Parser struct {
 	lex             *lexer.Lexer
 	tokens          []ast.Token
@@ -157,18 +163,93 @@ type Parser struct {
 	committed       bool  // set when an expression commitment point is reached during tentative parsing
 	exprContext     bool  // when true, > and < are comparisons (not redirects). Set by lambda bodies, fn guards, etc.
 	savedPositions  []int // tentative parse save points — compact must not drop these
+	symbols         map[string]*Symbol // live symbol table — seeded from SeedSymbols, grows during parsing
+	ownSymbols      bool               // true after ensureOwn — symbols is a local map, not SeedSymbols
+	envLookup       SymbolLookup       // optional: resolves names from the runtime env
+}
+
+func newParser(l *lexer.Lexer) *Parser {
+	return &Parser{lex: l, symbols: SeedSymbols}
+}
+
+// resolve looks up a symbol: local declarations first, then seed, then env callback.
+func (p *Parser) resolve(name string) *Symbol {
+	// Local declarations (or SeedSymbols if no declarations yet)
+	if sym, ok := p.symbols[name]; ok {
+		return sym
+	}
+	// Seed symbols (when local table has diverged from seed)
+	if p.ownSymbols {
+		if sym, ok := SeedSymbols[name]; ok {
+			return sym
+		}
+	}
+	// Runtime env callback (functions defined in previous RunSource calls)
+	if p.envLookup != nil {
+		return p.envLookup(name)
+	}
+	return nil
+}
+
+// ensureOwn creates a mutable local symbol table if we're still pointing at the shared seed.
+func (p *Parser) ensureOwn() {
+	if !p.ownSymbols {
+		p.symbols = make(map[string]*Symbol, 8)
+		p.ownSymbols = true
+	}
+}
+
+// declare adds or updates a symbol in the parser's local table.
+func (p *Parser) declare(name string, kind SymKind) {
+	if existing := p.resolve(name); existing != nil {
+		if existing.Kind == SymVar && kind == SymFn {
+			p.ensureOwn()
+			p.symbols[name] = &Symbol{Kind: SymFn}
+		}
+		return
+	}
+	p.ensureOwn()
+	p.symbols[name] = &Symbol{Kind: kind}
+}
+
+// declareModuleFn adds a function to a module's symbol entry.
+func (p *Parser) declareModuleFn(modName, fnName string) {
+	p.ensureOwn()
+	sym, ok := p.symbols[modName]
+	if !ok {
+		// Check if seed/env has this module and copy its Fns
+		if base := p.resolve(modName); base != nil && base.Kind == SymModule {
+			fns := make(map[string]bool, len(base.Fns)+1)
+			for k, v := range base.Fns {
+				fns[k] = v
+			}
+			sym = &Symbol{Kind: SymModule, Fns: fns}
+		} else {
+			sym = &Symbol{Kind: SymModule, Fns: map[string]bool{}}
+		}
+		p.symbols[modName] = sym
+	}
+	if sym.Fns == nil {
+		sym.Fns = map[string]bool{}
+	}
+	sym.Fns[fnName] = true
 }
 
 func Parse(l *lexer.Lexer) (*ast.Node, error) {
-	p := &Parser{lex: l}
+	return newParser(l).parseProgram()
+}
+
+// ParseWithEnv parses with a runtime symbol lookup callback, allowing the
+// parser to resolve names defined in previous RunSource calls.
+func ParseWithEnv(l *lexer.Lexer, lookup SymbolLookup) (*ast.Node, error) {
+	p := newParser(l)
+	p.envLookup = lookup
 	return p.parseProgram()
 }
 
 // ParseWithCommands is kept for API compatibility during migration.
-// The isCmd callback is ignored — the parser is now purely syntactic.
 func ParseWithCommands(l *lexer.Lexer, isCmd func(string) bool) (*ast.Node, error) {
-	p := &Parser{lex: l}
-	return p.parseProgram()
+	return newParser(l).parseProgram()
 }
 
 func (p *Parser) compact() {
@@ -516,6 +597,19 @@ func (p *Parser) parsePipeline() (*ast.Node, error) {
 			}
 			left = &ast.Node{Kind: ast.NPipeFn, Children: []*ast.Node{left, right}}
 		default:
+			// \> \>> \< — escaped redirect at pipeline level
+			if p.cur().Type == ast.TBackslash {
+				next := p.peek(1)
+				if next.Type == ast.TGt || next.Type == ast.TRedirAppend || next.Type == ast.TLt {
+					p.advance() // consume backslash
+					r, err := p.parseRedir()
+					if err != nil {
+						return nil, err
+					}
+					left.Redirs = append(left.Redirs, r)
+					continue
+				}
+			}
 			return left, nil
 		}
 	}
@@ -577,6 +671,8 @@ func (p *Parser) parseStmt() (*ast.Node, error) {
 		return p.parseDefModule()
 	case ast.TUse:
 		return p.parseUse()
+	case ast.TImport:
+		return p.parseImport()
 	case ast.TMatch:
 		return p.parseIshMatchExpr()
 	case ast.TSpawn:
@@ -698,10 +794,11 @@ func (p *Parser) buildDotChain() *ast.Node {
 }
 
 // dispatchIdent handles a bare TIdent at statement start.
-// Uses SYNTAX and SpaceAfter to determine: POSIX assign, binding, expression, or invocation.
+// Uses the symbol table and syntax to decide: assign, binding, expression (NCall), or command (NCmd).
 func (p *Parser) dispatchIdent() (*ast.Node, error) {
 	ident := p.cur()       // the identifier (cur skips WS)
 	next := p.peek(1)      // next non-WS token after ident
+	sym := p.resolve(ident.Val) // symbol table lookup
 
 	// Adjacency: does the ident have NO space after it?
 	adjacent := !ident.SpaceAfter
@@ -711,25 +808,37 @@ func (p *Parser) dispatchIdent() (*ast.Node, error) {
 		if next.Type == ast.TEquals {
 			return p.parsePosixAssign()
 		}
-		// Adjacent dot: a.b → module-qualified name.
-		// Build the dot chain once, then try expression continuation.
-		// If expression commits (operator, lambda, parens), keep it.
-		// Otherwise roll back to after the chain and dispatch as command.
+		// Adjacent dot: a.b
 		if next.Type == ast.TDot {
+			// Known module → commit to expression (NCall path)
+			if sym != nil && sym.Kind == SymModule {
+				p.committed = true
+				node, err := p.parseExpression()
+				if err != nil {
+					return nil, err
+				}
+				// Statement-level comma args: Module.func arg1, arg2
+				if node != nil && node.Kind == ast.NCall && p.cur().Type == ast.TComma {
+					for p.cur().Type == ast.TComma {
+						p.advance()
+						arg, err := p.parseExpr(0)
+						if err != nil {
+							return nil, err
+						}
+						node.Children = append(node.Children, arg)
+					}
+				}
+				return node, nil
+			}
+			// Unknown or non-module → build dot chain, try expression, fall back to command
 			nameNode := p.buildDotChain()
 			afterChain := p.pos
-
-			// Terminator → standalone access (zero-arity call or module value)
 			if isTerminator(p.cur().Type) || p.isBlockEndToken() {
 				return nameNode, nil
 			}
-
-			// Try expression from the dot chain. On commitment, keep it.
-			// On non-commitment, rollback to afterChain and fall through to command.
 			if node, ok := p.tryParseExprFrom(nameNode, afterChain); ok {
 				return node, nil
 			}
-
 			return p.parseInvocationWithName(nameNode)
 		}
 		// Adjacent paren: name() — POSIX fn def, or name(args) — function call
@@ -737,11 +846,16 @@ func (p *Parser) dispatchIdent() (*ast.Node, error) {
 			if p.peek(2).Type == ast.TRParen {
 				return p.parsePosixFnDef()
 			}
-			// Adjacent paren call: func(a, b) → expression
 			return p.parseExpression()
 		}
-		// Other adjacent token → compound word / invocation
-		return p.parseInvocation()
+		// Terminator "adjacent" (no space, but nothing follows) — treat as spaced.
+		// Falls through to the symbol-table-driven dispatch below.
+		if isTerminator(next.Type) || p.isBlockEndToken() {
+			// fall through to spaced path
+		} else {
+			// Genuinely adjacent token → compound word / invocation
+			return p.parseInvocation()
+		}
 	}
 
 	// There IS whitespace after the ident. next is the token after the space.
@@ -784,16 +898,57 @@ func (p *Parser) dispatchIdent() (*ast.Node, error) {
 	// Terminator or block-end → standalone (zero-arg command or value)
 	if isTerminator(next.Type) || p.isBlockEndToken() {
 		tok := p.advance()
+		// Known function → zero-arg call (auto-invoke)
+		if sym != nil && sym.Kind == SymFn {
+			return &ast.Node{Kind: ast.NCall, Children: []*ast.Node{ast.IdentNode(tok)}, Pos: tok.Pos}, nil
+		}
+		// Builtin or POSIX fn → command (even in exprContext: break, continue, return are commands)
+		if sym != nil && (sym.Kind == SymBuiltin || sym.Kind == SymPOSIXFn) {
+			return &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{ast.IdentNode(tok)}, Pos: tok.Pos}, nil
+		}
+		// Known variable → value reference
+		if sym != nil && sym.Kind == SymVar {
+			return ast.IdentNode(tok), nil
+		}
 		if p.exprContext {
 			return ast.IdentNode(tok), nil
 		}
+		// Unknown → command
 		return &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{ast.IdentNode(tok)}, Pos: tok.Pos}, nil
 	}
 
-	// Ambiguous: identifier followed by a value. Could be a function call
-	// (countdown n - 1) or a command (echo hello world).
+	// --- Symbol-table-driven dispatch ---
+	// Known ish function or variable → expression (NCall)
+	// Symbol table knowledge is a commitment: we know this is ish, not shell.
+	if sym != nil && (sym.Kind == SymFn || sym.Kind == SymVar) {
+		p.committed = true
+		node, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		// Statement-level comma args: func arg1, arg2, arg3
+		if node != nil && node.Kind == ast.NCall && p.cur().Type == ast.TComma {
+			for p.cur().Type == ast.TComma {
+				p.advance()
+				arg, err := p.parseExpr(0)
+				if err != nil {
+					return nil, err
+				}
+				node.Children = append(node.Children, arg)
+			}
+		}
+		return node, nil
+	}
+
+	// Known builtin or POSIX function → command (string args, shell semantics)
+	if sym != nil && (sym.Kind == SymBuiltin || sym.Kind == SymPOSIXFn) {
+		return p.parseInvocation()
+	}
+
+	// Unknown name: could be a function call or an external command.
 	// Try expression first. If we hit a commitment point (operator, comma,
-	// parens, pipe), keep it. Otherwise rollback and parse as command.
+	// parens, pipe), keep it. Otherwise rollback and parse as command —
+	// trust the kernel.
 	if node, ok := p.tryParseExpr(); ok {
 		return node, nil
 	}
@@ -1067,6 +1222,13 @@ func (p *Parser) parseInvocationWithName(nameNode *ast.Node) (*ast.Node, error) 
 		// Lowercase dotted idents (file.txt) go through compound word as paths.
 		isModuleAccess := cur.Type == ast.TIdent && !cur.SpaceAfter &&
 			p.peek(1).Type == ast.TDot && len(cur.Val) > 0 && cur.Val[0] >= 'A' && cur.Val[0] <= 'Z'
+		// \> \>> \< — escaped redirect: stop command parsing, let pipeline handle it
+		if cur.Type == ast.TBackslash {
+			next := p.peek(1)
+			if next.Type == ast.TGt || next.Type == ast.TRedirAppend || next.Type == ast.TLt {
+				break
+			}
+		}
 		if cur.Type == ast.TBackslash || cur.Type == ast.TLBracket ||
 			cur.Type == ast.TLBrace || cur.Type == ast.TPercentLBrace ||
 			cur.Type == ast.TNil || cur.Type == ast.TTrue || cur.Type == ast.TFalse ||
@@ -1140,10 +1302,126 @@ func (p *Parser) parseCompoundWord() (*ast.Node, error) {
 		return nil, nil
 	}
 	if len(parts) == 1 {
+		// Single tilde → NPath for expansion
+		if parts[0].Kind == ast.NLit && parts[0].Tok.Val == "~" {
+			return &ast.Node{Kind: ast.NPath, Tok: ast.Token{Type: ast.TIdent, Val: "~", Pos: parts[0].Pos}, Pos: parts[0].Pos}, nil
+		}
 		return parts[0], nil
 	}
+
+	// Classify compound words into semantic node types.
+	// NIPv4: 192.168.1.1
+	// NIPv6: ::1, fe80::1, 2001:db8::1
+	// NPath: ~/foo, /usr/bin, ./rel
+	// NArg: everything else
+	if allStatic(parts) {
+		assembled := nodeToString(&ast.Node{Kind: ast.NArg, Children: parts})
+		if looksLikeIPv4(parts) {
+			return &ast.Node{Kind: ast.NIPv4, Tok: ast.Token{Type: ast.TIdent, Val: assembled, Pos: parts[0].Pos}, Pos: parts[0].Pos}, nil
+		}
+		if isIPv6(assembled) {
+			return &ast.Node{Kind: ast.NIPv6, Tok: ast.Token{Type: ast.TIdent, Val: assembled, Pos: parts[0].Pos}, Pos: parts[0].Pos}, nil
+		}
+		if looksLikePath(parts) {
+			return &ast.Node{Kind: ast.NPath, Tok: ast.Token{Type: ast.TIdent, Val: assembled, Pos: parts[0].Pos}, Pos: parts[0].Pos}, nil
+		}
+	}
+
 	// Multiple adjacent parts → compound word
 	return &ast.Node{Kind: ast.NArg, Children: parts, Pos: parts[0].Pos}, nil
+}
+
+// allStatic returns true if all parts are literals or identifiers (no expansions).
+func allStatic(parts []*ast.Node) bool {
+	for _, p := range parts {
+		if p.Kind != ast.NLit && p.Kind != ast.NIdent {
+			return false
+		}
+	}
+	return true
+}
+
+// looksLikePath returns true if the parts form a filesystem path.
+func looksLikePath(parts []*ast.Node) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	first := parts[0]
+	if first.Kind == ast.NLit {
+		switch first.Tok.Val {
+		case "~", "/", ".":
+			return true
+		}
+	}
+	for _, p := range parts {
+		if p.Kind == ast.NLit && p.Tok.Val == "/" {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeIPv4 returns true if the assembled parts form a valid IPv4 address.
+func looksLikeIPv4(parts []*ast.Node) bool {
+	// Must contain dots and only numeric/dot parts
+	hasDot := false
+	for _, p := range parts {
+		if p.Kind != ast.NLit {
+			return false
+		}
+		switch p.Tok.Type {
+		case ast.TInt, ast.TFloat:
+			// ok
+		default:
+			if p.Tok.Val != "." {
+				return false
+			}
+			hasDot = true
+		}
+	}
+	if !hasDot {
+		return false
+	}
+	assembled := nodeToString(&ast.Node{Kind: ast.NArg, Children: parts})
+	return isIPv4(assembled)
+}
+
+func isIPv6(s string) bool {
+	// Must contain at least two colons (single colon could be port syntax, atom, etc.)
+	if strings.Count(s, ":") < 2 {
+		return false
+	}
+	// Only hex digits and colons allowed
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == ':') {
+			return false
+		}
+	}
+	// Validate with net.ParseIP
+	return net.ParseIP(s) != nil
+}
+
+func isIPv4(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if len(p) == 0 || len(p) > 3 {
+			return false
+		}
+		n := 0
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+			n = n*10 + int(c-'0')
+		}
+		if n > 255 {
+			return false
+		}
+	}
+	return true
 }
 
 // parseWordPart parses a single part of a compound word at the raw token level.
@@ -1587,6 +1865,12 @@ func (p *Parser) parseIshBind() (*ast.Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Track what was bound: lambda/fn → SymFn, anything else → SymVar
+	if rhs != nil && (rhs.Kind == ast.NLambda || rhs.Kind == ast.NIshFn) {
+		p.declare(nameTok.Val, SymFn)
+	} else {
+		p.declare(nameTok.Val, SymVar)
+	}
 	lhs := ast.IdentNode(nameTok)
 	return &ast.Node{Kind: ast.NMatch, Children: []*ast.Node{lhs, rhs}, Pos: nameTok.Pos}, nil
 }
@@ -2005,8 +2289,9 @@ func (p *Parser) parseCase() (*ast.Node, error) {
 
 func (p *Parser) parsePosixFnDef() (*ast.Node, error) {
 	nameTok := p.advance() // name
-	p.advance()            // (
-	p.advance()            // )
+	p.declare(nameTok.Val, SymPOSIXFn)
+	p.advance() // (
+	p.advance() // )
 	p.skipNewlines()
 
 	if p.cur().Type != ast.TLBrace {
@@ -2143,6 +2428,7 @@ func (p *Parser) parseIshFnWith(requireName bool) (*ast.Node, error) {
 		nameTok = ast.Token{Type: ast.TIdent, Val: "<anon>"}
 	} else if p.cur().Type == ast.TIdent {
 		nameTok = p.advance()
+		p.declare(nameTok.Val, SymFn)
 	} else if requireName {
 		return nil, fmt.Errorf("expected function name after 'fn' at pos %d", p.cur().Pos)
 	} else {
@@ -2234,6 +2520,7 @@ func (p *Parser) parseDefModule() (*ast.Node, error) {
 		return nil, fmt.Errorf("defmodule: expected module name")
 	}
 	name := p.advance()
+	p.declare(name.Val, SymModule)
 	if _, err := p.expect(ast.TDo); err != nil {
 		return nil, fmt.Errorf("defmodule: expected 'do'")
 	}
@@ -2242,6 +2529,7 @@ func (p *Parser) parseDefModule() (*ast.Node, error) {
 	old := p.pushTerminators(ast.TEnd)
 	defer p.restoreTerminators(old)
 
+	modName := name.Val
 	var children []*ast.Node
 	for !p.until(ast.TEnd, ast.TEOF) {
 		p.skipNewlines()
@@ -2251,9 +2539,16 @@ func (p *Parser) parseDefModule() (*ast.Node, error) {
 		var child *ast.Node
 		var err error
 		if p.cur().Type == ast.TFn || (p.cur().Type == ast.TIdent && p.cur().Val == "def") {
+			// Peek at the function name to register it in the module
+			fnNameTok := p.peek(1)
+			if fnNameTok.Type == ast.TIdent {
+				p.declareModuleFn(modName, fnNameTok.Val)
+			}
 			child, err = p.parseIshFnWith(true)
 		} else if p.cur().Type == ast.TUse {
 			child, err = p.parseUse()
+		} else if p.cur().Type == ast.TImport {
+			child, err = p.parseImport()
 		} else {
 			child, err = p.parseStmt()
 		}
@@ -2278,7 +2573,29 @@ func (p *Parser) parseUse() (*ast.Node, error) {
 		return nil, fmt.Errorf("use: expected module name")
 	}
 	name := p.advance()
+	// Copy module's functions into scope as bare SymFn names
+	if sym := p.resolve(name.Val); sym != nil && sym.Kind == SymModule {
+		for fn := range sym.Fns {
+			p.declare(fn, SymFn)
+		}
+	}
 	return &ast.Node{Kind: ast.NUse, Pos: pos, Tok: name}, nil
+}
+
+func (p *Parser) parseImport() (*ast.Node, error) {
+	pos := p.cur().Pos
+	p.advance() // consume TImport
+	if p.cur().Type != ast.TIdent {
+		return nil, fmt.Errorf("import: expected module name")
+	}
+	name := p.advance()
+	// Copy module's functions into scope as bare SymFn names
+	if sym := p.resolve(name.Val); sym != nil && sym.Kind == SymModule {
+		for fn := range sym.Fns {
+			p.declare(fn, SymFn)
+		}
+	}
+	return &ast.Node{Kind: ast.NImport, Pos: pos, Tok: name}, nil
 }
 
 // --- Clauses ---
@@ -2309,6 +2626,7 @@ func (p *Parser) parseClauseBody() (*ast.Node, error) {
 
 func (p *Parser) looksLikeClauseStart() bool {
 	depth := 0
+	doDepth := 0
 	inLambda := false
 	for i := p.pos; ; i++ {
 		p.fillTo(i)
@@ -2319,8 +2637,10 @@ func (p *Parser) looksLikeClauseStart() bool {
 		if t.Type == ast.TNewline || t.Type == ast.TSemicolon || t.Type == ast.TEOF {
 			return false
 		}
-		if t.Type == ast.TAfter || t.Type == ast.TEnd || t.Type == ast.TRescue {
-			return false
+		if doDepth == 0 {
+			if t.Type == ast.TAfter || t.Type == ast.TEnd || t.Type == ast.TRescue {
+				return false
+			}
 		}
 		switch t.Type {
 		case ast.TBackslash:
@@ -2329,12 +2649,18 @@ func (p *Parser) looksLikeClauseStart() bool {
 			depth++
 		case ast.TRParen, ast.TRBracket, ast.TRBrace:
 			depth--
+		case ast.TDo:
+			doDepth++
+		case ast.TEnd:
+			if doDepth > 0 {
+				doDepth--
+			}
 		case ast.TArrow:
 			if inLambda {
 				inLambda = false
 				continue
 			}
-			if depth == 0 {
+			if depth == 0 && doDepth == 0 {
 				return true
 			}
 		}
@@ -2731,15 +3057,83 @@ func (p *Parser) parseExpr(minPrec int) (*ast.Node, error) {
 	return p.parseExprFrom(left, minPrec)
 }
 
+// parseExprArg parses a single argument in a juxtaposition call: value + dots +
+// paren calls. No binary ops, no bare juxtaposition — those belong to the
+// outer call or expression level.
+func (p *Parser) parseExprArg(left *ast.Node) (*ast.Node, error) {
+	left = p.parseDots(left)
+
+	// Adjacent paren call: func(a, b) — unambiguous
+	if (left.Kind == ast.NIdent || left.Kind == ast.NAccess) &&
+		p.cur().Type == ast.TLParen && !p.rawAt(p.pos-1).SpaceAfter {
+		var err error
+		left, err = p.parseParenCall(left)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return left, nil
+}
+
 // parseExprFrom continues expression parsing from a pre-parsed left-hand side.
+// Handles binary ops, dots, paren calls, AND bare juxtaposition application.
 func (p *Parser) parseExprFrom(left *ast.Node, minPrec int) (*ast.Node, error) {
+	left, err := p.parseBinOps(left, minPrec)
+	if err != nil {
+		return nil, err
+	}
+	left = p.parseDots(left)
+
+	// Function application: identifier or access chain followed by a value → NCall
+	if (left.Kind == ast.NIdent || left.Kind == ast.NAccess) && isValueStart(p.cur().Type) {
+		// Adjacent parens: func(a, b) — unambiguous multi-arg call
+		if p.cur().Type == ast.TLParen && !p.rawAt(p.pos-1).SpaceAfter {
+			left, err = p.parseParenCall(left)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Juxtaposition: func arg1, arg2 or func arg1 arg2
+			// Each arg parsed with parseExprOps (no nested juxtaposition).
+			call := &ast.Node{Kind: ast.NCall, Children: []*ast.Node{left}}
+			for {
+				arg, err := p.parseExprArg(p.mustParseValue())
+				if err != nil {
+					return nil, err
+				}
+				switch arg.Kind {
+				case ast.NLambda, ast.NCall, ast.NBinOp:
+					p.committed = true
+				}
+				call.Children = append(call.Children, arg)
+				// Space-separated value → more args (only when committed to ish).
+				// Commas are NOT consumed here — they belong to outer contexts
+				// (tuple literals, list literals, statement-level multi-arg).
+				if p.committed && isValueStart(p.cur().Type) {
+					continue
+				}
+				break
+			}
+			left = call
+		}
+		// Post-call binary ops
+		left, err = p.parsePostCallOps(left, minPrec)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return left, nil
+}
+
+// parseBinOps consumes binary operators at or above minPrec.
+func (p *Parser) parseBinOps(left *ast.Node, minPrec int) (*ast.Node, error) {
 	for {
 		prec := p.precedence(p.cur().Type)
 		if prec <= minPrec {
 			break
 		}
-		// Only commit on spaced operators — adjacent operators (a-z, 3+4)
-		// could be compound word fragments in command context.
 		prevTok := p.rawAt(p.pos - 1)
 		op := p.advance()
 		if prevTok.SpaceAfter {
@@ -2751,7 +3145,6 @@ func (p *Parser) parseExprFrom(left *ast.Node, minPrec int) (*ast.Node, error) {
 		}
 		left = &ast.Node{Kind: ast.NBinOp, Tok: op, Children: []*ast.Node{left, right}}
 
-		// Comparison chaining: desugar a < b < c into (a < b) && (b < c)
 		if isComparisonOp(op.Type) {
 			for isComparisonOp(p.cur().Type) {
 				nextOp := p.advance()
@@ -2765,90 +3158,86 @@ func (p *Parser) parseExprFrom(left *ast.Node, minPrec int) (*ast.Node, error) {
 			}
 		}
 	}
+	return left, nil
+}
 
-	// Dot access chain — dots must be adjacent (no whitespace). a.b not a . b
-	// After a dot, keywords are treated as field names (Regex.match, List.map, etc.)
+// parseDots consumes adjacent dot-access chains: a.b.c
+func (p *Parser) parseDots(left *ast.Node) *ast.Node {
 	for p.cur().Type == ast.TDot {
 		p.advance()
 		cur := p.cur()
 		if cur.Type == ast.TIdent || cur.Type.IsKeyword() {
 			field := p.advance()
-			// Normalize keyword token to TIdent for the field name
 			field.Type = ast.TIdent
 			left = &ast.Node{Kind: ast.NAccess, Tok: field, Children: []*ast.Node{left}}
 		} else {
-			return nil, fmt.Errorf("expected field name after '.' at pos %d", p.cur().Pos)
+			break
 		}
 	}
+	return left
+}
 
-	// Function application: identifier or access chain followed by a value → NCall
-	// Application binds tighter than all binary operators.
-	if (left.Kind == ast.NIdent || left.Kind == ast.NAccess) && isValueStart(p.cur().Type) {
-		call := &ast.Node{Kind: ast.NCall, Children: []*ast.Node{left}}
-		// Adjacent parens: func(a, b) — multi-arg call. Required inside data structures.
-		if p.cur().Type == ast.TLParen && !p.rawAt(p.pos-1).SpaceAfter {
+// parseParenCall parses func(a, b, c) — adjacent paren multi-arg call.
+func (p *Parser) parseParenCall(callee *ast.Node) (*ast.Node, error) {
+	call := &ast.Node{Kind: ast.NCall, Children: []*ast.Node{callee}}
+	p.advance() // consume (
+	p.committed = true
+	for !p.until(ast.TRParen, ast.TEOF) {
+		arg, err := p.parseExpr(0)
+		if err != nil {
+			return nil, err
+		}
+		call.Children = append(call.Children, arg)
+		if p.cur().Type == ast.TComma {
 			p.advance()
-			p.committed = true
-			for !p.until(ast.TRParen, ast.TEOF) {
-				arg, err := p.parseExpr(0)
-				if err != nil {
-					return nil, err
-				}
-				call.Children = append(call.Children, arg)
-				if p.cur().Type == ast.TComma {
-					p.advance()
-				}
-			}
-			if _, err := p.expect(ast.TRParen); err != nil {
-				return nil, err
-			}
-			left = call
-		} else {
-			// Juxtaposition: func value — single value arg.
-			// func (expr) with spaced parens = grouped expression as single arg.
-			arg, err := p.parseValue(false)
-			if err != nil {
-				return nil, err
-			}
-			switch arg.Kind {
-			case ast.NLambda:
-				p.committed = true
-			}
-			call.Children = append(call.Children, arg)
-			left = call
-		}
-
-		// After function call, check for more binary operators:
-		// fib(n-1) + fib(n-2) — the + connects two call results
-		for {
-			tt := p.cur().Type
-			if tt == ast.TGt || tt == ast.TLt {
-				if !p.committed && !p.exprContext {
-					break // could be redirect in command context
-				}
-			}
-			// TMinus/TPlus adjacent to next token are flags (-m, +x), not operators
-			if (tt == ast.TMinus || tt == ast.TPlus) && !p.cur().SpaceAfter && !p.committed && !p.exprContext {
-				break
-			}
-			prec := p.precedence(tt)
-			if prec <= minPrec {
-				break
-			}
-			prevTok2 := p.rawAt(p.pos - 1)
-			op := p.advance()
-			if prevTok2.SpaceAfter {
-				p.committed = true
-			}
-			right, err := p.parseExpr(prec)
-			if err != nil {
-				return nil, err
-			}
-			left = &ast.Node{Kind: ast.NBinOp, Tok: op, Children: []*ast.Node{left, right}}
 		}
 	}
+	if _, err := p.expect(ast.TRParen); err != nil {
+		return nil, err
+	}
+	return call, nil
+}
 
+// parsePostCallOps handles binary operators after a function call result.
+func (p *Parser) parsePostCallOps(left *ast.Node, minPrec int) (*ast.Node, error) {
+	for {
+		tt := p.cur().Type
+		if tt == ast.TGt || tt == ast.TLt {
+			if !p.committed && !p.exprContext {
+				break
+			}
+		}
+		if (tt == ast.TMinus || tt == ast.TPlus) && !p.cur().SpaceAfter && !p.committed && !p.exprContext {
+			break
+		}
+		prec := p.precedence(tt)
+		if prec <= minPrec {
+			break
+		}
+		prevTok2 := p.rawAt(p.pos - 1)
+		op := p.advance()
+		if prevTok2.SpaceAfter {
+			p.committed = true
+		}
+		right, err := p.parseExpr(prec)
+		if err != nil {
+			return nil, err
+		}
+		left = &ast.Node{Kind: ast.NBinOp, Tok: op, Children: []*ast.Node{left, right}}
+	}
 	return left, nil
+}
+
+// mustParseValue parses a single value and panics on nil (caller guarantees isValueStart).
+func (p *Parser) mustParseValue() *ast.Node {
+	v, err := p.parseValue(false)
+	if err != nil {
+		return &ast.Node{Kind: ast.NLit, Tok: ast.Token{Val: ""}}
+	}
+	if v == nil {
+		return &ast.Node{Kind: ast.NLit, Tok: ast.Token{Val: ""}}
+	}
+	return v
 }
 
 func (p *Parser) parseValue(cmdArg bool) (*ast.Node, error) {

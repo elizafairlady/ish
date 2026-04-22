@@ -16,6 +16,7 @@ import (
 	"ish/internal/jobs"
 	"ish/internal/lexer"
 	"ish/internal/parser"
+	"ish/internal/stdlib"
 )
 
 // evalRedirTarget evaluates a redirect's target node to a string.
@@ -80,17 +81,6 @@ func evalCmd(node *ast.Node, scope core.Scope) (core.Value, error) {
 		if err != nil {
 			return core.Nil, err
 		}
-		if v.Kind == core.VFn && v.GetFn() != nil {
-			// Callee evaluated to a function (e.g., NAccess → module.func)
-			argVals, err := evalFnArgs(node, scope)
-			if err != nil {
-				return core.Nil, err
-			}
-			if node.Tail {
-				return core.TailCallVal(v.GetFn(), argVals), nil
-			}
-			return CallFn(v.GetFn(), argVals, scope)
-		}
 		name = v.ToStr()
 	}
 
@@ -125,43 +115,16 @@ func evalCmd(node *ast.Node, scope core.Scope) (core.Value, error) {
 		return core.Nil, nil
 	}
 
-	// Check if name is a variable. If it holds a function, call it.
-	// If it holds another value and there are no args, return it.
-	// This handles standalone variable references (returning parameter values)
-	// and calling function values stored in variables.
-	if v, ok := scope.Get(name); ok {
-		if v.Kind == core.VFn && v.GetFn() != nil {
-			argVals, err := evalFnArgs(node, scope)
-			if err != nil {
-				return core.Nil, err
-			}
-			if node.Tail {
-				return core.TailCallVal(v.GetFn(), argVals), nil
-			}
-			return CallFn(v.GetFn(), argVals, scope)
-		}
-		if len(node.Children) == 1 {
-			return v, nil
-		}
+	// Standalone variable reference: return the value if no args
+	if v, ok := scope.Get(name); ok && len(node.Children) == 1 {
+		return v, nil
 	}
 
-	r := ResolveCmd(name, scope)
-	switch r.Kind {
-	case KindModuleFn, KindUserFn, KindVarFn:
-		argVals, err := evalFnArgs(node, scope)
-		if err != nil {
-			return core.Nil, err
-		}
-		if node.Tail {
-			return core.TailCallVal(r.Fn, argVals), nil
-		}
-		return CallFn(r.Fn, argVals, scope)
-	case KindModuleNativeFn, KindNativeFn:
-		argVals, err := evalFnArgs(node, scope)
-		if err != nil {
-			return core.Nil, err
-		}
-		return r.NativeFn(argVals, scope)
+	// Function fallback: if the name resolves to a function at runtime
+	// (dynamic definitions, sourced files, etc.), delegate to evalCall.
+	// The parser handles the common case (NCall), this catches the rest.
+	if fn := resolveFn(name, scope); fn != nil {
+		return evalCallFromCmd(fn, node, scope)
 	}
 
 	// Build string arguments for builtins and external commands.
@@ -234,7 +197,13 @@ func evalCmd(node *ast.Node, scope core.Scope) (core.Value, error) {
 				strArgs = append(strArgs, v.ToStr())
 				quotedFlags = append(quotedFlags, false)
 			}
-		case ast.NPath, ast.NFlag:
+		case ast.NPath:
+			strArgs = append(strArgs, expandTilde(child.Tok.Val))
+			quotedFlags = append(quotedFlags, false)
+		case ast.NIPv4, ast.NIPv6:
+			strArgs = append(strArgs, child.Tok.Val)
+			quotedFlags = append(quotedFlags, true) // no glob expansion on IPs
+		case ast.NFlag:
 			strArgs = append(strArgs, child.Tok.Val)
 			quotedFlags = append(quotedFlags, false)
 		default:
@@ -450,6 +419,75 @@ func applyRedirects(cmd *exec.Cmd, redirs []ast.Redir, scope core.Scope) (cleanu
 	}
 
 	return cleanup, nil
+}
+
+// writeValueRedirs applies IO.unlines to a value and writes the result to
+// redirect targets. Used when a value-producing expression (function call,
+// pipeline, etc.) has shell redirects attached.
+func writeValueRedirs(val core.Value, redirs []ast.Redir, scope core.Scope) error {
+	text := stdlib.Lines(val)
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+
+	for _, r := range redirs {
+		target, err := evalRedirTarget(r, scope)
+		if err != nil {
+			return err
+		}
+
+		switch r.Op {
+		case ast.TGt:
+			f, ferr := os.Create(target)
+			if ferr != nil {
+				return ferr
+			}
+			fmt.Fprint(f, text)
+			f.Close()
+		case ast.TRedirAppend:
+			f, ferr := os.OpenFile(target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if ferr != nil {
+				return ferr
+			}
+			fmt.Fprint(f, text)
+			f.Close()
+		}
+	}
+	return nil
+}
+
+// resolveFn checks if a name resolves to a callable function at runtime.
+// Returns nil if the name is a builtin, external command, or not found.
+func resolveFn(name string, scope core.Scope) *core.FnValue {
+	// Variable holding a function
+	if v, ok := scope.Get(name); ok && v.Kind == core.VFn && v.GetFn() != nil {
+		return v.GetFn()
+	}
+	r := ResolveCmd(name, scope)
+	switch r.Kind {
+	case KindModuleFn, KindUserFn, KindVarFn, KindModuleNativeFn:
+		return r.Fn
+	case KindNativeFn:
+		return &core.FnValue{Name: name, Native: r.NativeFn}
+	}
+	return nil
+}
+
+// evalCallFromCmd dispatches an NCmd node as a function call. Used as
+// fallback when the parser couldn't determine the name was a function
+// (dynamic definitions, sourced files, etc.).
+func evalCallFromCmd(fn *core.FnValue, node *ast.Node, scope core.Scope) (core.Value, error) {
+	argVals, err := evalFnArgs(node, scope)
+	if err != nil {
+		return core.Nil, err
+	}
+	if fn.Native != nil {
+		return fn.Native(argVals, scope)
+	}
+	if node.Tail {
+		return core.TailCallVal(fn, argVals), nil
+	}
+	return CallFn(fn, argVals, scope)
 }
 
 func evalExternalCmd(name string, args []string, redirs []ast.Redir, scope core.Scope) (core.Value, error) {

@@ -653,6 +653,38 @@ func stdlibPairs(args []core.Value, scope core.Scope) (core.Value, error) {
 	return core.ListVal(elems...), nil
 }
 
+// stdlibMapReduce reduces over a map's {key, value} pairs.
+func stdlibMapReduce(args []core.Value, scope core.Scope) (core.Value, error) {
+	if len(args) != 3 {
+		return core.Nil, fmt.Errorf("reduce: expected 3 arguments, got %d", len(args))
+	}
+	m := args[0]
+	if m.Kind != core.VMap {
+		return core.Nil, fmt.Errorf("reduce: expected map, got %s", m.Inspect())
+	}
+	acc := args[1]
+	fn := args[2]
+	if fn.Kind != core.VFn || fn.GetFn() == nil {
+		return core.Nil, fmt.Errorf("reduce: third argument must be a function, got %s", fn.Inspect())
+	}
+	callFn := scope.GetCtx().CallFn
+	if callFn == nil {
+		return core.Nil, fmt.Errorf("reduce: CallFn not set")
+	}
+	if m.GetMap() == nil {
+		return acc, nil
+	}
+	for _, key := range m.GetMap().Keys {
+		pair := core.TupleVal(core.StringVal(key), m.GetMap().Vals[key])
+		var err error
+		acc, err = callFn(fn.GetFn(), []core.Value{acc, pair}, scope)
+		if err != nil {
+			return core.Nil, fmt.Errorf("reduce: %w", err)
+		}
+	}
+	return acc, nil
+}
+
 // enumerate list -> list of {index, value} tuples
 func stdlibEnumerate(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {

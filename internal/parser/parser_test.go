@@ -773,6 +773,153 @@ func TestParseArithmeticInCommand(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Symbol table: NCall vs NCmd dispatch
+// ---------------------------------------------------------------------------
+
+func TestSymbolTable_FnDeclProducesNCall(t *testing.T) {
+	cases := []struct {
+		name   string
+		src    string
+		// which child index to check (in NBlock), and expected kind
+		child  int
+		expect ast.NodeKind
+	}{
+		{"fn then call", "fn foo do 42 end\nfoo", 1, ast.NCall},
+		{"fn then call with arg", "fn add a b do a + b end\nadd 1 2", 1, ast.NCall},
+		{"lambda bind then call", "f = \\x -> x * 2\nf 10", 1, ast.NCall},
+		{"zero-arity lambda standalone", "f = \\ -> 42\nf", 1, ast.NCall},
+		{"posix fn stays NCmd", "f() { echo hello; }\nf", 1, ast.NCmd},
+		{"unknown stays NCmd", "foo bar", 0, ast.NCmd},
+		{"builtin stays NCmd", "echo hello", 0, ast.NCmd},
+		{"known module produces NCall", "String.upcase \"hello\"", 0, ast.NCall},
+		{"Enum.map with comma args", "Enum.map [1, 2], \\x -> x * 2", 0, ast.NCall},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			node, err := parseStr(tc.src)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			var target *ast.Node
+			if node.Kind == ast.NBlock {
+				if tc.child >= len(node.Children) {
+					t.Fatalf("NBlock has %d children, want index %d", len(node.Children), tc.child)
+				}
+				target = node.Children[tc.child]
+			} else {
+				target = node
+			}
+			if target.Kind != tc.expect {
+				t.Errorf("got node kind %d, want %d", target.Kind, tc.expect)
+			}
+		})
+	}
+}
+
+func TestSymbolTable_DeclareTracking(t *testing.T) {
+	// Verify the parser's symbol table is populated during parsing
+	p := newParser(lexer.New("fn greet name do echo $name end\ngreet world"))
+	_, err := p.parseProgram()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sym, ok := p.symbols["greet"]
+	if !ok {
+		t.Fatal("greet not in symbol table after fn declaration")
+	}
+	if sym.Kind != SymFn {
+		t.Errorf("greet sym kind = %d, want SymFn (%d)", sym.Kind, SymFn)
+	}
+}
+
+func TestSymbolTable_PosixFnTracking(t *testing.T) {
+	p := newParser(lexer.New("f() { echo hello; }\nf arg"))
+	_, err := p.parseProgram()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sym, ok := p.symbols["f"]
+	if !ok {
+		t.Fatal("f not in symbol table after POSIX fn def")
+	}
+	if sym.Kind != SymPOSIXFn {
+		t.Errorf("f sym kind = %d, want SymPOSIXFn (%d)", sym.Kind, SymPOSIXFn)
+	}
+}
+
+func TestSymbolTable_LambdaBindTracking(t *testing.T) {
+	p := newParser(lexer.New("f = \\x -> x * 2\nf 10"))
+	_, err := p.parseProgram()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sym, ok := p.symbols["f"]
+	if !ok {
+		t.Fatal("f not in symbol table after lambda bind")
+	}
+	if sym.Kind != SymFn {
+		t.Errorf("f sym kind = %d, want SymFn (%d)", sym.Kind, SymFn)
+	}
+}
+
+func TestSymbolTable_FnDeclStandaloneDispatch(t *testing.T) {
+	// Instrument dispatchIdent by observing what it does
+	// Parse step-by-step to see when the symbol appears
+	p := newParser(lexer.New("fn foo do 42 end\nfoo"))
+
+	// Parse the fn definition first
+	p.skipNewlines()
+	stmt1, err := p.parseList()
+	if err != nil {
+		t.Fatalf("parse stmt1: %v", err)
+	}
+	t.Logf("stmt1 kind=%d tok=%q", stmt1.Kind, stmt1.Tok.Val)
+
+	// Now check symbol table AFTER fn def, BEFORE second stmt
+	sym, hasFoo := p.symbols["foo"]
+	t.Logf("after fn def: foo in symbols = %v, sym = %+v", hasFoo, sym)
+
+	// Check what the parser sees next
+	p.skipSeparators()
+	cur := p.cur()
+	t.Logf("next token: type=%d val=%q", cur.Type, cur.Val)
+	nextSym := p.symbols[cur.Val]
+	t.Logf("symbol for %q: %+v", cur.Val, nextSym)
+
+	// Parse the second statement
+	stmt2, err := p.parseList()
+	if err != nil {
+		t.Fatalf("parse stmt2: %v", err)
+	}
+	node := ast.BlockNode([]*ast.Node{stmt1, stmt2})
+
+	_ = node
+	// Check symbol table
+	sym, ok := p.symbols["foo"]
+	if !ok {
+		t.Fatal("foo not in symbol table")
+	}
+	t.Logf("foo sym kind = %d (SymFn=%d, SymBuiltin=%d)", sym.Kind, SymFn, SymBuiltin)
+
+	// Check AST
+	if node.Kind != ast.NBlock {
+		t.Fatalf("expected NBlock, got %d", node.Kind)
+	}
+	t.Logf("children: %d", len(node.Children))
+	for i, c := range node.Children {
+		t.Logf("  child[%d] kind=%d tok=%q", i, c.Kind, c.Tok.Val)
+	}
+	if len(node.Children) >= 2 {
+		second := node.Children[1]
+		t.Logf("second child kind=%d (NCall=%d, NCmd=%d)", second.Kind, ast.NCall, ast.NCmd)
+		if second.Kind == ast.NCmd && len(second.Children) > 0 {
+			nameChild := second.Children[0]
+			t.Logf("  NCmd name child kind=%d tok=%q toktype=%d", nameChild.Kind, nameChild.Tok.Val, nameChild.Tok.Type)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // isBlockEnd
 // ---------------------------------------------------------------------------
 

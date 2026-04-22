@@ -3,6 +3,7 @@ package debug
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"ish/internal/ast"
 )
@@ -151,6 +152,17 @@ func traceDescription(node *ast.Node) string {
 		return "try"
 
 	case ast.NCall:
+		if len(node.Children) > 0 {
+			parts := make([]string, 0, len(node.Children))
+			for _, c := range node.Children {
+				if c.Kind == ast.NAccess && len(c.Children) > 0 {
+					parts = append(parts, c.Children[0].Tok.Val+"."+c.Tok.Val)
+				} else {
+					parts = append(parts, c.Tok.Val)
+				}
+			}
+			return strings.Join(parts, " ")
+		}
 		return "call"
 	case ast.NPath:
 		return "path"

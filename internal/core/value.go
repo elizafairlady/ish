@@ -64,9 +64,8 @@ type NativeFn func(args []Value, scope Scope) (Value, error)
 
 // Module is a named collection of functions.
 type Module struct {
-	Name      string
-	Fns       map[string]*FnValue
-	NativeFns map[string]NativeFn
+	Name string
+	Fns  map[string]*FnValue
 }
 
 // OrdMap is a simple ordered map.

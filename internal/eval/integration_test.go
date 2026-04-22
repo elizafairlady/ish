@@ -171,6 +171,19 @@ func TestIntegration(t *testing.T) {
 		{"if nil do skips body", "if nil do\necho yes\nend\necho after", "after\n"},
 		{"if true do runs body", "if :true do\necho yes\nend", "yes\n"},
 		{"if false do skips body", "if :false do\necho no\nend\necho after", "after\n"},
+		// import keyword (Elixir semantics)
+		{"import brings fns into scope", "import List\nr = map([1, 2, 3], \\x -> x * 2)\necho $r", "[2, 4, 6]\n"},
+		// use backward compat (outside defmodule acts as import)
+		{"use outside defmodule", "use List\nr = map([1, 2], \\x -> x + 1)\necho $r", "[2, 3]\n"},
+		// use inside defmodule brings fns into scope for body (not public)
+		{"use in defmodule for body", "defmodule Calc do\nuse Enum\ndef total list do sum(list) end\nend\necho $(Calc.total [1, 2, 3])", "6\n"},
+		// Enum functions work on all types
+		{"enum sum", "echo $(Enum.sum [1, 2, 3])", "6\n"},
+		{"enum group_by", "r = Enum.group_by([1, 2, 3, 4], \\x -> x > 2)\necho $(Map.keys $r)", "[\":false\", \":true\"]\n"},
+		{"enum reduce on map", "m = %{a: 1}\nEnum.reduce($m, 0, \\acc, {_, v} -> acc + v) |> echo", "1\n"},
+		{"enum map on tuple", "echo $(Enum.map({1, 2, 3}, \\x -> x * 10))", "[10, 20, 30]\n"},
+		// Map.filter returns map (module's own def)
+		{"map filter returns map", "r = Map.filter(%{a: 1, b: 2, c: 3}, \\{_, v} -> v > 1)\necho $(Map.keys $r)", "[\"b\", \"c\"]\n"},
 	}
 
 	for _, tt := range tests {

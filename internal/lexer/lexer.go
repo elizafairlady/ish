@@ -15,7 +15,7 @@ var keywords = map[string]ast.TokenType{
 	"while": ast.TWhile, "until": ast.TUntil,
 	"case": ast.TCase, "esac": ast.TEsac,
 	"fn": ast.TFn, "end": ast.TEnd,
-	"defmodule": ast.TDefModule, "use": ast.TUse, "match": ast.TMatch,
+	"defmodule": ast.TDefModule, "use": ast.TUse, "import": ast.TImport, "match": ast.TMatch,
 	"spawn": ast.TSpawn, "spawn_link": ast.TSpawnLink,
 	"send": ast.TSend, "monitor": ast.TMonitor, "await": ast.TAwait,
 	"supervise": ast.TSupervise, "receive": ast.TReceive,
@@ -441,11 +441,19 @@ func (l *Lexer) lexNumber() {
 	for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
 		l.pos++
 	}
-	// Float: digits followed by '.' followed by digit
+	// Float: digits followed by '.' followed by digit — but NOT if a second '.'
+	// follows (that's an IP address like 192.168.1.1, not a float).
 	if l.pos < len(l.src) && l.src[l.pos] == '.' && l.pos+1 < len(l.src) && l.src[l.pos+1] >= '0' && l.src[l.pos+1] <= '9' {
+		dotPos := l.pos
 		l.pos++ // consume '.'
 		for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
 			l.pos++
+		}
+		// If another dot follows, this is IP-like (192.168.x) — back up and emit int
+		if l.pos < len(l.src) && l.src[l.pos] == '.' {
+			l.pos = dotPos // back up to before the first dot
+			l.emit(ast.TInt, l.src[start:l.pos])
+			return
 		}
 		l.emit(ast.TFloat, l.src[start:l.pos])
 		return
@@ -470,9 +478,11 @@ func (l *Lexer) lexAtom() {
 	}
 	if l.pos > start {
 		if l.src[start] >= '0' && l.src[start] <= '9' {
-			if l.err == "" {
-				l.err = "atom name cannot start with a digit"
-			}
+			// Not an atom — digits can't start atom names.
+			// Back up and emit bare colon (could be IPv6, port number, etc.)
+			l.pos = start
+			l.emit(ast.TColon, ":")
+			return
 		}
 		l.emit(ast.TAtom, l.src[start:l.pos])
 	} else {

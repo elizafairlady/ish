@@ -9,6 +9,7 @@ import (
 
 	"ish/internal/ast"
 	"ish/internal/core"
+	"ish/internal/stdlib"
 )
 
 // isCommandNode returns true if the node produces bytes on stdout
@@ -69,8 +70,8 @@ func isBridgeFn(node *ast.Node) bool {
 		name = accessName(node)
 	}
 	switch name {
-	case "from_json", "from_csv", "from_tsv", "from_lines",
-		"JSON.parse", "CSV.parse", "CSV.parse_tsv", "IO.lines":
+	case "from_json", "from_csv", "from_tsv",
+		"JSON.parse", "CSV.parse", "CSV.parse_tsv", "IO.unlines":
 		return true
 	}
 	return false
@@ -84,22 +85,15 @@ func evalPipe(node *ast.Node, scope core.Scope) (core.Value, error) {
 	}
 	pipeStderr := node.Tok.Val == "|&"
 
-	// Auto-coerce: if left produces a value (not bytes), convert to lines
+	// Auto-coerce: if left produces a value (not bytes), apply IO.unlines
 	if !isCommandNode(left, scope) {
 		val, err := Eval(left, scope)
 		if err != nil {
 			return core.Nil, err
 		}
-		var text string
-		if val.Kind == core.VList {
-			valElems := val.GetElems()
-			parts := make([]string, len(valElems))
-			for i, elem := range valElems {
-				parts[i] = elem.ToStr()
-			}
-			text = strings.Join(parts, "\n") + "\n"
-		} else {
-			text = val.ToStr() + "\n"
+		text := stdlib.Lines(val)
+		if text != "" && !strings.HasSuffix(text, "\n") {
+			text += "\n"
 		}
 
 		pr, pw, err := os.Pipe()
@@ -198,6 +192,15 @@ func evalWithIO(node *ast.Node, scope core.Scope, stdin *os.File, stdout *os.Fil
 		for _, child := range node.Children[1:] {
 			if child.Kind == ast.NVarRef && child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
 				strArgs = append(strArgs, scope.GetCtx().PosArgs()...)
+				continue
+			}
+			if child.Kind == ast.NAccess {
+				v, err := Eval(child, scope)
+				if err != nil {
+					strArgs = append(strArgs, stringifyAccess(child))
+				} else {
+					strArgs = append(strArgs, v.ToStr())
+				}
 				continue
 			}
 			v, err := Eval(child, scope)
@@ -303,21 +306,8 @@ func evalPipeFn(node *ast.Node, scope core.Scope) (core.Value, error) {
 		output, _ := io.ReadAll(pr)
 		pr.Close()
 		<-done
-		// Apply from_lines: split on newlines, trim trailing empty
-		s := string(output)
-		if strings.HasSuffix(s, "\n") {
-			s = s[:len(s)-1]
-		}
-		if s == "" {
-			left = core.ListVal()
-		} else {
-			lines := strings.Split(s, "\n")
-			elems := make([]core.Value, len(lines))
-			for i, line := range lines {
-				elems[i] = core.StringVal(line)
-			}
-			left = core.ListVal(elems...)
-		}
+		// Apply IO.lines: convert byte output to value
+		left = stdlib.Unlines(string(output))
 	} else if isCommandNode(leftNode, scope) && isBridgeFn(right) {
 		// Explicit bridge: capture stdout as raw string, pass to bridge fn
 		pr, pw, err := os.Pipe()
@@ -391,7 +381,14 @@ func evalPipeFn(node *ast.Node, scope core.Scope) (core.Value, error) {
 				if node.Tail {
 					return core.TailCallVal(nameVal.GetFn(), argVals), nil
 				}
-				return CallFn(nameVal.GetFn(), argVals, scope)
+				val, err := CallFn(nameVal.GetFn(), argVals, scope)
+				if err == nil && len(right.Redirs) > 0 && val.Kind != core.VNil {
+					if rerr := writeValueRedirs(val, right.Redirs, scope); rerr != nil {
+						return core.Nil, rerr
+					}
+					return core.Nil, nil
+				}
+				return val, err
 			}
 			name = nameVal.ToStr()
 			for _, child := range right.Children[1:] {
@@ -405,7 +402,14 @@ func evalPipeFn(node *ast.Node, scope core.Scope) (core.Value, error) {
 			name = right.Tok.Val
 		}
 
-		return callResolved(name, argVals, node.Tail, scope)
+		val, err := callResolved(name, argVals, node.Tail, scope)
+		if err == nil && right.Kind == ast.NCmd && len(right.Redirs) > 0 && val.Kind != core.VNil {
+			if rerr := writeValueRedirs(val, right.Redirs, scope); rerr != nil {
+				return core.Nil, rerr
+			}
+			return core.Nil, nil
+		}
+		return val, err
 
 	default:
 		val, err := Eval(right, scope)

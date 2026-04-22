@@ -93,6 +93,7 @@ const (
 	TEnd
 	TDefModule
 	TUse
+	TImport
 	TMatch
 	TSpawn
 	TSpawnLink
@@ -185,6 +186,7 @@ func init() {
 	tokenNames[TEnd] = "end"
 	tokenNames[TDefModule] = "defmodule"
 	tokenNames[TUse] = "use"
+	tokenNames[TImport] = "import"
 	tokenNames[TMatch] = "match"
 	tokenNames[TSpawn] = "spawn"
 	tokenNames[TSpawnLink] = "spawn_link"
@@ -254,7 +256,9 @@ const (
 	// Commands / invocations
 	NCmd    // invocation by juxtaposition — resolved at runtime (function? builtin? PATH?)
 	NArg    // compound word: adjacent tokens concatenated into one argument (hello$var, ${x}suffix)
-	NPath   // file path in command arguments (assembled from TDiv/TDot/TIdent)
+	NPath   // file path in command arguments (assembled string: ~/foo, /usr/bin, ./rel)
+	NIPv4   // IPv4 address literal (e.g. 192.168.1.1)
+	NIPv6   // IPv6 address literal (e.g. ::1, fe80::1)
 	NFlag   // command flag (-la, --verbose)
 	NAssign // POSIX VAR=value (Tok.Val = "KEY=value")
 	NMatch  // pattern = expr (ish match/bind)
@@ -292,7 +296,8 @@ const (
 
 	// Module system
 	NDefModule // defmodule Name do defs end
-	NUse       // use Module
+	NUse       // use Module (mixin into defmodule)
+	NImport    // import Module (copy into scope)
 )
 
 type Node struct {

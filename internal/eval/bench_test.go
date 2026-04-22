@@ -10,16 +10,23 @@ import (
 	"ish/internal/stdlib"
 )
 
-func benchEnv() *core.Env {
-	env := core.TopEnv()
-	env.Ctx.Proc = process.NewProcess()
-	stdlib.Register(env)
-	env.Ctx.CmdSub = RunCmdSub
-	env.Ctx.CallFn = CallFn
-	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
+// baseEnv is the prelude-loaded env, created once and shared.
+// Each benchmark iteration gets a child env so mutations don't leak.
+var baseEnv *core.Env
+
+func init() {
+	baseEnv = core.TopEnv()
+	baseEnv.Ctx.Proc = process.NewProcess()
+	stdlib.Register(baseEnv)
+	baseEnv.Ctx.CmdSub = RunCmdSub
+	baseEnv.Ctx.CallFn = CallFn
+	stdlib.LoadPrelude(baseEnv, func(src string, e *core.Env) {
 		RunSource(src, e) //nolint: errcheck
 	})
-	return env
+}
+
+func benchEnv() *core.Env {
+	return core.NewEnv(baseEnv)
 }
 
 func benchParse(b *testing.B, src string) {
@@ -83,7 +90,7 @@ func BenchmarkParse_DataStructures(b *testing.B) {
 }
 
 func BenchmarkParse_MixedPipeline(b *testing.B) {
-	benchParse(b, `r = printf "a\nb\nc\n" | sort |> IO.lines |> List.reverse |> IO.unlines`)
+	benchParse(b, `r = printf "a\nb\nc\n" | sort |> List.reverse |> IO.lines`)
 }
 
 // --- Eval benchmarks (shared env, measures marginal cost) ---
@@ -127,7 +134,7 @@ func BenchmarkEval_FnCallSimple(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn double x do x * 2 end", env)
 	l := lexer.New("r = double 21")
-	node, _ := parser.Parse(l)
+	node, _ := parser.ParseWithEnv(l, makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -139,7 +146,7 @@ func BenchmarkEval_FnCallSimple(b *testing.B) {
 func BenchmarkEval_ModuleQualified(b *testing.B) {
 	env := benchEnv()
 	l := lexer.New(`r = List.map [1, 2, 3], \x -> x * 2`)
-	node, _ := parser.Parse(l)
+	node, _ := parser.ParseWithEnv(l, makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -152,7 +159,7 @@ func BenchmarkEval_PipeArrow3(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn inc x do x + 1 end\nfn double x do x * 2 end", env)
 	l := lexer.New("r = 5 |> inc |> double |> inc")
-	node, _ := parser.Parse(l)
+	node, _ := parser.ParseWithEnv(l, makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -165,7 +172,7 @@ func BenchmarkEval_Fib15(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn fib 0 do 0 end\nfn fib 1 do 1 end\nfn fib n when n > 1 do fib (n - 1) + fib (n - 2) end", env)
 	l := lexer.New("r = fib 15")
-	node, _ := parser.Parse(l)
+	node, _ := parser.ParseWithEnv(l, makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -178,7 +185,7 @@ func BenchmarkEval_Fib25(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn fib 0 do 0 end\nfn fib 1 do 1 end\nfn fib n when n > 1 do fib (n - 1) + fib (n - 2) end", env)
 	l := lexer.New("r = fib 25")
-	node, _ := parser.Parse(l)
+	node, _ := parser.ParseWithEnv(l, makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -261,7 +268,7 @@ r = sum [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]`)
 func BenchmarkEval_FnCallAllocTrace(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn double x do x * 2 end", env)
-	node, _ := parser.Parse(lexer.New("double 21"))
+	node, _ := parser.ParseWithEnv(lexer.New("double 21"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -279,7 +286,7 @@ func BenchmarkEval_FnCallAllocTrace(b *testing.B) {
 func BenchmarkAlloc_Arity0(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn ping do :pong end", env)
-	node, _ := parser.Parse(lexer.New("ping"))
+	node, _ := parser.ParseWithEnv(lexer.New("ping"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -291,7 +298,7 @@ func BenchmarkAlloc_Arity0(b *testing.B) {
 func BenchmarkAlloc_Arity1(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn double x do x * 2 end", env)
-	node, _ := parser.Parse(lexer.New("double 21"))
+	node, _ := parser.ParseWithEnv(lexer.New("double 21"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -303,7 +310,7 @@ func BenchmarkAlloc_Arity1(b *testing.B) {
 func BenchmarkAlloc_Arity2(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn add a, b do a + b end", env)
-	node, _ := parser.Parse(lexer.New("add 3, 4"))
+	node, _ := parser.ParseWithEnv(lexer.New("add 3, 4"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -315,7 +322,7 @@ func BenchmarkAlloc_Arity2(b *testing.B) {
 func BenchmarkAlloc_Arity3(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn clamp x, lo, hi do\nif x < lo do lo\nelse if x > hi do hi\nelse x\nend\nend\nend", env)
-	node, _ := parser.Parse(lexer.New("clamp 5, 0, 10"))
+	node, _ := parser.ParseWithEnv(lexer.New("clamp 5, 0, 10"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -327,7 +334,7 @@ func BenchmarkAlloc_Arity3(b *testing.B) {
 func BenchmarkAlloc_Arity5(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn sum5 a, b, c, d, e do a + b + c + d + e end", env)
-	node, _ := parser.Parse(lexer.New("sum5 1, 2, 3, 4, 5"))
+	node, _ := parser.ParseWithEnv(lexer.New("sum5 1, 2, 3, 4, 5"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -339,7 +346,7 @@ func BenchmarkAlloc_Arity5(b *testing.B) {
 func BenchmarkAlloc_Recurse100(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn countdown n do\nif n == 0 do :done\nelse countdown (n - 1)\nend\nend", env)
-	node, _ := parser.Parse(lexer.New("countdown 100"))
+	node, _ := parser.ParseWithEnv(lexer.New("countdown 100"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -351,7 +358,7 @@ func BenchmarkAlloc_Recurse100(b *testing.B) {
 func BenchmarkAlloc_Ackermann2_3(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn ack do\n0, n -> n + 1\nm, 0 -> ack(m - 1, 1)\nm, n -> ack(m - 1, ack(m, n - 1))\nend", env)
-	node, _ := parser.Parse(lexer.New("ack 2, 3"))
+	node, _ := parser.ParseWithEnv(lexer.New("ack 2, 3"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -369,7 +376,7 @@ func BenchmarkAlloc_MultiClause(b *testing.B) {
 :three -> 3
 n -> n
 end`, env)
-	node, _ := parser.Parse(lexer.New("classify :three"))
+	node, _ := parser.ParseWithEnv(lexer.New("classify :three"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -381,7 +388,7 @@ end`, env)
 func BenchmarkAlloc_Closure(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn make_adder n do \\x -> x + n end\nadd5 = make_adder 5", env)
-	node, _ := parser.Parse(lexer.New("add5 10"))
+	node, _ := parser.ParseWithEnv(lexer.New("add5 10"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -393,7 +400,7 @@ func BenchmarkAlloc_Closure(b *testing.B) {
 func BenchmarkAlloc_ModuleNCall(b *testing.B) {
 	env := benchEnv()
 	RunSource("xs = [1, 2, 3, 4, 5]", env)
-	node, _ := parser.Parse(lexer.New("List.map(xs, \\x -> x * 2)"))
+	node, _ := parser.ParseWithEnv(lexer.New(`List.map(xs, \x -> x * 2)`), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -405,7 +412,7 @@ func BenchmarkAlloc_ModuleNCall(b *testing.B) {
 func BenchmarkAlloc_Fib15(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn fib do\n0 -> 0\n1 -> 1\nn -> fib(n - 1) + fib(n - 2)\nend", env)
-	node, _ := parser.Parse(lexer.New("fib 15"))
+	node, _ := parser.ParseWithEnv(lexer.New("fib 15"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -417,7 +424,7 @@ func BenchmarkAlloc_Fib15(b *testing.B) {
 func BenchmarkAlloc_MapLambda10(b *testing.B) {
 	env := benchEnv()
 	RunSource("xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]", env)
-	node, _ := parser.Parse(lexer.New("List.map(xs, \\x -> x * 2)"))
+	node, _ := parser.ParseWithEnv(lexer.New(`List.map(xs, \x -> x * 2)`), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -429,7 +436,7 @@ func BenchmarkAlloc_MapLambda10(b *testing.B) {
 func BenchmarkAlloc_PipeChain5(b *testing.B) {
 	env := benchEnv()
 	RunSource("fn inc x do x + 1 end\nfn dbl x do x * 2 end", env)
-	node, _ := parser.Parse(lexer.New("1 |> inc |> dbl |> inc |> dbl |> inc"))
+	node, _ := parser.ParseWithEnv(lexer.New("1 |> inc |> dbl |> inc |> dbl |> inc"), makeSymbolLookup(env))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

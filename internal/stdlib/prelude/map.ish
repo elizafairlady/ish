@@ -1,4 +1,4 @@
-# Map extensions written in ish.
+# Map: map-specific operations.
 
 defmodule Map do
   def from_pairs [] do %{} end

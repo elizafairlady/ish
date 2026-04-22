@@ -1,63 +1,201 @@
-# Enum: polymorphic enumerable — works on lists and maps.
+# Enum: generic enumerable operations built on Enum.reduce (native dispatch).
+# Enum never inspects types — reduce dispatches to List/Map/Tuple.
 
 defmodule Enum do
-  def to_list list when (is_list list) do list end
-  def to_list m when (is_map m) do Map.pairs m end
+  # reduce is native Go (protocol dispatch) — already registered
 
-  def each enum, f do
-    enum |> Enum.to_list |> List.each f
+  def to_list enum do
+    Enum.reduce(enum, [], \acc, x -> [x | acc]) |> List.reverse
   end
 
+  # -- Collection-producing (return lists) --
+
   def map enum, f do
-    enum |> Enum.to_list |> List.map f
+    Enum.reduce(enum, [], \acc, x -> [f(x) | acc]) |> List.reverse
   end
 
   def filter enum, pred do
-    enum |> Enum.to_list |> List.filter pred
+    Enum.reduce(enum, [], \acc, x ->
+      if (pred x) do [x | acc] else acc end
+    end) |> List.reverse
   end
 
-  def reduce enum, acc, f do
-    enum |> Enum.to_list |> List.reduce(acc, f)
-  end
-
-  def any enum, pred do
-    enum |> Enum.to_list |> List.any pred
-  end
-
-  def all enum, pred do
-    enum |> Enum.to_list |> List.all pred
-  end
-
-  def find enum, pred do
-    enum |> Enum.to_list |> List.find pred
-  end
-
-  def count enum do
-    enum |> Enum.to_list |> length
-  end
-
-  def sort_by enum, f do
-    decorated = enum |> Enum.to_list |> List.map \x -> {f(x), x}
-    sorted = List.sort decorated
-    sorted |> List.map \pair ->
-      {_, v} = pair
-      v
-    end
-  end
-
-  def group_by enum, f do
-    enum |> Enum.to_list |> List.group_by f
+  def reject enum, pred do
+    Enum.reduce(enum, [], \acc, x ->
+      if (pred x) do acc else [x | acc] end
+    end) |> List.reverse
   end
 
   def flat_map enum, f do
-    enum |> Enum.to_list |> List.flat_map f
+    Enum.reduce(enum, [], \acc, x ->
+      List.concat(acc, f(x))
+    end)
+  end
+
+  def sort_by enum, f do
+    decorated = Enum.map(enum, \x -> {f(x), x})
+    sorted = List.sort decorated
+    Enum.map(sorted, \{_, v} -> v)
   end
 
   def with_index enum do
-    enum |> Enum.to_list |> List.with_index
+    list = Enum.to_list(enum)
+    indices = List.range(0, length(list))
+    Enum.zip(indices, list)
   end
 
   def zip a, b do
-    List.zip(Enum.to_list(a), Enum.to_list(b))
+    la = Enum.to_list(a)
+    lb = Enum.to_list(b)
+    _zip(la, lb)
+  end
+  def _zip [], _ do [] end
+  def _zip _, [] do [] end
+  def _zip [h1 | t1], [h2 | t2] do
+    [{h1, h2} | _zip(t1, t2)]
+  end
+
+  def uniq enum do
+    Enum.reduce(enum, [], \acc, x ->
+      if Enum.member(acc, x) do acc else List.append(acc, x) end
+    end)
+  end
+
+  def take enum, n do
+    {result, _} = Enum.reduce(enum, {[], n}, \state, x ->
+      {acc, remaining} = state
+      if remaining > 0 do
+        {List.append(acc, x), remaining - 1}
+      else
+        state
+      end
+    end)
+    result
+  end
+
+  def drop enum, n do
+    {result, _} = Enum.reduce(enum, {[], n}, \state, x ->
+      {acc, remaining} = state
+      if remaining > 0 do
+        {acc, remaining - 1}
+      else
+        {List.append(acc, x), 0}
+      end
+    end)
+    result
+  end
+
+  def chunk enum, n do
+    list = Enum.to_list(enum)
+    _chunk(list, n)
+  end
+  def _chunk [], _ do [] end
+  def _chunk list, n do
+    [List.take(list, n) | _chunk(List.drop(list, n), n)]
+  end
+
+  # -- Aggregating --
+
+  def each enum, f do
+    _each(Enum.to_list(enum), f)
+  end
+  def _each [], _ do :ok end
+  def _each [h | t], f do
+    f(h)
+    _each(t, f)
+  end
+
+  def sum enum do
+    Enum.reduce(enum, 0, \acc, x -> acc + x)
+  end
+
+  def product enum do
+    Enum.reduce(enum, 1, \acc, x -> acc * x)
+  end
+
+  def count enum do
+    Enum.reduce(enum, 0, \acc, _ -> acc + 1)
+  end
+
+  def join enum, sep do
+    Enum.to_list(enum) |> Enum.map(\x -> to_string(x)) |> String.join(sep)
+  end
+
+  # -- Search/predicate --
+
+  def find enum, pred do
+    _find(Enum.to_list(enum), pred)
+  end
+  def _find [], _ do nil end
+  def _find [h | t], pred do
+    if (pred h) do h else _find(t, pred) end
+  end
+
+  def any enum, pred do
+    _any(Enum.to_list(enum), pred)
+  end
+  def _any [], _ do :false end
+  def _any [h | t], pred do
+    if (pred h) do :true else _any(t, pred) end
+  end
+
+  def all enum, pred do
+    _all(Enum.to_list(enum), pred)
+  end
+  def _all [], _ do :true end
+  def _all [h | t], pred do
+    if (pred h) do _all(t, pred) else :false end
+  end
+
+  def member enum, val do
+    Enum.any(enum, \x -> x == val)
+  end
+
+  def empty enum do
+    Enum.count(enum) == 0
+  end
+
+  def min_by enum, f do
+    [h | t] = Enum.to_list(enum)
+    List.reduce(t, h, \acc, x ->
+      if f(x) < f(acc) do x else acc end
+    end)
+  end
+
+  def max_by enum, f do
+    [h | t] = Enum.to_list(enum)
+    List.reduce(t, h, \acc, x ->
+      if f(x) > f(acc) do x else acc end
+    end)
+  end
+
+  # -- Grouping (return maps) --
+
+  def group_by enum, f do
+    Enum.reduce(enum, %{}, \acc, x ->
+      key = to_string(f(x))
+      existing = Map.get(acc, key)
+      current = if (is_nil existing) do [] else existing end
+      Map.put(acc, key, List.append(current, x))
+    end)
+  end
+
+  def frequencies enum do
+    Enum.reduce(enum, %{}, \acc, x ->
+      key = to_string(x)
+      count = Map.get(acc, key)
+      current = if (is_nil count) do 0 else count end
+      Map.put(acc, key, current + 1)
+    end)
+  end
+
+  # -- Conversions --
+
+  def to_tuple enum do
+    Tuple.from_list(Enum.to_list(enum))
+  end
+
+  def to_map enum do
+    Map.from_pairs(Enum.to_list(enum))
   end
 end

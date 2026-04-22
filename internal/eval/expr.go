@@ -295,7 +295,7 @@ func evalCall(node *ast.Node, scope core.Scope) (core.Value, error) {
 // callDirect evaluates NCall args and binds directly into a pooled frame,
 // bypassing the intermediate []Value slice. Handles multi-clause dispatch
 // and TCO without allocating.
-func callDirect(fn *core.FnValue, node *ast.Node, scope core.Scope) (core.Value, error) {
+func callDirect(fn *core.FnValue, node *ast.Node, scope core.Scope) (retVal core.Value, retErr error) {
 	argc := len(node.Children) - 1
 
 	// Evaluate args once. For arity ≤ 4, use a flat array (no slice, no escape).
@@ -322,6 +322,7 @@ func callDirect(fn *core.FnValue, node *ast.Node, scope core.Scope) (core.Value,
 	if hasDbg {
 		dbg.PushFrame(fn.Name, argc)
 		defer func() {
+			if retErr != nil { retErr = dbg.WrapError(retErr) }
 			for i := 0; i < tcoDepth; i++ { dbg.PopFrame() }
 			dbg.PopFrame()
 		}()
@@ -437,16 +438,12 @@ func resolveCallFn(node *ast.Node, scope core.Scope) *core.FnValue {
 			return &core.FnValue{Name: name, Native: nfn}
 		}
 	case ast.NAccess:
-		// Module.func — resolve module and function directly
 		if node.Children[0].Kind == ast.NIdent {
 			modName := node.Children[0].Tok.Val
 			field := node.Tok.Val
 			if mod, ok := scope.GetModule(modName); ok {
 				if fn, ok := mod.Fns[field]; ok {
 					return fn
-				}
-				if nfn, ok := mod.NativeFns[field]; ok {
-					return &core.FnValue{Name: modName + "." + field, Native: nfn}
 				}
 			}
 		}
@@ -541,9 +538,6 @@ func evalAccess(node *ast.Node, scope core.Scope) (core.Value, error) {
 					return CallFn(fn, nil, scope)
 				}
 				return core.FnVal(fn), nil
-			}
-			if nfn, ok := mod.NativeFns[field]; ok {
-				return core.FnVal(&core.FnValue{Name: modName + "." + field, Native: nfn}), nil
 			}
 		}
 	}

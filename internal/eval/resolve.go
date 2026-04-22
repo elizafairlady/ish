@@ -56,10 +56,10 @@ func ResolveCmd(name string, scope core.Scope) ResolvedCmd {
 		if scope != nil {
 			if mod, ok := scope.GetModule(modName); ok {
 				if fn, ok := mod.Fns[fnName]; ok {
+					if fn.Native != nil {
+						return ResolvedCmd{Kind: KindModuleNativeFn, Fn: fn, NativeFn: fn.Native, ModName: modName, FnName: fnName}
+					}
 					return ResolvedCmd{Kind: KindModuleFn, Fn: fn, ModName: modName, FnName: fnName}
-				}
-				if nfn, ok := mod.NativeFns[fnName]; ok {
-					return ResolvedCmd{Kind: KindModuleNativeFn, NativeFn: nfn, ModName: modName, FnName: fnName}
 				}
 			}
 		}

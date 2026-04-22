@@ -133,8 +133,8 @@ func TestTutorialExamples(t *testing.T) {
 		{"s12 JSON.parse map", "r = JSON.parse \"{\\\"name\\\":\\\"fox\\\"}\";\necho $r", "%{name: \"fox\"}\n"},
 		{"s12 JSON.parse list", "r = JSON.parse \"[1,2,3]\"\necho $r", "[1, 2, 3]\n"},
 		{"s12 JSON.encode", "r = JSON.encode [1, 2, 3]\necho $r", "[1,2,3]\n"},
-		{"s12 IO.lines", "r = IO.lines \"hello\\nworld\"\necho $r", "[\"hello\\\\nworld\"]\n"},
-		{"s12 IO.unlines", "r = IO.unlines [\"hello\", \"world\"]\necho $r", "hello world\n"},
+		{"s12 IO.lines list", "IO.lines [\"hello\", \"world\"] | cat", "hello\nworld\n"},
+		{"s12 IO.unlines passthrough", "r = IO.unlines [\"hello\", \"world\"]\necho $r", "[\"hello\", \"world\"]\n"},
 	}
 
 	for _, tt := range tests {

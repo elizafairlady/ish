@@ -61,10 +61,10 @@ echo "min(3, 5):    $(Math.min(3, 5))"
 echo "clamp(10,0,5):$(Math.clamp(10, 0, 5))"
 
 echo ""
-echo "=== use (import) ==="
+echo "=== import ==="
 
 # Import List functions into local scope
-use List
+import List
 r = [10, 20, 30] |> map \x -> x + 1
-echo "bare map after use: $r"
+echo "bare map after import: $r"
 echo "bare hd: $(hd [1, 2, 3])"

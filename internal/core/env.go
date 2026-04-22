@@ -632,8 +632,6 @@ func (e *Env) SetModule(name string, mod *Module) {
 	if existing, ok := e.Modules[name]; ok {
 		if existing.Fns == nil { existing.Fns = make(map[string]*FnValue) }
 		for fname, fn := range mod.Fns { existing.Fns[fname] = fn }
-		if existing.NativeFns == nil { existing.NativeFns = make(map[string]NativeFn) }
-		for fname, nfn := range mod.NativeFns { existing.NativeFns[fname] = nfn }
 		return
 	}
 	e.Modules[name] = mod

@@ -130,6 +130,10 @@ func nodeKindString(k ast.NodeKind) string {
 		return "NInterpString"
 	case ast.NPath:
 		return "NPath"
+	case ast.NIPv4:
+		return "NIPv4"
+	case ast.NIPv6:
+		return "NIPv6"
 	case ast.NFlag:
 		return "NFlag"
 	case ast.NIshIf:
