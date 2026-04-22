@@ -183,8 +183,8 @@ func evalWithIO(node *ast.Node, scope core.Scope, stdin *os.File, stdout *os.Fil
 			switch r.Kind {
 			case KindModuleFn, KindUserFn, KindVarFn:
 				return CallFn(r.Fn, argVals, pipeEnv)
-			case KindModuleNativeFn, KindNativeFn:
-				return r.NativeFn(argVals, pipeEnv)
+			case KindModuleNativeFn:
+				return r.Fn.Native(argVals, pipeEnv)
 			}
 		}
 
@@ -436,8 +436,8 @@ func callResolved(name string, argVals []core.Value, tail bool, scope core.Scope
 			return core.TailCallVal(r.Fn, argVals), nil
 		}
 		return CallFn(r.Fn, argVals, scope)
-	case KindModuleNativeFn, KindNativeFn:
-		return r.NativeFn(argVals, scope)
+	case KindModuleNativeFn:
+		return r.Fn.Native(argVals, scope)
 	case KindBuiltin:
 		strArgs := make([]string, len(argVals))
 		for i, v := range argVals {

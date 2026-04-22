@@ -15,8 +15,7 @@ const (
 	KindNotFound       ResolvedKind = iota
 	KindModuleFn                    // Module.func -> user-defined fn in module
 	KindModuleNativeFn              // Module.func -> native fn in module
-	KindUserFn                      // user-defined fn
-	KindNativeFn                    // native fn (stdlib)
+	KindUserFn                      // user-defined or native fn (both in Env.Fns)
 	KindVarFn                       // variable holding a VFn value
 	KindBuiltin                     // shell builtin
 	KindExternal                    // external command on PATH
@@ -24,18 +23,17 @@ const (
 
 // ResolvedCmd holds the result of resolving a command name.
 type ResolvedCmd struct {
-	Kind     ResolvedKind
-	Fn       *core.FnValue
-	NativeFn core.NativeFn
-	Builtin  builtin.BuiltinFunc
-	ModName  string
-	FnName   string
+	Kind    ResolvedKind
+	Fn      *core.FnValue
+	Builtin builtin.BuiltinFunc
+	ModName string
+	FnName  string
 }
 
 // IsFn returns true if the resolved command is any kind of function (not a builtin or external).
 func (r ResolvedCmd) IsFn() bool {
 	switch r.Kind {
-	case KindModuleFn, KindModuleNativeFn, KindUserFn, KindNativeFn, KindVarFn:
+	case KindModuleFn, KindModuleNativeFn, KindUserFn, KindVarFn:
 		return true
 	}
 	return false
@@ -57,7 +55,7 @@ func ResolveCmd(name string, scope core.Scope) ResolvedCmd {
 			if mod, ok := scope.GetModule(modName); ok {
 				if fn, ok := mod.Fns[fnName]; ok {
 					if fn.Native != nil {
-						return ResolvedCmd{Kind: KindModuleNativeFn, Fn: fn, NativeFn: fn.Native, ModName: modName, FnName: fnName}
+						return ResolvedCmd{Kind: KindModuleNativeFn, Fn: fn, ModName: modName, FnName: fnName}
 					}
 					return ResolvedCmd{Kind: KindModuleFn, Fn: fn, ModName: modName, FnName: fnName}
 				}
@@ -65,21 +63,14 @@ func ResolveCmd(name string, scope core.Scope) ResolvedCmd {
 		}
 	}
 
-	// 2. User-defined function
+	// 2. User-defined or native function (both stored in Env.Fns)
 	if scope != nil {
 		if fn, ok := scope.GetFn(name); ok {
 			return ResolvedCmd{Kind: KindUserFn, Fn: fn}
 		}
 	}
 
-	// 3. Native function (stdlib)
-	if scope != nil {
-		if nfn, ok := scope.GetNativeFn(name); ok {
-			return ResolvedCmd{Kind: KindNativeFn, NativeFn: nfn}
-		}
-	}
-
-	// 4. Variable holding a function value
+	// 3. Variable holding a function value
 	if scope != nil {
 		if v, ok := scope.Get(name); ok && v.Kind == core.VFn && v.GetFn() != nil {
 			return ResolvedCmd{Kind: KindVarFn, Fn: v.GetFn()}
@@ -99,35 +90,3 @@ func ResolveCmd(name string, scope core.Scope) ResolvedCmd {
 	return ResolvedCmd{Kind: KindNotFound}
 }
 
-// ResolveCmdCached returns a closure that resolves commands with cached PATH lookups.
-// Used by MakeIsCommand for parser disambiguation.
-func ResolveCmdCached(scope core.Scope) func(string) bool {
-	pathCache := make(map[string]bool)
-	return func(name string) bool {
-		// Module-qualified
-		if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-			if scope != nil {
-				if _, ok := scope.GetModule(name[:dotIdx]); ok {
-					return true
-				}
-			}
-		}
-		if scope != nil {
-			if _, ok := scope.GetFn(name); ok {
-				return true
-			}
-			if _, ok := scope.GetNativeFn(name); ok {
-				return true
-			}
-		}
-		if _, ok := builtin.Builtins[name]; ok {
-			return true
-		}
-		if found, ok := pathCache[name]; ok {
-			return found
-		}
-		_, err := exec.LookPath(name)
-		pathCache[name] = err == nil
-		return err == nil
-	}
-}

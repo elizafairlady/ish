@@ -420,12 +420,11 @@ func (f *Frame) EachBinding(fn func(name string, val Value)) {
 // ---------------------------------------------------------------------------
 
 type Env struct {
-	Bindings  map[string]Value
-	Parent    Scope
-	Ctx       *ExecCtx
-	Fns       map[string]*FnValue
-	NativeFns map[string]NativeFn
-	Modules   map[string]*Module
+	Bindings map[string]Value
+	Parent   Scope
+	Ctx      *ExecCtx
+	Fns      map[string]*FnValue
+	Modules  map[string]*Module
 }
 
 func (e *Env) GetParent() Scope {
@@ -486,13 +485,13 @@ func CopyEnv(src *Env) *Env {
 			for k, v := range c.Bindings { e.Bindings[k] = v }
 			for k, v := range c.Fns {
 				if e.Fns == nil { e.Fns = make(map[string]*FnValue) }
-				copied := &FnValue{Name: v.Name, Clauses: make([]FnClause, len(v.Clauses))}
-				copy(copied.Clauses, v.Clauses)
-				e.Fns[k] = copied
-			}
-			if c.NativeFns != nil {
-				if e.NativeFns == nil { e.NativeFns = make(map[string]NativeFn) }
-				for k, v := range c.NativeFns { e.NativeFns[k] = v }
+				if v.Native != nil {
+					e.Fns[k] = v // native fns are immutable, share the pointer
+				} else {
+					copied := &FnValue{Name: v.Name, Clauses: make([]FnClause, len(v.Clauses))}
+					copy(copied.Clauses, v.Clauses)
+					e.Fns[k] = copied
+				}
 			}
 			if c.Modules != nil {
 				if e.Modules == nil { e.Modules = make(map[string]*Module) }
@@ -576,20 +575,16 @@ func (e *Env) GetFn(name string) (*FnValue, bool) {
 }
 
 func (e *Env) GetNativeFn(name string) (NativeFn, bool) {
-	var nfn NativeFn
-	var found bool
-	e.eachEnv(func(c *Env) bool {
-		if c.NativeFns != nil {
-			if f, ok := c.NativeFns[name]; ok { nfn = f; found = true; return false }
-		}
-		return true
-	})
-	return nfn, found
+	fn, ok := e.GetFn(name)
+	if ok && fn.Native != nil {
+		return fn.Native, true
+	}
+	return nil, false
 }
 
 func (e *Env) SetNativeFn(name string, fn NativeFn) {
-	if e.NativeFns == nil { e.NativeFns = make(map[string]NativeFn) }
-	e.NativeFns[name] = fn
+	if e.Fns == nil { e.Fns = make(map[string]*FnValue) }
+	e.Fns[name] = &FnValue{Name: name, Native: fn}
 }
 
 func (e *Env) AddFnClauses(name string, f *FnValue) {

@@ -82,12 +82,10 @@ func evalImport(node *ast.Node, scope core.Scope) (core.Value, error) {
 	if !ok {
 		return core.Nil, fmt.Errorf("import: module %s not found", modName)
 	}
+	env := scope.NearestEnv()
 	for name, fn := range mod.Fns {
-		if fn.Native != nil {
-			scope.NearestEnv().SetNativeFn(name, fn.Native)
-		} else {
-			scope.NearestEnv().SetFnClauses(name, fn)
-		}
+		if env.Fns == nil { env.Fns = make(map[string]*core.FnValue) }
+		env.Fns[name] = fn
 	}
 	return core.Nil, nil
 }

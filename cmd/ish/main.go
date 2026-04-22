@@ -25,7 +25,7 @@ import (
 	"ish/internal/stdlib"
 )
 
-var Version = "0.6.9"
+var Version = "0.6.10"
 
 func main() {
 	// Wire up eval <-> builtin cycle via Init
@@ -544,11 +544,6 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 			for s := core.Scope(env); s != nil; s = s.GetParent() {
 				if c, ok := s.(*core.Env); ok {
 					for name := range c.Fns {
-						if strings.HasPrefix(name, prefix) {
-							candidates = append(candidates, name)
-						}
-					}
-					for name := range c.NativeFns {
 						if strings.HasPrefix(name, prefix) {
 							candidates = append(candidates, name)
 						}

@@ -47,12 +47,6 @@ func TestEnv() *core.Env {
 			env.Fns[name] = fn
 		}
 	}
-	if baseTestEnv.NativeFns != nil {
-		env.NativeFns = make(map[string]core.NativeFn, len(baseTestEnv.NativeFns))
-		for name, nfn := range baseTestEnv.NativeFns {
-			env.NativeFns[name] = nfn
-		}
-	}
 	return env
 }
 

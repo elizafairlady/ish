@@ -465,10 +465,8 @@ func resolveFn(name string, scope core.Scope) *core.FnValue {
 	}
 	r := ResolveCmd(name, scope)
 	switch r.Kind {
-	case KindModuleFn, KindUserFn, KindVarFn, KindModuleNativeFn:
+	case KindModuleFn, KindModuleNativeFn, KindUserFn, KindVarFn:
 		return r.Fn
-	case KindNativeFn:
-		return &core.FnValue{Name: name, Native: r.NativeFn}
 	}
 	return nil
 }

@@ -33,11 +33,6 @@ func putFrame(f *core.Frame) {
 	framePool.Put(f)
 }
 
-// MakeIsCommand builds a callback for the parser that identifies known commands.
-func MakeIsCommand(scope core.Scope) func(string) bool {
-	return ResolveCmdCached(scope)
-}
-
 func Eval(node *ast.Node, scope core.Scope) (core.Value, error) {
 	if node == nil {
 		return core.Nil, nil
@@ -362,17 +357,12 @@ func RunCmdSub(cmd string, scope core.Scope) (string, error) {
 // RunSource calls without copying the entire env.
 func makeSymbolLookup(scope core.Scope) parser.SymbolLookup {
 	return func(name string) *parser.Symbol {
-		// Check for user-defined or variable-bound function
 		if v, ok := scope.Get(name); ok && v.Kind == core.VFn {
 			return &parser.Symbol{Kind: parser.SymFn}
 		}
 		if _, ok := scope.GetFn(name); ok {
 			return &parser.Symbol{Kind: parser.SymFn}
 		}
-		if _, ok := scope.GetNativeFn(name); ok {
-			return &parser.Symbol{Kind: parser.SymFn}
-		}
-		// Check for module
 		if _, ok := scope.GetModule(name); ok {
 			return &parser.Symbol{Kind: parser.SymModule}
 		}

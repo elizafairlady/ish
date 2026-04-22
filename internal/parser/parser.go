@@ -247,10 +247,7 @@ func ParseWithEnv(l *lexer.Lexer, lookup SymbolLookup) (*ast.Node, error) {
 	return p.parseProgram()
 }
 
-// ParseWithCommands is kept for API compatibility during migration.
-func ParseWithCommands(l *lexer.Lexer, isCmd func(string) bool) (*ast.Node, error) {
-	return newParser(l).parseProgram()
-}
+
 
 func (p *Parser) compact() {
 	if p.pos-p.base < 256 {
@@ -3098,7 +3095,11 @@ func (p *Parser) parseExprFrom(left *ast.Node, minPrec int) (*ast.Node, error) {
 			// Each arg parsed with parseExprOps (no nested juxtaposition).
 			call := &ast.Node{Kind: ast.NCall, Children: []*ast.Node{left}}
 			for {
-				arg, err := p.parseExprArg(p.mustParseValue())
+				val, err := p.parseValue(false)
+				if err != nil {
+					return nil, err
+				}
+				arg, err := p.parseExprArg(val)
 				if err != nil {
 					return nil, err
 				}
@@ -3228,17 +3229,6 @@ func (p *Parser) parsePostCallOps(left *ast.Node, minPrec int) (*ast.Node, error
 	return left, nil
 }
 
-// mustParseValue parses a single value and panics on nil (caller guarantees isValueStart).
-func (p *Parser) mustParseValue() *ast.Node {
-	v, err := p.parseValue(false)
-	if err != nil {
-		return &ast.Node{Kind: ast.NLit, Tok: ast.Token{Val: ""}}
-	}
-	if v == nil {
-		return &ast.Node{Kind: ast.NLit, Tok: ast.Token{Val: ""}}
-	}
-	return v
-}
 
 func (p *Parser) parseValue(cmdArg bool) (*ast.Node, error) {
 	cur := p.cur()

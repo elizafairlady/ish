@@ -62,16 +62,12 @@ func evalIdent(node *ast.Node, scope core.Scope) (core.Value, error) {
 		}
 		return v, nil
 	}
-	// Try function lookup
+	// Try function lookup (includes native fns)
 	if fn, ok := scope.GetFn(name); ok {
-		if len(fn.Clauses) > 0 && len(fn.Clauses[0].Params) == 0 {
+		if fn.Native == nil && len(fn.Clauses) > 0 && len(fn.Clauses[0].Params) == 0 {
 			return CallFn(fn, nil, scope)
 		}
 		return core.FnVal(fn), nil
-	}
-	// Try native function
-	if nfn, ok := scope.GetNativeFn(name); ok {
-		return core.FnVal(&core.FnValue{Name: name, Native: nfn}), nil
 	}
 	// self keyword
 	if name == "self" {
@@ -434,9 +430,6 @@ func resolveCallFn(node *ast.Node, scope core.Scope) *core.FnValue {
 		if fn, ok := scope.GetFn(name); ok {
 			return fn
 		}
-		if nfn, ok := scope.GetNativeFn(name); ok {
-			return &core.FnValue{Name: name, Native: nfn}
-		}
 	case ast.NAccess:
 		if node.Children[0].Kind == ast.NIdent {
 			modName := node.Children[0].Tok.Val
@@ -598,9 +591,6 @@ func evalCapture(node *ast.Node, scope core.Scope) (core.Value, error) {
 	name := node.Tok.Val
 	if fn, ok := scope.GetFn(name); ok {
 		return core.FnVal(fn), nil
-	}
-	if nfn, ok := scope.GetNativeFn(name); ok {
-		return core.FnVal(&core.FnValue{Name: name, Native: nfn}), nil
 	}
 	return core.Nil, fmt.Errorf("undefined function: %s", name)
 }
