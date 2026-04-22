@@ -191,7 +191,6 @@ func builtinEval(args []string, scope core.Scope) (int, error) {
 }
 
 func builtinSource(args []string, scope core.Scope) (int, error) {
-	env := scope.NearestEnv()
 	if len(args) == 0 {
 		return 1, fmt.Errorf("source: filename argument required")
 	}
@@ -212,14 +211,15 @@ func builtinSource(args []string, scope core.Scope) (int, error) {
 		return 1, err
 	}
 
-	savedArgs := env.Args
+	ctx := scope.GetCtx()
+	savedArgs := ctx.Args
 	if len(args) > 1 {
-		env.Args = args[1:]
+		ctx.Args = args[1:]
 	}
 
 	evalCtx.RunSource(string(data), scope) //nolint: errcheck
 
-	env.Args = savedArgs
+	ctx.Args = savedArgs
 
 	return scope.GetCtx().ExitCode(), nil
 }

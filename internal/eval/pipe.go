@@ -144,8 +144,8 @@ func evalPipe(node *ast.Node, scope core.Scope) (core.Value, error) {
 	<-done
 
 	// pipefail: if any stage failed, use the first non-zero exit code
-	if scope.NearestEnv().HasFlag('P') && leftEnv.ExitCode() != 0 && scope.GetCtx().ExitCode() == 0 {
-		scope.GetCtx().SetExit(leftEnv.ExitCode())
+	if scope.GetCtx().Shell.HasFlag('P') && leftEnv.Ctx.ExitCode() != 0 && scope.GetCtx().ExitCode() == 0 {
+		scope.GetCtx().SetExit(leftEnv.Ctx.ExitCode())
 	}
 
 	return val, err2
@@ -175,7 +175,7 @@ func evalWithIO(node *ast.Node, scope core.Scope, stdin *os.File, stdout *os.Fil
 			argVals := make([]core.Value, 0, len(node.Children)-1)
 			for _, child := range node.Children[1:] {
 				if child.Kind == ast.NVarRef && child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
-					for _, arg := range scope.NearestEnv().PosArgs() {
+					for _, arg := range scope.GetCtx().PosArgs() {
 						argVals = append(argVals, core.StringVal(arg))
 					}
 					continue
@@ -197,7 +197,7 @@ func evalWithIO(node *ast.Node, scope core.Scope, stdin *os.File, stdout *os.Fil
 		var strArgs []string
 		for _, child := range node.Children[1:] {
 			if child.Kind == ast.NVarRef && child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
-				strArgs = append(strArgs, scope.NearestEnv().PosArgs()...)
+				strArgs = append(strArgs, scope.GetCtx().PosArgs()...)
 				continue
 			}
 			v, err := Eval(child, scope)

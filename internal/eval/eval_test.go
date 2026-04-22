@@ -19,7 +19,7 @@ import (
 
 func testEnv() *core.Env {
 	env := core.TopEnv()
-	env.Proc = process.NewProcess()
+	env.Ctx.Proc = process.NewProcess()
 	stdlib.Register(env)
 	builtin.Init(builtin.EvalContext{RunSource: RunSource})
 	env.Ctx.CmdSub = RunCmdSub
@@ -1038,28 +1038,28 @@ func TestBoolVal(t *testing.T) {
 func TestSyncExit(t *testing.T) {
 	t.Run("truthy sets 0", func(t *testing.T) {
 		env := testEnv()
-		env.SetExit(1)
+		env.Ctx.SetExit(1)
 		syncExit(core.IntVal(42), env)
-		if env.ExitCode() != 0 {
-			t.Errorf("expected 0, got %d", env.ExitCode())
+		if env.Ctx.ExitCode() != 0 {
+			t.Errorf("expected 0, got %d", env.Ctx.ExitCode())
 		}
 	})
 
 	t.Run("falsy sets 1", func(t *testing.T) {
 		env := testEnv()
-		env.SetExit(0)
+		env.Ctx.SetExit(0)
 		syncExit(core.IntVal(0), env)
-		if env.ExitCode() != 1 {
-			t.Errorf("expected 1, got %d", env.ExitCode())
+		if env.Ctx.ExitCode() != 1 {
+			t.Errorf("expected 1, got %d", env.Ctx.ExitCode())
 		}
 	})
 
 	t.Run("nil does not change exit", func(t *testing.T) {
 		env := testEnv()
-		env.SetExit(42)
+		env.Ctx.SetExit(42)
 		syncExit(core.Nil, env)
-		if env.ExitCode() != 42 {
-			t.Errorf("expected 42, got %d", env.ExitCode())
+		if env.Ctx.ExitCode() != 42 {
+			t.Errorf("expected 42, got %d", env.Ctx.ExitCode())
 		}
 	})
 }
@@ -1169,7 +1169,7 @@ done`
 func TestAliasExpansion(t *testing.T) {
 	t.Run("basic alias expansion", func(t *testing.T) {
 		env := testEnv()
-		env.SetAlias("greet", "echo hello")
+		env.Ctx.Shell.SetAlias("greet", "echo hello")
 		got := captureOutput(env, func() {
 			runSource("greet", env)
 		})
@@ -1180,7 +1180,7 @@ func TestAliasExpansion(t *testing.T) {
 
 	t.Run("alias with args", func(t *testing.T) {
 		env := testEnv()
-		env.SetAlias("ll", "echo listing")
+		env.Ctx.Shell.SetAlias("ll", "echo listing")
 		got := captureOutput(env, func() {
 			runSource("ll foo bar", env)
 		})
@@ -1191,7 +1191,7 @@ func TestAliasExpansion(t *testing.T) {
 
 	t.Run("alias avoids infinite recursion", func(t *testing.T) {
 		env := testEnv()
-		env.SetAlias("echo", "echo")
+		env.Ctx.Shell.SetAlias("echo", "echo")
 		got := captureOutput(env, func() {
 			runSource("echo safe", env)
 		})
@@ -1202,7 +1202,7 @@ func TestAliasExpansion(t *testing.T) {
 
 	t.Run("command bypasses alias", func(t *testing.T) {
 		env := testEnv()
-		env.SetAlias("echo", "echo aliased")
+		env.Ctx.Shell.SetAlias("echo", "echo aliased")
 		got := captureOutput(env, func() {
 			runSource("command echo direct", env)
 		})

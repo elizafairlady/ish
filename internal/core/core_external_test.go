@@ -43,35 +43,33 @@ func TestEqualPid(t *testing.T) {
 }
 
 func TestEnvGetProc(t *testing.T) {
-	t.Run("direct proc", func(t *testing.T) {
+	t.Run("direct proc on ctx", func(t *testing.T) {
 		e := core.NewEnv(nil)
 		p := process.NewProcess()
 		defer p.Close()
-		e.Proc = p
+		e.Ctx.Proc = p
 
-		got := e.GetProc()
-		if got != p {
-			t.Error("expected GetProc to return the process")
+		if e.Ctx.Proc != p {
+			t.Error("expected Proc on Ctx")
 		}
 	})
 
-	t.Run("walks parent", func(t *testing.T) {
+	t.Run("child shares parent ctx proc", func(t *testing.T) {
 		parent := core.NewEnv(nil)
 		p := process.NewProcess()
 		defer p.Close()
-		parent.Proc = p
+		parent.Ctx.Proc = p
 
 		child := core.NewEnv(parent)
-		got := child.GetProc()
-		if got != p {
-			t.Error("expected GetProc to find parent proc")
+		// Child shares parent's ExecCtx, so Proc is visible
+		if child.Ctx.Proc != p {
+			t.Error("expected child to see parent's proc via shared Ctx")
 		}
 	})
 
 	t.Run("nil when no proc", func(t *testing.T) {
 		e := core.NewEnv(nil)
-		got := e.GetProc()
-		if got != nil {
+		if e.Ctx.Proc != nil {
 			t.Error("expected nil when no proc set")
 		}
 	})

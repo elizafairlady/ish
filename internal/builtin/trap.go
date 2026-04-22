@@ -52,7 +52,7 @@ func registerSignalTrap(sigName string, env *core.Env) {
 			e := trapEnvRef
 			trapMu.Unlock()
 			if e != nil {
-				if cmd, ok := e.GetTrap(sigName); ok {
+				if cmd, ok := e.Ctx.Shell.GetTrap(sigName); ok {
 					if cmd != "" {
 						evalCtx.RunSource(cmd, e) //nolint: errcheck
 					}
@@ -79,26 +79,25 @@ func unregisterSignalTrap(sigName string) {
 
 // RunExitTraps fires EXIT traps. Called at shell exit.
 func RunExitTraps(env *core.Env) {
-	if cmd, ok := env.GetTrap("EXIT"); ok && cmd != "" {
+	if cmd, ok := env.Ctx.Shell.GetTrap("EXIT"); ok && cmd != "" {
 		evalCtx.RunSource(cmd, env) //nolint: errcheck
 	}
 }
 
 // CheckErrTrap fires the ERR trap if the last command failed.
 func CheckErrTrap(env *core.Env) {
-	if env.ExitCode() != 0 {
-		if cmd, ok := env.GetTrap("ERR"); ok && cmd != "" {
+	if env.Ctx.ExitCode() != 0 {
+		if cmd, ok := env.Ctx.Shell.GetTrap("ERR"); ok && cmd != "" {
 			evalCtx.RunSource(cmd, env) //nolint: errcheck
 		}
 	}
 }
 
 func builtinTrap(args []string, scope core.Scope) (int, error) {
-	env := scope.NearestEnv()
+	ctx := scope.GetCtx()
 	if len(args) == 0 {
-		w := scope.GetCtx().Stdout
-		env.AllTraps(func(sig, cmd string) {
-			fmt.Fprintf(w, "trap -- %q %s\n", cmd, sig)
+		ctx.Shell.AllTraps(func(sig, cmd string) {
+			fmt.Fprintf(ctx.Stdout, "trap -- %q %s\n", cmd, sig)
 		})
 		return 0, nil
 	}
@@ -110,8 +109,7 @@ func builtinTrap(args []string, scope core.Scope) (int, error) {
 	}
 
 	if args[0] == "-l" {
-		w := scope.GetCtx().Stdout
-		fmt.Fprintln(w, "EXIT INT TERM HUP QUIT USR1 USR2 ERR")
+		fmt.Fprintln(ctx.Stdout, "EXIT INT TERM HUP QUIT USR1 USR2 ERR")
 		return 0, nil
 	}
 
@@ -123,7 +121,7 @@ func builtinTrap(args []string, scope core.Scope) (int, error) {
 				fmt.Fprintf(os.Stderr, "trap: %s: invalid signal specification\n", sig)
 				continue
 			}
-			env.DeleteTrap(sig)
+			ctx.Shell.DeleteTrap(sig)
 			unregisterSignalTrap(sig)
 		}
 		return 0, nil
@@ -133,6 +131,7 @@ func builtinTrap(args []string, scope core.Scope) (int, error) {
 		return 1, fmt.Errorf("trap: usage: trap command signal [signal ...]")
 	}
 	cmd := args[0]
+	env := scope.NearestEnv()
 	for _, sig := range args[1:] {
 		sig = strings.ToUpper(sig)
 		sig = strings.TrimPrefix(sig, "SIG")
@@ -140,7 +139,7 @@ func builtinTrap(args []string, scope core.Scope) (int, error) {
 			fmt.Fprintf(os.Stderr, "trap: %s: invalid signal specification\n", sig)
 			continue
 		}
-		env.SetTrap(sig, cmd)
+		ctx.Shell.SetTrap(sig, cmd)
 		registerSignalTrap(sig, env)
 	}
 	return 0, nil

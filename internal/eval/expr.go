@@ -74,7 +74,7 @@ func evalIdent(node *ast.Node, scope core.Scope) (core.Value, error) {
 	}
 	// self keyword
 	if name == "self" {
-		if proc := scope.NearestEnv().GetProc(); proc != nil {
+		if proc := scope.GetCtx().Proc; proc != nil {
 			return core.PidVal(proc), nil
 		}
 		return core.Nil, nil

@@ -33,13 +33,13 @@ func evalSpecialVar(name string, scope core.Scope) core.Value {
 	case '?':
 		return core.IntVal(int64(scope.GetCtx().ExitCode()))
 	case '$':
-		return core.IntVal(int64(scope.NearestEnv().Pid()))
+		return core.IntVal(int64(scope.GetCtx().Pid()))
 	case '!':
-		return core.IntVal(int64(scope.NearestEnv().BgPid()))
+		return core.IntVal(int64(scope.GetCtx().BgPid()))
 	case '#':
-		return core.IntVal(int64(len(scope.NearestEnv().PosArgs())))
+		return core.IntVal(int64(len(scope.GetCtx().PosArgs())))
 	case '@':
-		args := scope.NearestEnv().PosArgs()
+		args := scope.GetCtx().PosArgs()
 		vals := make([]core.Value, len(args))
 		for i, a := range args { vals[i] = core.StringVal(a) }
 		return core.ListVal(vals...)
@@ -49,11 +49,11 @@ func evalSpecialVar(name string, scope core.Scope) core.Value {
 			ifsStr := ifs.ToStr()
 			if len(ifsStr) > 0 { sep = ifsStr[:1] } else { sep = "" }
 		}
-		return core.StringVal(strings.Join(scope.NearestEnv().PosArgs(), sep))
+		return core.StringVal(strings.Join(scope.GetCtx().PosArgs(), sep))
 	default:
 		if name[1] >= '0' && name[1] <= '9' {
 			idx := int(name[1] - '0')
-			args := scope.NearestEnv().PosArgs()
+			args := scope.GetCtx().PosArgs()
 			if idx == 0 { return core.StringVal("ish") }
 			if idx <= len(args) { return core.StringVal(args[idx-1]) }
 			return core.StringVal("")

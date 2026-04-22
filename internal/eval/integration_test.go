@@ -243,7 +243,7 @@ func TestAdversarialBreakContinue(t *testing.T) {
 			testutil.CaptureOutput(env, func() {
 				testutil.RunSource(kw, env)
 			})
-			if env.ExitCode() == 0 {
+			if env.Ctx.ExitCode() == 0 {
 				t.Errorf("%s outside loop should set non-zero exit code", kw)
 			}
 		})

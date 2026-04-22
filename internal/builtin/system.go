@@ -12,14 +12,13 @@ import (
 )
 
 func builtinType(args []string, scope core.Scope) (int, error) {
-	env := scope.NearestEnv()
 	code := 0
 	for _, name := range args {
 		if _, ok := Builtins[name]; ok {
 			fmt.Fprintf(scope.GetCtx().Stdout, "%s is a shell builtin\n", name)
-		} else if _, ok := env.GetFn(name); ok {
+		} else if _, ok := scope.GetFn(name); ok {
 			fmt.Fprintf(scope.GetCtx().Stdout, "%s is a function\n", name)
-		} else if _, ok := env.GetNativeFn(name); ok {
+		} else if _, ok := scope.GetNativeFn(name); ok {
 			fmt.Fprintf(scope.GetCtx().Stdout, "%s is a function\n", name)
 		} else if path, err := exec.LookPath(name); err == nil {
 			fmt.Fprintf(scope.GetCtx().Stdout, "%s is %s\n", name, path)
@@ -71,7 +70,6 @@ func builtinTimes(args []string, scope core.Scope) (int, error) {
 }
 
 func builtinGetopts(args []string, scope core.Scope) (int, error) {
-	env := scope.NearestEnv()
 	if len(args) < 2 {
 		return 1, fmt.Errorf("getopts: usage: getopts optstring name [args]")
 	}
@@ -83,7 +81,7 @@ func builtinGetopts(args []string, scope core.Scope) (int, error) {
 	if len(args) > 2 {
 		optArgs = args[2:]
 	} else {
-		optArgs = env.PosArgs()
+		optArgs = scope.GetCtx().PosArgs()
 	}
 
 	optind := 1

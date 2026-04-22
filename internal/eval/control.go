@@ -132,6 +132,6 @@ func evalSubshell(node *ast.Node, scope core.Scope) (core.Value, error) {
 	syscall.Umask(origMask)
 	osMu.Unlock()
 
-	scope.GetCtx().SetExit(subEnv.ExitCode())
+	scope.GetCtx().SetExit(subEnv.Ctx.ExitCode())
 	return val, err
 }

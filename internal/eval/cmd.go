@@ -96,7 +96,7 @@ func evalCmd(node *ast.Node, scope core.Scope) (core.Value, error) {
 
 	// Alias expansion
 	if nameNode.Kind == ast.NIdent {
-		if aliasVal, ok := scope.NearestEnv().GetAlias(name); ok {
+		if aliasVal, ok := scope.GetCtx().Shell.GetAlias(name); ok {
 			firstWord := aliasVal
 			if sp := strings.IndexByte(aliasVal, ' '); sp >= 0 {
 				firstWord = aliasVal[:sp]
@@ -119,7 +119,7 @@ func evalCmd(node *ast.Node, scope core.Scope) (core.Value, error) {
 
 	// Handle `self` keyword — returns current process pid
 	if name == "self" && len(node.Children) == 1 {
-		if proc := scope.NearestEnv().GetProc(); proc != nil {
+		if proc := scope.GetCtx().Proc; proc != nil {
 			return core.PidVal(proc), nil
 		}
 		return core.Nil, nil
@@ -202,7 +202,7 @@ func evalCmd(node *ast.Node, scope core.Scope) (core.Value, error) {
 		case ast.NVarRef:
 			// $@ expands to separate args
 			if child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
-				for _, arg := range scope.NearestEnv().PosArgs() {
+				for _, arg := range scope.GetCtx().PosArgs() {
 					strArgs = append(strArgs, arg)
 					quotedFlags = append(quotedFlags, true)
 				}
@@ -253,7 +253,7 @@ func evalCmd(node *ast.Node, scope core.Scope) (core.Value, error) {
 	}
 	expanded := expandGlobsSelective(strArgs, quotedFlags)
 
-	if scope.NearestEnv().HasFlag('x') {
+	if scope.GetCtx().Shell.HasFlag('x') {
 		fmt.Fprintf(os.Stderr, "+ %s\n", strings.Join(append([]string{name}, expanded...), " "))
 	}
 
@@ -363,7 +363,7 @@ func evalFnArgs(node *ast.Node, scope core.Scope) ([]core.Value, error) {
 	argVals := make([]core.Value, 0, len(node.Children)-1)
 	for _, child := range node.Children[1:] {
 		if child.Kind == ast.NVarRef && child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
-			for _, arg := range scope.NearestEnv().PosArgs() {
+			for _, arg := range scope.GetCtx().PosArgs() {
 				argVals = append(argVals, core.StringVal(arg))
 			}
 			continue
@@ -662,7 +662,7 @@ func evalBg(node *ast.Node, scope core.Scope) (core.Value, error) {
 			pid := cmd.Process.Pid
 			cmdStr := name + " " + strings.Join(expanded, " ")
 			jobID := jobs.AddJob(pid, strings.TrimSpace(cmdStr), cmd.Process)
-		 scope.NearestEnv().LastBg = pid
+		 scope.GetCtx().LastBg = pid
 			fmt.Fprintf(os.Stderr, "[%d] %d\n", jobID, pid)
 
 			j := jobs.FindJob(jobID)

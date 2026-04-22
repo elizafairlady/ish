@@ -160,11 +160,11 @@ func evalBlock(node *ast.Node, scope core.Scope) (core.Value, error) {
 
 		if !exempt {
 			if scope.GetCtx().ExitCode() != 0 {
-				if cmd, ok := scope.NearestEnv().GetTrap("ERR"); ok && cmd != "" {
+				if cmd, ok := scope.GetCtx().Shell.GetTrap("ERR"); ok && cmd != "" {
 					RunSource(cmd, scope.NearestEnv())
 				}
 			}
-			if scope.GetCtx().ShouldExitOnError(scope.NearestEnv().HasFlag) {
+			if scope.GetCtx().ShouldExitOnError() {
 				return last, core.ErrSetE
 			}
 		}
@@ -218,10 +218,10 @@ func CallFn(fn *core.FnValue, vals []core.Value, scope core.Scope) (retVal core.
 				posixEnv := core.NewEnv(parentScope)
 				strArgs := make([]string, len(vals))
 				for i, v := range vals { strArgs[i] = v.ToStr() }
-				posixEnv.Args = strArgs
+				posixEnv.Ctx.Args = strArgs
 				val, err := Eval(clause.Body, posixEnv)
 				if err == core.ErrReturn {
-					scope.GetCtx().SetExit(posixEnv.ExitCode())
+					scope.GetCtx().SetExit(posixEnv.Ctx.ExitCode())
 					return val, nil
 				}
 				if err != nil { return val, err }
@@ -290,16 +290,16 @@ func RunCmdSub(cmd string, scope core.Scope) (string, error) {
 	var buf bytes.Buffer
 	io.Copy(&buf, r)
 	r.Close()
-	scope.GetCtx().SetExit(subEnv.ExitCode())
+	scope.GetCtx().SetExit(subEnv.Ctx.ExitCode())
 	result := strings.TrimRight(buf.String(), "\n")
 	return result, nil
 }
 
 // RunSource parses and evaluates a source string.
 func RunSource(src string, scope core.Scope) (core.Value, error) {
-	scope.NearestEnv().Source = src
+	scope.GetCtx().Source = src
 	if d, ok := scope.GetCtx().Debugger.(*debug.Debugger); ok {
-		name := scope.NearestEnv().SourceName
+		name := scope.GetCtx().SourceName
 		if name == "" { name = "<eval>" }
 		sm := debug.NewSourceMap(name, src)
 		d.PushSource(sm)

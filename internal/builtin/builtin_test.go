@@ -517,7 +517,7 @@ func TestBuiltinAlias(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("expected exit code 0, got %d", code)
 		}
-		v, ok := env.GetAlias("ll")
+		v, ok := env.Ctx.Shell.GetAlias("ll")
 		if !ok {
 			t.Fatal("expected alias ll to be set")
 		}
@@ -528,7 +528,7 @@ func TestBuiltinAlias(t *testing.T) {
 
 	t.Run("list specific alias", func(t *testing.T) {
 		env := testutil.TestEnv()
-		env.SetAlias("ll", "ls -la")
+		env.Ctx.Shell.SetAlias("ll", "ls -la")
 		got := testutil.CaptureOutput(env, func() {
 			b := builtin.Builtins["alias"]
 			b([]string{"ll"}, env)
@@ -542,21 +542,21 @@ func TestBuiltinAlias(t *testing.T) {
 func TestBuiltinUnalias(t *testing.T) {
 	t.Run("remove alias", func(t *testing.T) {
 		env := testutil.TestEnv()
-		env.SetAlias("ll", "ls -la")
+		env.Ctx.Shell.SetAlias("ll", "ls -la")
 		b := builtin.Builtins["unalias"]
 		b([]string{"ll"}, env)
-		if _, ok := env.GetAlias("ll"); ok {
+		if _, ok := env.Ctx.Shell.GetAlias("ll"); ok {
 			t.Error("expected alias ll to be removed")
 		}
 	})
 
 	t.Run("remove all aliases with -a", func(t *testing.T) {
 		env := testutil.TestEnv()
-		env.SetAlias("ll", "ls -la")
-		env.SetAlias("gs", "git status")
+		env.Ctx.Shell.SetAlias("ll", "ls -la")
+		env.Ctx.Shell.SetAlias("gs", "git status")
 		b := builtin.Builtins["unalias"]
 		b([]string{"-a"}, env)
-		if len(env.AllAliases()) != 0 {
+		if len(env.Ctx.Shell.AllAliases()) != 0 {
 			t.Error("expected all aliases to be removed")
 		}
 	})

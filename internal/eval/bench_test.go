@@ -12,7 +12,7 @@ import (
 
 func benchEnv() *core.Env {
 	env := core.TopEnv()
-	env.Proc = process.NewProcess()
+	env.Ctx.Proc = process.NewProcess()
 	stdlib.Register(env)
 	env.Ctx.CmdSub = RunCmdSub
 	env.Ctx.CallFn = CallFn

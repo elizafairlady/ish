@@ -24,8 +24,7 @@ func builtinExit(args []string, scope core.Scope) (int, error) {
 }
 
 func builtinLogout(args []string, scope core.Scope) (int, error) {
-	env := scope.NearestEnv()
-	if !env.IsLoginShell {
+	if !scope.GetCtx().IsLoginShell {
 		return 1, fmt.Errorf("logout: not login shell: use 'exit'")
 	}
 	return builtinExit(args, scope)

@@ -362,7 +362,7 @@ end
 func TestReceiveAfterMessageArrivesBeforeTimeout(t *testing.T) {
 	env := testutil.TestEnv()
 
-	proc := env.GetProc()
+	proc := env.Ctx.Proc; //()
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		proc.Send(core.IntVal(42))
@@ -384,7 +384,7 @@ end
 func TestReceiveAfterWithPatternMatch(t *testing.T) {
 	env := testutil.TestEnv()
 
-	proc := env.GetProc()
+	proc := env.Ctx.Proc; //()
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		proc.Send(core.TupleVal(core.AtomVal("ok"), core.IntVal(99)))

@@ -12,7 +12,7 @@ import (
 func spawnProcess(node *ast.Node, scope core.Scope) (*process.Process, error) {
 	proc := process.NewProcess()
 	childEnv := core.CopyEnv(scope.NearestEnv())
-	childEnv.Proc = proc
+	childEnv.Ctx.Proc = proc
 	child := node.Children[0]
 
 	go func() {
@@ -59,7 +59,7 @@ func evalIshSpawnLink(node *ast.Node, scope core.Scope) (core.Value, error) {
 	if err != nil {
 		return core.Nil, err
 	}
-	parentProc := scope.NearestEnv().GetProc()
+	parentProc := scope.GetCtx().Proc
 	if parentProc != nil {
 		parentProc.Link(proc)
 	}
@@ -84,7 +84,7 @@ func evalIshSend(node *ast.Node, scope core.Scope) (core.Value, error) {
 }
 
 func evalIshReceive(node *ast.Node, scope core.Scope) (core.Value, error) {
-	proc := scope.NearestEnv().GetProc()
+	proc := scope.GetCtx().Proc
 	if proc == nil {
 		return core.Nil, fmt.Errorf("receive: not in a process")
 	}
@@ -140,7 +140,7 @@ func evalIshMonitor(node *ast.Node, scope core.Scope) (core.Value, error) {
 	if target.Kind != core.VPid || target.GetPid() == nil {
 		return core.Nil, fmt.Errorf("monitor: expected pid, got %s", target.Inspect())
 	}
-	watcher := scope.NearestEnv().GetProc()
+	watcher := scope.GetCtx().Proc
 	if watcher == nil {
 		return core.Nil, fmt.Errorf("monitor: not in a process")
 	}

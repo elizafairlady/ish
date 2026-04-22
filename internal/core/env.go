@@ -22,19 +22,51 @@ const MaxFlatBindings = 4
 
 // ---------------------------------------------------------------------------
 // ExecCtx: shared execution context across all scopes in one execution.
-// Frames and Envs share the same ExecCtx pointer. Redirects create a
-// child ExecCtx with different Stdout. Subshells copy the whole thing.
+// Holds everything that is shared state, not lexically scoped: I/O,
+// exit codes, shell identity, flags, traps, aliases, process, positional
+// args. Frames and Envs share the same ExecCtx pointer. Redirects create
+// a child ExecCtx with different Stdout. Subshells copy the whole thing.
 // ---------------------------------------------------------------------------
 
+// ShellState holds mutable map state that must be shared across redirect
+// boundaries. ExecCtx holds a pointer to this; ForRedirect copies the
+// pointer so both parent and child mutate the same maps. Copy (for
+// subshells) deep-copies the maps for isolation.
+type ShellState struct {
+	SetFlags    map[byte]bool
+	Traps       map[string]string
+	Aliases     map[string]string
+	ReadonlySet map[string]bool
+	Exported    map[string]bool
+}
+
 type ExecCtx struct {
+	// I/O and callbacks
 	Stdout   io.Writer
 	Debugger interface{}
 	CallFn   func(fn *FnValue, args []Value, scope Scope) (Value, error)
 	CmdSub   CmdSubFunc
+
+	// Exit state (mutex-protected for concurrent pipe stages)
 	ExitMu   sync.Mutex
 	LastExit int
 	HasExit  bool
 	ExprMode int
+
+	// Shell identity (scalars — copy by value in ForRedirect)
+	Proc         Pid
+	ShellPid     int
+	ShellName    string
+	LastBg       int
+	IsLoginShell bool
+
+	// Positional parameters and source tracking (scalars/slices)
+	Args       []string
+	Source     string
+	SourceName string
+
+	// Shared mutable state (pointer — survives ForRedirect)
+	Shell *ShellState
 }
 
 func (c *ExecCtx) SetExit(code int) {
@@ -53,11 +85,8 @@ func (c *ExecCtx) ExitCode() int {
 	return 0
 }
 
-func (c *ExecCtx) ShouldExitOnError(hasFlag func(byte) bool) bool {
-	if !hasFlag('e') {
-		return false
-	}
-	return c.ExitCode() != 0
+func (c *ExecCtx) ShouldExitOnError() bool {
+	return c.Shell.HasFlag('e') && c.ExitCode() != 0
 }
 
 func (c *ExecCtx) EnterExprMode() func() {
@@ -67,28 +96,147 @@ func (c *ExecCtx) EnterExprMode() func() {
 
 func (c *ExecCtx) InExprMode() bool { return c.ExprMode > 0 }
 
-// ForRedirect creates a child ExecCtx with different Stdout but shared state.
+// ShellState methods — delegate to shared Shell pointer
+
+func (s *ShellState) HasFlag(flag byte) bool {
+	if s.SetFlags == nil { return false }
+	return s.SetFlags[flag]
+}
+
+func (s *ShellState) SetFlag(flag byte, on bool) {
+	if s.SetFlags == nil { s.SetFlags = make(map[byte]bool) }
+	s.SetFlags[flag] = on
+}
+
+func (s *ShellState) GetTrap(sig string) (string, bool) {
+	if s.Traps == nil { return "", false }
+	cmd, ok := s.Traps[sig]
+	return cmd, ok
+}
+
+func (s *ShellState) SetTrap(sig, cmd string) {
+	if s.Traps == nil { s.Traps = make(map[string]string) }
+	s.Traps[sig] = cmd
+}
+
+func (s *ShellState) DeleteTrap(sig string) {
+	if s.Traps != nil { delete(s.Traps, sig) }
+}
+
+func (s *ShellState) AllTraps(fn func(sig, cmd string)) {
+	for sig, cmd := range s.Traps { fn(sig, cmd) }
+}
+
+func (s *ShellState) GetAlias(name string) (string, bool) {
+	if s.Aliases == nil { return "", false }
+	v, ok := s.Aliases[name]
+	return v, ok
+}
+
+func (s *ShellState) SetAlias(name, value string) {
+	if s.Aliases == nil { s.Aliases = make(map[string]string) }
+	s.Aliases[name] = value
+}
+
+func (s *ShellState) DeleteAlias(name string) {
+	if s.Aliases != nil { delete(s.Aliases, name) }
+}
+
+func (s *ShellState) AllAliases() map[string]string {
+	if s.Aliases == nil { return nil }
+	result := make(map[string]string, len(s.Aliases))
+	for k, v := range s.Aliases { result[k] = v }
+	return result
+}
+
+func (s *ShellState) IsReadonly(name string) bool {
+	if s.ReadonlySet == nil { return false }
+	return s.ReadonlySet[name]
+}
+
+func (s *ShellState) SetReadonly(name string) {
+	if s.ReadonlySet == nil { s.ReadonlySet = make(map[string]bool) }
+	s.ReadonlySet[name] = true
+}
+
+func (s *ShellState) AllReadonly(fn func(name string)) {
+	for name := range s.ReadonlySet { fn(name) }
+}
+
+func (s *ShellState) Export(name, val string) {
+	if s.Exported == nil { s.Exported = make(map[string]bool) }
+	s.Exported[name] = true
+}
+
+func (s *ShellState) ExportName(name string) {
+	if s.Exported == nil { s.Exported = make(map[string]bool) }
+	s.Exported[name] = true
+}
+
+func (s *ShellState) IsExported(name string) bool {
+	if s.Exported == nil { return false }
+	return s.Exported[name]
+}
+
+// Positional params
+func (c *ExecCtx) PosArgs() []string { return c.Args }
+
+// Shell identity
+func (c *ExecCtx) Pid() int {
+	if c.ShellPid != 0 { return c.ShellPid }
+	return os.Getpid()
+}
+
+func (c *ExecCtx) BgPid() int { return c.LastBg }
+
+func (c *ExecCtx) GetShellName() string {
+	if c.ShellName != "" { return c.ShellName }
+	return "ish"
+}
+
+// ForRedirect creates a child ExecCtx with different Stdout.
+// Shell (shared mutable maps) is the same pointer — mutations in the
+// redirect child are visible to the parent. Scalars are copied by value.
 func (c *ExecCtx) ForRedirect(w io.Writer) *ExecCtx {
 	return &ExecCtx{
-		Stdout:   w,
-		Debugger: c.Debugger,
-		CallFn:   c.CallFn,
-		CmdSub:   c.CmdSub,
-		LastExit: c.LastExit,
-		HasExit:  c.HasExit,
-		ExprMode: c.ExprMode,
+		Stdout:       w,
+		Debugger:     c.Debugger,
+		CallFn:       c.CallFn,
+		CmdSub:       c.CmdSub,
+		LastExit:     c.LastExit,
+		HasExit:      c.HasExit,
+		ExprMode:     c.ExprMode,
+		Proc:         c.Proc,
+		ShellPid:     c.ShellPid,
+		ShellName:    c.ShellName,
+		LastBg:       c.LastBg,
+		IsLoginShell: c.IsLoginShell,
+		Args:         c.Args,
+		Source:       c.Source,
+		SourceName:   c.SourceName,
+		Shell:        c.Shell, // shared pointer
 	}
 }
 
 // Copy creates a fully independent ExecCtx for subshells/spawn.
+// Shell maps are deep-copied for isolation.
 func (c *ExecCtx) Copy() *ExecCtx {
 	cp := &ExecCtx{
-		Stdout:   c.Stdout,
-		CallFn:   c.CallFn,
-		CmdSub:   c.CmdSub,
-		LastExit:  c.LastExit,
-		HasExit:  c.HasExit,
-		ExprMode: c.ExprMode,
+		Stdout:       c.Stdout,
+		CallFn:       c.CallFn,
+		CmdSub:       c.CmdSub,
+		LastExit:     c.LastExit,
+		HasExit:      c.HasExit,
+		ExprMode:     c.ExprMode,
+		Proc:         c.Proc,
+		ShellPid:     c.ShellPid,
+		ShellName:    c.ShellName,
+		LastBg:       c.LastBg,
+		IsLoginShell: c.IsLoginShell,
+		Args:         c.Args,
+		Source:       c.Source,
+		SourceName:   c.SourceName,
+		Shell:        c.Shell.Copy(),
 	}
 	if dc, ok := c.Debugger.(DebuggerCopier); ok {
 		cp.Debugger = dc.CopyForSpawn()
@@ -98,10 +246,35 @@ func (c *ExecCtx) Copy() *ExecCtx {
 	return cp
 }
 
+func (s *ShellState) Copy() *ShellState {
+	cp := &ShellState{}
+	if s == nil { return cp }
+	if s.SetFlags != nil {
+		cp.SetFlags = make(map[byte]bool, len(s.SetFlags))
+		for k, v := range s.SetFlags { cp.SetFlags[k] = v }
+	}
+	if s.Traps != nil {
+		cp.Traps = make(map[string]string, len(s.Traps))
+		for k, v := range s.Traps { cp.Traps[k] = v }
+	}
+	if s.Aliases != nil {
+		cp.Aliases = make(map[string]string, len(s.Aliases))
+		for k, v := range s.Aliases { cp.Aliases[k] = v }
+	}
+	if s.ReadonlySet != nil {
+		cp.ReadonlySet = make(map[string]bool, len(s.ReadonlySet))
+		for k, v := range s.ReadonlySet { cp.ReadonlySet[k] = v }
+	}
+	if s.Exported != nil {
+		cp.Exported = make(map[string]bool, len(s.Exported))
+		for k, v := range s.Exported { cp.Exported[k] = v }
+	}
+	return cp
+}
+
 // ---------------------------------------------------------------------------
 // Scope: interface for both Frame (lightweight function scope) and Env
-// (full shell scope). The evaluator works with Scope so function calls
-// can use Frame instead of allocating a full Env.
+// (shell scope). The evaluator works with Scope.
 // ---------------------------------------------------------------------------
 
 type Scope interface {
@@ -118,10 +291,7 @@ type Scope interface {
 
 // ---------------------------------------------------------------------------
 // Frame: lightweight function scope. Flat-array bindings + parent + Ctx.
-// No shell state. No map allocation. Used by CallFn for function call frames.
-//
-// Flat arrays cover 0-4 params (the vast majority of function arities).
-// If overflow occurs, spills to a heap-allocated map.
+// No shell state. No map allocation.
 // ---------------------------------------------------------------------------
 
 type Frame struct {
@@ -130,7 +300,7 @@ type Frame struct {
 	flatKeys [MaxFlatBindings]string
 	flatVals [MaxFlatBindings]Value
 	flatN    int8
-	spill    map[string]Value // nil until overflow
+	spill    map[string]Value
 }
 
 func NewFrame(parent Scope) *Frame {
@@ -175,7 +345,6 @@ func (f *Frame) SetLocal(name string, v Value) error {
 		f.flatN++
 		return nil
 	}
-	// Overflow: spill to map
 	if f.spill == nil { f.spill = make(map[string]Value) }
 	f.spill[name] = v
 	return nil
@@ -213,7 +382,6 @@ func (f *Frame) ResetFlat() {
 	f.spill = nil
 }
 
-// EachBinding iterates over all bindings in the frame (flat + spill).
 func (f *Frame) EachBinding(fn func(name string, val Value)) {
 	for i := int8(0); i < f.flatN; i++ {
 		fn(f.flatKeys[i], f.flatVals[i])
@@ -224,55 +392,19 @@ func (f *Frame) EachBinding(fn func(name string, val Value)) {
 }
 
 // ---------------------------------------------------------------------------
-// Env: shell scope. Has bindings, shell state (fns, modules, aliases, etc.),
-// parent chain, and ExecCtx pointer. This is the full scope — used for
-// top-level, module definitions, control flow scopes, pipe stages, etc.
+// Env: lexical scope. Bindings + fns + nativeFns + modules + parent + ctx.
+// No shell state — that lives on ExecCtx.
 // ---------------------------------------------------------------------------
 
 type Env struct {
-	Bindings map[string]Value
-	Parent   Scope
-	Ctx      *ExecCtx
-
-	// Shell state
-	Fns         map[string]*FnValue
-	NativeFns   map[string]NativeFn
-	Modules     map[string]*Module
-	Proc        Pid
-	ReadonlySet map[string]bool
-	Exported    map[string]bool
-	SetFlags    map[byte]bool
-	Traps       map[string]string
-	Aliases     map[string]string
-	Source      string
-	SourceName  string
-	ShellPid    int
-	ShellName   string
-	LastBg      int
-	Args        []string
-	IsLoginShell bool
+	Bindings  map[string]Value
+	Parent    Scope
+	Ctx       *ExecCtx
+	Fns       map[string]*FnValue
+	NativeFns map[string]NativeFn
+	Modules   map[string]*Module
 }
 
-// envChain iterates over *Env nodes in the scope chain, skipping Frames.
-// Usage: for c := range e.envChain() { ... }
-// (Go 1.23+ range-over-func, but we use a callback for compatibility)
-func (e *Env) eachEnv(fn func(*Env) bool) {
-	for s := Scope(e); s != nil; s = s.GetParent() {
-		if env, ok := s.(*Env); ok {
-			if !fn(env) { return }
-		}
-	}
-}
-
-// parentEnv returns the nearest *Env ancestor (may be self).
-func (e *Env) parentEnv() *Env {
-	for s := e.Parent; s != nil; s = s.GetParent() {
-		if env, ok := s.(*Env); ok { return env }
-	}
-	return nil
-}
-
-// Scope interface implementation for Env
 func (e *Env) GetParent() Scope {
 	if e.Parent != nil { return e.Parent }
 	return nil
@@ -288,26 +420,29 @@ func NewEnv(parent Scope) *Env {
 	if parent != nil {
 		env.Ctx = parent.GetCtx()
 	} else {
-		env.Ctx = &ExecCtx{Stdout: os.Stdout}
+		env.Ctx = &ExecCtx{Stdout: os.Stdout, Shell: &ShellState{}}
 	}
 	return env
 }
 
 func TopEnv() *Env {
+	shell := &ShellState{
+		Exported: make(map[string]bool),
+	}
 	ctx := &ExecCtx{
-		Stdout: os.Stdout,
+		Stdout:   os.Stdout,
+		ShellPid: os.Getpid(),
+		Shell:    shell,
 	}
 	e := &Env{
 		Bindings: make(map[string]Value),
 		Ctx:      ctx,
-		ShellPid: os.Getpid(),
-		Exported: make(map[string]bool),
 	}
 	for _, kv := range os.Environ() {
 		parts := strings.SplitN(kv, "=", 2)
 		if len(parts) == 2 {
 			e.Bindings[parts[0]] = StringVal(parts[1])
-			e.Exported[parts[0]] = true
+			shell.Exported[parts[0]] = true
 		}
 	}
 	return e
@@ -316,11 +451,8 @@ func TopEnv() *Env {
 func CopyEnv(src *Env) *Env {
 	e := &Env{
 		Bindings: make(map[string]Value),
-		Exported: make(map[string]bool),
 		Ctx:      src.Ctx.Copy(),
 	}
-	// Walk the scope chain from outermost to innermost so inner values shadow outer.
-	// Collect both Frame bindings and Env shell state.
 	var chain []Scope
 	for s := Scope(src); s != nil; s = s.GetParent() {
 		chain = append(chain, s)
@@ -335,7 +467,6 @@ func CopyEnv(src *Env) *Env {
 				copy(copied.Clauses, v.Clauses)
 				e.Fns[k] = copied
 			}
-			for k, v := range c.Exported { if v { e.Exported[k] = true } }
 			if c.NativeFns != nil {
 				if e.NativeFns == nil { e.NativeFns = make(map[string]NativeFn) }
 				for k, v := range c.NativeFns { e.NativeFns[k] = v }
@@ -344,29 +475,10 @@ func CopyEnv(src *Env) *Env {
 				if e.Modules == nil { e.Modules = make(map[string]*Module) }
 				for k, v := range c.Modules { e.Modules[k] = v }
 			}
-			if c.ShellPid != 0 { e.ShellPid = c.ShellPid }
-			if c.ShellName != "" { e.ShellName = c.ShellName }
-			if c.Aliases != nil {
-				if e.Aliases == nil { e.Aliases = make(map[string]string) }
-				for k, v := range c.Aliases { e.Aliases[k] = v }
-			}
-			if c.ReadonlySet != nil {
-				if e.ReadonlySet == nil { e.ReadonlySet = make(map[string]bool) }
-				for k, v := range c.ReadonlySet { if v { e.ReadonlySet[k] = true } }
-			}
-			if c.SetFlags != nil {
-				if e.SetFlags == nil { e.SetFlags = make(map[byte]bool) }
-				for k, v := range c.SetFlags { e.SetFlags[k] = v }
-			}
-			if c.Traps != nil {
-				if e.Traps == nil { e.Traps = make(map[string]string) }
-				for k, v := range c.Traps { e.Traps[k] = v }
-			}
 		case *Frame:
 			c.EachBinding(func(k string, v Value) { e.Bindings[k] = v })
 		}
 	}
-	e.Args = src.PosArgs()
 	return e
 }
 
@@ -375,36 +487,25 @@ func CopyEnv(src *Env) *Env {
 // ---------------------------------------------------------------------------
 
 func (e *Env) Get(name string) (Value, bool) {
-	if v, ok := e.Bindings[name]; ok {
-		return v, true
-	}
-	if e.Parent != nil {
-		return e.Parent.Get(name)
-	}
+	if v, ok := e.Bindings[name]; ok { return v, true }
+	if e.Parent != nil { return e.Parent.Get(name) }
 	return Nil, false
 }
 
 func (e *Env) Set(name string, v Value) error {
-	if e.IsReadonly(name) {
+	if e.Ctx.Shell.IsReadonly(name) {
 		return fmt.Errorf("%s: readonly variable", name)
 	}
-	// Check own bindings first
-	if _, ok := e.Bindings[name]; ok {
-		e.Bindings[name] = v
-		return nil
-	}
-	// Walk parent chain via Scope interface
+	if _, ok := e.Bindings[name]; ok { e.Bindings[name] = v; return nil }
 	if e.Parent != nil {
-		if _, ok := e.Parent.Get(name); ok {
-			return e.Parent.Set(name, v)
-		}
+		if _, ok := e.Parent.Get(name); ok { return e.Parent.Set(name, v) }
 	}
 	e.Bindings[name] = v
 	return nil
 }
 
 func (e *Env) SetLocal(name string, v Value) error {
-	if e.IsReadonly(name) {
+	if e.Ctx.Shell.IsReadonly(name) {
 		return fmt.Errorf("%s: readonly variable", name)
 	}
 	e.Bindings[name] = v
@@ -412,7 +513,7 @@ func (e *Env) SetLocal(name string, v Value) error {
 }
 
 func (e *Env) DeleteVar(name string) error {
-	if e.IsReadonly(name) {
+	if e.Ctx.Shell.IsReadonly(name) {
 		return fmt.Errorf("unset: %s: readonly variable", name)
 	}
 	if _, ok := e.Bindings[name]; ok {
@@ -428,44 +529,15 @@ func (e *Env) DeleteVar(name string) error {
 }
 
 // ---------------------------------------------------------------------------
-// Env methods: shell state — walk parent chain for reads, write to self
+// Env methods: function/module access — walk parent Env chain
 // ---------------------------------------------------------------------------
 
-func (e *Env) Stdout() io.Writer {
-	return e.Ctx.Stdout
-}
-
-func (e *Env) SetExit(code int) {
-	e.Ctx.SetExit(code)
-}
-
-func (e *Env) ExitCode() int {
-	return e.Ctx.ExitCode()
-}
-
-func (e *Env) ShouldExitOnError() bool {
-	return e.Ctx.ShouldExitOnError(e.HasFlag)
-}
-
-func (e *Env) EnterExprMode() func() {
-	return e.Ctx.EnterExprMode()
-}
-
-func (e *Env) InExprMode() bool {
-	return e.Ctx.InExprMode()
-}
-
-func (e *Env) GetProc() Pid {
-	var result Pid
-	e.eachEnv(func(c *Env) bool {
-		if c.Proc != nil { result = c.Proc; return false }
-		return true
-	})
-	return result
-}
-
-func (e *Env) GetCmdSub() CmdSubFunc {
-	return e.Ctx.CmdSub
+func (e *Env) eachEnv(fn func(*Env) bool) {
+	for s := Scope(e); s != nil; s = s.GetParent() {
+		if env, ok := s.(*Env); ok {
+			if !fn(env) { return }
+		}
+	}
 }
 
 func (e *Env) GetFn(name string) (*FnValue, bool) {
@@ -544,188 +616,34 @@ func (e *Env) SetModule(name string, mod *Module) {
 	e.Modules[name] = mod
 }
 
-func (e *Env) IsReadonly(name string) bool {
-	var readonly bool
-	e.eachEnv(func(c *Env) bool {
-		if c.ReadonlySet != nil && c.ReadonlySet[name] { readonly = true; return false }
-		return true
-	})
-	return readonly
-}
-
-func (e *Env) AllReadonly(fn func(name string)) {
-	e.eachEnv(func(c *Env) bool {
-		for name := range c.ReadonlySet { fn(name) }
-		return true
-	})
-}
-
-func (e *Env) SetReadonly(name string) {
-	if e.ReadonlySet == nil { e.ReadonlySet = make(map[string]bool) }
-	e.ReadonlySet[name] = true
-}
-
-func (e *Env) HasFlag(flag byte) bool {
-	var result bool
-	e.eachEnv(func(c *Env) bool {
-		if c.SetFlags != nil {
-			if v, ok := c.SetFlags[flag]; ok { result = v; return false }
-		}
-		return true
-	})
-	return result
-}
-
-func (e *Env) SetFlag(flag byte, on bool) {
-	if e.SetFlags == nil { e.SetFlags = make(map[byte]bool) }
-	e.SetFlags[flag] = on
-}
-
-func (e *Env) GetTrap(sig string) (string, bool) {
-	var cmd string
-	var found bool
-	e.eachEnv(func(c *Env) bool {
-		if c.Traps != nil {
-			if v, ok := c.Traps[sig]; ok { cmd = v; found = true; return false }
-		}
-		return true
-	})
-	return cmd, found
-}
-
-func (e *Env) SetTrap(sig, cmd string) {
-	if e.Traps == nil { e.Traps = make(map[string]string) }
-	e.Traps[sig] = cmd
-}
-
-func (e *Env) DeleteTrap(sig string) {
-	if e.Traps != nil { delete(e.Traps, sig) }
-}
-
-func (e *Env) AllTraps(fn func(sig, cmd string)) {
-	e.eachEnv(func(c *Env) bool {
-		for sig, cmd := range c.Traps { fn(sig, cmd) }
-		return true
-	})
-}
-
-func (e *Env) GetAlias(name string) (string, bool) {
-	var val string
-	var found bool
-	e.eachEnv(func(c *Env) bool {
-		if c.Aliases != nil {
-			if v, ok := c.Aliases[name]; ok { val = v; found = true; return false }
-		}
-		return true
-	})
-	return val, found
-}
-
-func (e *Env) SetAlias(name, value string) {
-	if e.Aliases == nil { e.Aliases = make(map[string]string) }
-	e.Aliases[name] = value
-}
-
-func (e *Env) DeleteAlias(name string) {
-	if e.Aliases != nil { delete(e.Aliases, name) }
-}
-
-func (e *Env) AllAliases() map[string]string {
-	result := make(map[string]string)
-	// Collect in reverse order so inner scopes shadow outer
-	var chain []*Env
-	e.eachEnv(func(c *Env) bool { chain = append(chain, c); return true })
-	for i := len(chain) - 1; i >= 0; i-- {
-		for k, v := range chain[i].Aliases { result[k] = v }
-	}
-	return result
-}
-
 func (e *Env) Export(name, val string) {
 	e.Set(name, StringVal(val))
-	if e.Exported == nil { e.Exported = make(map[string]bool) }
-	e.Exported[name] = true
-}
-
-func (e *Env) ExportName(name string) {
-	if e.Exported == nil { e.Exported = make(map[string]bool) }
-	e.Exported[name] = true
-}
-
-func (e *Env) IsExported(name string) bool {
-	var exported bool
-	e.eachEnv(func(c *Env) bool {
-		if c.Exported != nil && c.Exported[name] { exported = true; return false }
-		return true
-	})
-	return exported
-}
-
-func (e *Env) Pid() int {
-	var pid int
-	e.eachEnv(func(c *Env) bool {
-		if c.ShellPid != 0 { pid = c.ShellPid; return false }
-		return true
-	})
-	if pid != 0 { return pid }
-	return os.Getpid()
-}
-
-func (e *Env) BgPid() int {
-	var pid int
-	e.eachEnv(func(c *Env) bool {
-		if c.LastBg != 0 { pid = c.LastBg; return false }
-		return true
-	})
-	return pid
-}
-
-func (e *Env) GetShellName() string {
-	var name string
-	e.eachEnv(func(c *Env) bool {
-		if c.ShellName != "" { name = c.ShellName; return false }
-		return true
-	})
-	if name != "" { return name }
-	return "ish"
-}
-
-func (e *Env) PosArgs() []string {
-	var args []string
-	e.eachEnv(func(c *Env) bool {
-		if c.Args != nil { args = c.Args; return false }
-		return true
-	})
-	return args
+	e.Ctx.Shell.Export(name, val)
 }
 
 func (e *Env) BuildEnv() []string {
 	seen := make(map[string]bool)
 	var result []string
-	// Walk scope chain for bindings (includes Frame bindings)
 	for s := Scope(e); s != nil; s = s.GetParent() {
 		if env, ok := s.(*Env); ok {
 			for name, val := range env.Bindings {
 				if seen[name] { continue }
 				seen[name] = true
-				if e.IsExported(name) { result = append(result, name+"="+val.ToStr()) }
+				if e.Ctx.Shell.IsExported(name) { result = append(result, name+"="+val.ToStr()) }
 			}
 		} else if frame, ok := s.(*Frame); ok {
 			frame.EachBinding(func(name string, val Value) {
 				if seen[name] { return }
 				seen[name] = true
-				if e.IsExported(name) { result = append(result, name+"="+val.ToStr()) }
+				if e.Ctx.Shell.IsExported(name) { result = append(result, name+"="+val.ToStr()) }
 			})
 		}
 	}
 	return result
 }
 
-// ResetFlat clears bindings for reuse across clause attempts.
 func (e *Env) ResetFlat() {
-	for k := range e.Bindings {
-		delete(e.Bindings, k)
-	}
+	for k := range e.Bindings { delete(e.Bindings, k) }
 }
 
 // ---------------------------------------------------------------------------
@@ -753,7 +671,7 @@ func (e *Env) Expand(s string) string {
 			if i < len(s) { i++ }
 			if v, ok := e.Get(expr); ok {
 				buf.WriteString(v.ToStr())
-			} else if fn := e.GetCmdSub(); fn != nil {
+			} else if fn := e.Ctx.CmdSub; fn != nil {
 				result, _ := fn(expr, e)
 				buf.WriteString(result)
 			}
@@ -786,7 +704,7 @@ func (e *Env) Expand(s string) string {
 				}
 				expr := s[start:i]
 				if i+1 < len(s) { i += 2 }
-				if fn := e.GetCmdSub(); fn != nil {
+				if fn := e.Ctx.CmdSub; fn != nil {
 					result, _ := fn("echo $(("+expr+"))", e)
 					buf.WriteString(result)
 				}
@@ -801,24 +719,24 @@ func (e *Env) Expand(s string) string {
 			}
 			cmdStr := s[start:i]
 			if i < len(s) { i++ }
-			if fn := e.GetCmdSub(); fn != nil {
+			if fn := e.Ctx.CmdSub; fn != nil {
 				result, _ := fn(cmdStr, e)
 				buf.WriteString(result)
 			}
 		case '?':
-			buf.WriteString(Itoa(e.ExitCode()))
+			buf.WriteString(Itoa(e.Ctx.ExitCode()))
 			i++
 		case '$':
-			buf.WriteString(Itoa(e.Pid()))
+			buf.WriteString(Itoa(e.Ctx.Pid()))
 			i++
 		case '!':
-			buf.WriteString(Itoa(e.BgPid()))
+			buf.WriteString(Itoa(e.Ctx.BgPid()))
 			i++
 		case '#':
-			buf.WriteString(Itoa(len(e.PosArgs())))
+			buf.WriteString(Itoa(len(e.Ctx.PosArgs())))
 			i++
 		case '@':
-			buf.WriteString(strings.Join(e.PosArgs(), " "))
+			buf.WriteString(strings.Join(e.Ctx.PosArgs(), " "))
 			i++
 		case '*':
 			sep := " "
@@ -826,7 +744,7 @@ func (e *Env) Expand(s string) string {
 				ifsStr := ifs.ToStr()
 				if len(ifsStr) > 0 { sep = ifsStr[:1] } else { sep = "" }
 			}
-			buf.WriteString(strings.Join(e.PosArgs(), sep))
+			buf.WriteString(strings.Join(e.Ctx.PosArgs(), sep))
 			i++
 		case '{':
 			i++
@@ -888,9 +806,9 @@ func (e *Env) Expand(s string) string {
 				idxStr := s[start:i]
 				idx, _ := strconv.Atoi(idxStr)
 				if idx == 0 {
-					buf.WriteString(e.GetShellName())
+					buf.WriteString(e.Ctx.GetShellName())
 				} else {
-					args := e.PosArgs()
+					args := e.Ctx.PosArgs()
 					if idx > 0 && idx <= len(args) { buf.WriteString(args[idx-1]) }
 				}
 			} else {

@@ -16,7 +16,7 @@ func builtinExport(args []string, scope core.Scope) (int, error) {
 		if i := strings.IndexByte(arg, '='); i >= 0 {
 			env.Export(arg[:i], arg[i+1:])
 		} else {
-			env.ExportName(arg)
+			scope.GetCtx().Shell.ExportName(arg)
 		}
 	}
 	return 0, nil
@@ -51,15 +51,16 @@ func builtinUnset(args []string, scope core.Scope) (int, error) {
 }
 
 func builtinSet(args []string, scope core.Scope) (int, error) {
+	ctx := scope.GetCtx()
 	env := scope.NearestEnv()
 	if len(args) == 0 {
 		for k, v := range env.Bindings {
-			fmt.Fprintf(scope.GetCtx().Stdout, "%s=%s\n", k, v.ToStr())
+			fmt.Fprintf(ctx.Stdout, "%s=%s\n", k, v.ToStr())
 		}
 		return 0, nil
 	}
 	if args[0] == "--" {
-		env.Args = args[1:]
+		ctx.Args = args[1:]
 		return 0, nil
 	}
 	i := 0
@@ -69,7 +70,7 @@ func builtinSet(args []string, scope core.Scope) (int, error) {
 			opt := args[i+1]
 			switch opt {
 			case "pipefail":
-				env.SetFlag('P', true)
+				ctx.Shell.SetFlag('P', true)
 			default:
 				return 1, fmt.Errorf("set: invalid option: -o %s", opt)
 			}
@@ -80,7 +81,7 @@ func builtinSet(args []string, scope core.Scope) (int, error) {
 			opt := args[i+1]
 			switch opt {
 			case "pipefail":
-				env.SetFlag('P', false)
+				ctx.Shell.SetFlag('P', false)
 			default:
 				return 1, fmt.Errorf("set: invalid option: +o %s", opt)
 			}
@@ -91,11 +92,11 @@ func builtinSet(args []string, scope core.Scope) (int, error) {
 			for _, ch := range arg[1:] {
 				switch ch {
 				case 'e', 'u', 'x':
-					env.SetFlag(byte(ch), true)
+					ctx.Shell.SetFlag(byte(ch), true)
 				case 'X':
 					ensureDebugger(scope)
-					env.SetFlag('X', true)
-					if d, ok := scope.GetCtx().Debugger.(*debug.Debugger); ok {
+					ctx.Shell.SetFlag('X', true)
+					if d, ok := ctx.Debugger.(*debug.Debugger); ok {
 						d.TraceAll = true
 					}
 				default:
@@ -109,10 +110,10 @@ func builtinSet(args []string, scope core.Scope) (int, error) {
 			for _, ch := range arg[1:] {
 				switch ch {
 				case 'e', 'u', 'x':
-					env.SetFlag(byte(ch), false)
+					ctx.Shell.SetFlag(byte(ch), false)
 				case 'X':
-					env.SetFlag('X', false)
-					if d, ok := scope.GetCtx().Debugger.(*debug.Debugger); ok {
+					ctx.Shell.SetFlag('X', false)
+					if d, ok := ctx.Debugger.(*debug.Debugger); ok {
 						d.TraceAll = false
 					}
 				default:
@@ -127,7 +128,6 @@ func builtinSet(args []string, scope core.Scope) (int, error) {
 	return 0, nil
 }
 
-// ensureDebugger lazily creates a Debugger if one doesn't exist yet.
 func ensureDebugger(scope core.Scope) {
 	ctx := scope.GetCtx()
 	if ctx.Debugger != nil {
@@ -135,19 +135,18 @@ func ensureDebugger(scope core.Scope) {
 	}
 	d := debug.New()
 	ctx.Debugger = d
-	env := scope.NearestEnv()
-	if env.Source != "" {
-		name := env.SourceName
+	if ctx.Source != "" {
+		name := ctx.SourceName
 		if name == "" {
 			name = "<eval>"
 		}
-		sm := debug.NewSourceMap(name, env.Source)
+		sm := debug.NewSourceMap(name, ctx.Source)
 		d.PushSource(sm)
 	}
 }
 
 func builtinShift(args []string, scope core.Scope) (int, error) {
-	env := scope.NearestEnv()
+	ctx := scope.GetCtx()
 	n := 1
 	if len(args) > 0 {
 		var err error
@@ -159,11 +158,11 @@ func builtinShift(args []string, scope core.Scope) (int, error) {
 	if n < 0 {
 		return 1, fmt.Errorf("shift: %d: shift count out of range", n)
 	}
-	posArgs := env.PosArgs()
+	posArgs := ctx.PosArgs()
 	if n > len(posArgs) {
 		return 1, fmt.Errorf("shift: %d: shift count out of range", n)
 	}
-	env.Args = posArgs[n:]
+	ctx.Args = posArgs[n:]
 	return 0, nil
 }
 
@@ -193,14 +192,13 @@ func builtinDeleteFn(args []string, scope core.Scope) (int, error) {
 }
 
 func builtinReadonly(args []string, scope core.Scope) (int, error) {
-	env := scope.NearestEnv()
+	ctx := scope.GetCtx()
 	if len(args) == 0 || (len(args) == 1 && args[0] == "-p") {
-		w := scope.GetCtx().Stdout
-		env.AllReadonly(func(name string) {
+		ctx.Shell.AllReadonly(func(name string) {
 			if v, ok := scope.Get(name); ok {
-				fmt.Fprintf(w, "declare -r %s=%s\n", name, v.ToStr())
+				fmt.Fprintf(ctx.Stdout, "declare -r %s=%s\n", name, v.ToStr())
 			} else {
-				fmt.Fprintf(w, "declare -r %s\n", name)
+				fmt.Fprintf(ctx.Stdout, "declare -r %s\n", name)
 			}
 		})
 		return 0, nil
@@ -216,9 +214,9 @@ func builtinReadonly(args []string, scope core.Scope) (int, error) {
 			if err := scope.Set(name, core.StringVal(val)); err != nil {
 				return 1, fmt.Errorf("readonly: %s", err)
 			}
-			env.SetReadonly(name)
+			ctx.Shell.SetReadonly(name)
 		} else {
-			env.SetReadonly(arg)
+			ctx.Shell.SetReadonly(arg)
 		}
 	}
 	return 0, nil

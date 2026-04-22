@@ -15,7 +15,7 @@ import (
 // TestEnv creates a fully-initialized environment for tests.
 func TestEnv() *core.Env {
 	env := core.TopEnv()
-	env.Proc = process.NewProcess()
+	env.Ctx.Proc = process.NewProcess()
 	stdlib.Register(env)
 	builtin.Init(builtin.EvalContext{RunSource: eval.RunSource})
 	env.Ctx.CmdSub = eval.RunCmdSub

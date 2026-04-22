@@ -115,7 +115,7 @@ func TestEnvGetSetFn(t *testing.T) {
 		fn2 := &FnValue{Name: "fib", Clauses: []FnClause{{}, {}}}
 
 		e.AddFnClauses("fib", fn1)
-		e.AddFnClauses("fib", fn2) // should append clauses
+		e.AddFnClauses("fib", fn2)
 
 		got, _ := e.GetFn("fib")
 		if len(got.Clauses) != 3 {
@@ -173,49 +173,49 @@ func TestEnvExpand(t *testing.T) {
 		},
 		{
 			name:  "$? exit code",
-			setup: func(e *Env) { e.SetExit(42) },
+			setup: func(e *Env) { e.Ctx.SetExit(42) },
 			input: "exit=$?",
 			want:  "exit=42",
 		},
 		{
 			name:  "$$ pid",
-			setup: func(e *Env) { e.ShellPid = 1234 },
+			setup: func(e *Env) { e.Ctx.ShellPid = 1234 },
 			input: "pid=$$",
 			want:  "pid=1234",
 		},
 		{
 			name:  "$# arg count",
-			setup: func(e *Env) { e.Args = []string{"a", "b", "c"} },
+			setup: func(e *Env) { e.Ctx.Args = []string{"a", "b", "c"} },
 			input: "count=$#",
 			want:  "count=3",
 		},
 		{
 			name:  "$@ all args",
-			setup: func(e *Env) { e.Args = []string{"x", "y"} },
+			setup: func(e *Env) { e.Ctx.Args = []string{"x", "y"} },
 			input: "args=$@",
 			want:  "args=x y",
 		},
 		{
 			name:  "$* all args",
-			setup: func(e *Env) { e.Args = []string{"a", "b"} },
+			setup: func(e *Env) { e.Ctx.Args = []string{"a", "b"} },
 			input: "args=$*",
 			want:  "args=a b",
 		},
 		{
 			name:  "$1 positional",
-			setup: func(e *Env) { e.Args = []string{"first", "second"} },
+			setup: func(e *Env) { e.Ctx.Args = []string{"first", "second"} },
 			input: "arg=$1",
 			want:  "arg=first",
 		},
 		{
 			name:  "$2 positional",
-			setup: func(e *Env) { e.Args = []string{"first", "second"} },
+			setup: func(e *Env) { e.Ctx.Args = []string{"first", "second"} },
 			input: "arg=$2",
 			want:  "arg=second",
 		},
 		{
 			name:  "$9 out of range",
-			setup: func(e *Env) { e.Args = []string{"only"} },
+			setup: func(e *Env) { e.Ctx.Args = []string{"only"} },
 			input: "arg=$9",
 			want:  "arg=",
 		},
@@ -250,12 +250,9 @@ func TestEnvExpand(t *testing.T) {
 	}
 }
 
-// TestEnvGetProc is in core_external_test.go (needs process import)
-
 func TestEnvGetProcNil(t *testing.T) {
 	e := NewEnv(nil)
-	got := e.GetProc()
-	if got != nil {
+	if e.Ctx.Proc != nil {
 		t.Error("expected nil when no proc set")
 	}
 }
@@ -266,29 +263,15 @@ func TestEnvStdout(t *testing.T) {
 		var buf bytes.Buffer
 		e.Ctx.Stdout = &buf
 
-		got := e.Stdout()
-		if got != &buf {
-			t.Error("expected Stdout() to return the buffer")
-		}
-	})
-
-	t.Run("walks parent", func(t *testing.T) {
-		parent := NewEnv(nil)
-		var buf bytes.Buffer
-		parent.Ctx.Stdout = &buf
-
-		child := NewEnv(parent)
-		got := child.Stdout()
-		if got != &buf {
-			t.Error("expected Stdout() to find parent's stdout")
+		if e.Ctx.Stdout != &buf {
+			t.Error("expected Stdout to return the buffer")
 		}
 	})
 
 	t.Run("defaults to os.Stdout", func(t *testing.T) {
 		e := NewEnv(nil)
-		got := e.Stdout()
-		if got != os.Stdout {
-			t.Error("expected Stdout() to default to os.Stdout")
+		if e.Ctx.Stdout != os.Stdout {
+			t.Error("expected Stdout to default to os.Stdout")
 		}
 	})
 }
@@ -317,9 +300,9 @@ func TestEnvExpandNoMarkers(t *testing.T) {
 func TestEnvBuildEnv(t *testing.T) {
 	t.Run("includes exported vars", func(t *testing.T) {
 		e := NewEnv(nil)
-		e.Exported = make(map[string]bool)
+		e.Ctx.Shell.Exported = make(map[string]bool)
 		e.SetLocal("FOO", StringVal("bar"))
-		e.Exported["FOO"] = true
+		e.Ctx.Shell.Exported["FOO"] = true
 		e.SetLocal("SECRET", StringVal("hidden"))
 
 		envVars := e.BuildEnv()
@@ -343,9 +326,9 @@ func TestEnvBuildEnv(t *testing.T) {
 
 	t.Run("child scope overrides parent", func(t *testing.T) {
 		parent := NewEnv(nil)
-		parent.Exported = make(map[string]bool)
+		parent.Ctx.Shell.Exported = make(map[string]bool)
 		parent.SetLocal("X", StringVal("old"))
-		parent.Exported["X"] = true
+		parent.Ctx.Shell.Exported["X"] = true
 
 		child := NewEnv(parent)
 		child.SetLocal("X", StringVal("new"))
@@ -356,7 +339,7 @@ func TestEnvBuildEnv(t *testing.T) {
 				t.Error("BuildEnv should use child's value, not parent's")
 			}
 			if kv == "X=new" {
-				return // success
+				return
 			}
 		}
 		t.Error("expected X=new in BuildEnv")
@@ -387,7 +370,7 @@ func TestEnvDeleteFn(t *testing.T) {
 
 func TestEnvExpandShellName(t *testing.T) {
 	e := NewEnv(nil)
-	e.ShellName = "testshell"
+	e.Ctx.ShellName = "testshell"
 	got := e.Expand("name=$0")
 	if got != "name=testshell" {
 		t.Errorf("$0 expansion: got %q, want %q", got, "name=testshell")
@@ -396,9 +379,9 @@ func TestEnvExpandShellName(t *testing.T) {
 
 func TestEnvExpandMultiDigitPositional(t *testing.T) {
 	e := NewEnv(nil)
-	e.Args = make([]string, 12)
-	for i := range e.Args {
-		e.Args[i] = fmt.Sprintf("arg%d", i+1)
+	e.Ctx.Args = make([]string, 12)
+	for i := range e.Ctx.Args {
+		e.Ctx.Args[i] = fmt.Sprintf("arg%d", i+1)
 	}
 
 	got := e.Expand("$10")
@@ -414,7 +397,7 @@ func TestEnvExpandMultiDigitPositional(t *testing.T) {
 
 func TestEnvExpandIFSStar(t *testing.T) {
 	e := NewEnv(nil)
-	e.Args = []string{"a", "b", "c"}
+	e.Ctx.Args = []string{"a", "b", "c"}
 	e.SetLocal("IFS", StringVal(","))
 
 	got := e.Expand("$*")
@@ -424,24 +407,17 @@ func TestEnvExpandIFSStar(t *testing.T) {
 }
 
 func TestEnvExitCodeShared(t *testing.T) {
-	// POSIX model: exit codes are a single register shared via ExecCtx.
-	// Parent and child sharing the same Ctx see each other's exit codes.
 	parent := NewEnv(nil)
-	parent.SetExit(1)
+	parent.Ctx.SetExit(1)
 	child := NewEnv(parent)
 
-	if child.ExitCode() != 1 {
-		t.Errorf("expected 1 from shared ctx, got %d", child.ExitCode())
+	if child.Ctx.ExitCode() != 1 {
+		t.Errorf("expected 1 from shared ctx, got %d", child.Ctx.ExitCode())
 	}
 
-	child.SetExit(0)
-	if child.ExitCode() != 0 {
-		t.Errorf("after child SetExit(0), expected 0, got %d", child.ExitCode())
-	}
-
-	// Parent sees child's exit code because they share ExecCtx
-	if parent.ExitCode() != 0 {
-		t.Errorf("parent should see shared 0, got %d", parent.ExitCode())
+	child.Ctx.SetExit(0)
+	if parent.Ctx.ExitCode() != 0 {
+		t.Errorf("parent should see shared 0, got %d", parent.Ctx.ExitCode())
 	}
 }
 
@@ -470,7 +446,7 @@ func TestExpandParamOps(t *testing.T) {
 
 func TestEnvExitCodeWalksParent(t *testing.T) {
 	parent := NewEnv(nil)
-	parent.SetExit(5)
+	parent.Ctx.SetExit(5)
 	child := NewEnv(parent)
 
 	got := child.Expand("$?")
@@ -478,7 +454,7 @@ func TestEnvExitCodeWalksParent(t *testing.T) {
 		t.Errorf("expected exit code from parent, got %q", got)
 	}
 
-	child.SetExit(0)
+	child.Ctx.SetExit(0)
 	got = child.Expand("$?")
 	if got != "0" {
 		t.Errorf("after child SetExit(0), expected 0, got %q", got)
@@ -488,27 +464,27 @@ func TestEnvExitCodeWalksParent(t *testing.T) {
 func TestCopyEnvPreservesReadonly(t *testing.T) {
 	env := TopEnv()
 	env.Set("X", StringVal("1"))
-	env.SetReadonly("X")
+	env.Ctx.Shell.SetReadonly("X")
 	cp := CopyEnv(env)
-	if !cp.IsReadonly("X") {
+	if !cp.Ctx.Shell.IsReadonly("X") {
 		t.Error("CopyEnv should preserve readonly status")
 	}
 }
 
 func TestCopyEnvPreservesFlags(t *testing.T) {
 	env := TopEnv()
-	env.SetFlag('e', true)
+	env.Ctx.Shell.SetFlag('e', true)
 	cp := CopyEnv(env)
-	if !cp.HasFlag('e') {
+	if !cp.Ctx.Shell.HasFlag('e') {
 		t.Error("CopyEnv should preserve set -e flag")
 	}
 }
 
 func TestCopyEnvPreservesTraps(t *testing.T) {
 	env := TopEnv()
-	env.SetTrap("EXIT", "echo bye")
+	env.Ctx.Shell.SetTrap("EXIT", "echo bye")
 	cp := CopyEnv(env)
-	cmd, ok := cp.GetTrap("EXIT")
+	cmd, ok := cp.Ctx.Shell.GetTrap("EXIT")
 	if !ok || cmd != "echo bye" {
 		t.Errorf("CopyEnv should preserve traps, got %q ok=%v", cmd, ok)
 	}
