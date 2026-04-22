@@ -36,7 +36,7 @@ func TestMathFunctions(t *testing.T) {
 
 func valuesCloseEnough(a, b core.Value) bool {
 	if a.Kind == core.VFloat && b.Kind == core.VFloat {
-		return math.Abs(a.Float-b.Float) < 1e-9
+		return math.Abs(a.GetFloat()-b.GetFloat()) < 1e-9
 	}
 	return a.Equal(b)
 }

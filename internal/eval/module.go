@@ -8,18 +8,18 @@ import (
 	"ish/internal/core"
 )
 
-func evalDefModule(node *ast.Node, env *core.Env) (core.Value, error) {
+func evalDefModule(node *ast.Node, scope core.Scope) (core.Value, error) {
 	modName := node.Tok.Val
-	modEnv := core.NewEnv(env)
+	modEnv := core.NewEnv(scope)
 
 	// Pre-register a placeholder module so the body can self-reference
 	// (e.g. M.bar inside defmodule M). SetModule merges if it already exists.
-	env.SetModule(modName, &core.Module{
+	scope.NearestEnv().SetModule(modName, &core.Module{
 		Name:      modName,
 		Fns:       make(map[string]*core.FnValue),
 		NativeFns: make(map[string]core.NativeFn),
 	})
-	mod, _ := env.GetModule(modName)
+	mod, _ := scope.GetModule(modName)
 
 	for _, child := range node.Children {
 		if _, err := Eval(child, modEnv); err != nil {
@@ -27,7 +27,7 @@ func evalDefModule(node *ast.Node, env *core.Env) (core.Value, error) {
 		}
 		// Sync exported functions into the module after each definition
 		// so later definitions can reference earlier ones via module name.
-		for name, fn := range modEnv.Shell.Fns {
+		for name, fn := range modEnv.Fns {
 			if !strings.HasPrefix(name, "_") {
 				mod.Fns[name] = fn
 			}
@@ -35,7 +35,7 @@ func evalDefModule(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	// Set closure env on all module functions so they can see each other
-	for _, fn := range modEnv.Shell.Fns {
+	for _, fn := range modEnv.Fns {
 		if fn.Env == nil {
 			fn.Env = modEnv
 		}
@@ -44,17 +44,17 @@ func evalDefModule(node *ast.Node, env *core.Env) (core.Value, error) {
 	return core.Nil, nil
 }
 
-func evalUse(node *ast.Node, env *core.Env) (core.Value, error) {
+func evalUse(node *ast.Node, scope core.Scope) (core.Value, error) {
 	modName := node.Tok.Val
-	mod, ok := env.GetModule(modName)
+	mod, ok := scope.GetModule(modName)
 	if !ok {
 		return core.Nil, fmt.Errorf("use: module %s not found", modName)
 	}
 	for name, fn := range mod.Fns {
-		env.SetFnClauses(name, fn)
+		scope.NearestEnv().SetFnClauses(name, fn)
 	}
 	for name, nfn := range mod.NativeFns {
-		env.SetNativeFn(name, nfn)
+		scope.NearestEnv().SetNativeFn(name, nfn)
 	}
 	return core.Nil, nil
 }

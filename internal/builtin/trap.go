@@ -93,16 +93,13 @@ func CheckErrTrap(env *core.Env) {
 	}
 }
 
-func builtinTrap(args []string, env *core.Env) (int, error) {
+func builtinTrap(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	if len(args) == 0 {
-		w := env.Stdout()
-		for c := env; c != nil; c = c.Parent {
-			if c.Shell != nil && c.Shell.Traps != nil {
-				for sig, cmd := range c.Shell.Traps {
-					fmt.Fprintf(w, "trap -- %q %s\n", cmd, sig)
-				}
-			}
-		}
+		w := scope.GetCtx().Stdout
+		env.AllTraps(func(sig, cmd string) {
+			fmt.Fprintf(w, "trap -- %q %s\n", cmd, sig)
+		})
 		return 0, nil
 	}
 
@@ -113,7 +110,7 @@ func builtinTrap(args []string, env *core.Env) (int, error) {
 	}
 
 	if args[0] == "-l" {
-		w := env.Stdout()
+		w := scope.GetCtx().Stdout
 		fmt.Fprintln(w, "EXIT INT TERM HUP QUIT USR1 USR2 ERR")
 		return 0, nil
 	}

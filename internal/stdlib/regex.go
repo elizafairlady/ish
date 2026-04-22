@@ -18,7 +18,7 @@ func compilePattern(fnName string, v core.Value) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-func regexMatch(args []core.Value, env *core.Env) (core.Value, error) {
+func regexMatch(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("match: expected 2 arguments, got %d", len(args))
 	}
@@ -29,7 +29,7 @@ func regexMatch(args []core.Value, env *core.Env) (core.Value, error) {
 	return boolAtom(re.MatchString(args[0].ToStr())), nil
 }
 
-func regexScan(args []core.Value, env *core.Env) (core.Value, error) {
+func regexScan(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("scan: expected 2 arguments, got %d", len(args))
 	}
@@ -45,7 +45,7 @@ func regexScan(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.ListVal(elems...), nil
 }
 
-func regexReplace(args []core.Value, env *core.Env) (core.Value, error) {
+func regexReplace(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("replace: expected 3 arguments, got %d", len(args))
 	}
@@ -62,7 +62,7 @@ func regexReplace(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.StringVal(input[:idx[0]] + repl + input[idx[1]:]), nil
 }
 
-func regexReplaceAll(args []core.Value, env *core.Env) (core.Value, error) {
+func regexReplaceAll(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("replace_all: expected 3 arguments, got %d", len(args))
 	}
@@ -73,7 +73,7 @@ func regexReplaceAll(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.StringVal(re.ReplaceAllString(args[0].ToStr(), args[2].ToStr())), nil
 }
 
-func regexSplit(args []core.Value, env *core.Env) (core.Value, error) {
+func regexSplit(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("split: expected 2 arguments, got %d", len(args))
 	}

@@ -11,17 +11,18 @@ import (
 	"ish/internal/core"
 )
 
-func builtinType(args []string, env *core.Env) (int, error) {
+func builtinType(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	code := 0
 	for _, name := range args {
 		if _, ok := Builtins[name]; ok {
-			fmt.Fprintf(env.Stdout(), "%s is a shell builtin\n", name)
+			fmt.Fprintf(scope.GetCtx().Stdout, "%s is a shell builtin\n", name)
 		} else if _, ok := env.GetFn(name); ok {
-			fmt.Fprintf(env.Stdout(), "%s is a function\n", name)
+			fmt.Fprintf(scope.GetCtx().Stdout, "%s is a function\n", name)
 		} else if _, ok := env.GetNativeFn(name); ok {
-			fmt.Fprintf(env.Stdout(), "%s is a function\n", name)
+			fmt.Fprintf(scope.GetCtx().Stdout, "%s is a function\n", name)
 		} else if path, err := exec.LookPath(name); err == nil {
-			fmt.Fprintf(env.Stdout(), "%s is %s\n", name, path)
+			fmt.Fprintf(scope.GetCtx().Stdout, "%s is %s\n", name, path)
 		} else {
 			fmt.Fprintf(os.Stderr, "ish: type: %s: not found\n", name)
 			code = 1
@@ -30,14 +31,14 @@ func builtinType(args []string, env *core.Env) (int, error) {
 	return code, nil
 }
 
-func builtinPwd(args []string, env *core.Env) (int, error) {
+func builtinPwd(args []string, scope core.Scope) (int, error) {
 	dir, _ := os.Getwd()
-	fmt.Fprintln(env.Stdout(), dir)
+	fmt.Fprintln(scope.GetCtx().Stdout, dir)
 	return 0, nil
 }
 
-func builtinTimes(args []string, env *core.Env) (int, error) {
-	w := env.Stdout()
+func builtinTimes(args []string, scope core.Scope) (int, error) {
+	w := scope.GetCtx().Stdout
 
 	var usage syscall.Rusage
 	err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage)
@@ -69,7 +70,8 @@ func builtinTimes(args []string, env *core.Env) (int, error) {
 	return 0, nil
 }
 
-func builtinGetopts(args []string, env *core.Env) (int, error) {
+func builtinGetopts(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	if len(args) < 2 {
 		return 1, fmt.Errorf("getopts: usage: getopts optstring name [args]")
 	}
@@ -85,7 +87,7 @@ func builtinGetopts(args []string, env *core.Env) (int, error) {
 	}
 
 	optind := 1
-	if v, ok := env.Get("OPTIND"); ok {
+	if v, ok := scope.Get("OPTIND"); ok {
 		if n, err := strconv.Atoi(v.ToStr()); err == nil {
 			optind = n
 		}
@@ -96,21 +98,21 @@ func builtinGetopts(args []string, env *core.Env) (int, error) {
 	}
 
 	if optind > len(optArgs) {
-		env.Set(name, core.StringVal("?"))
+		scope.Set(name, core.StringVal("?"))
 		return 1, nil
 	}
 
 	current := optArgs[optind-1]
 	if !strings.HasPrefix(current, "-") || current == "-" || current == "--" {
-		env.Set(name, core.StringVal("?"))
+		scope.Set(name, core.StringVal("?"))
 		if current == "--" {
-			env.Set("OPTIND", core.StringVal(strconv.Itoa(optind+1)))
+			scope.Set("OPTIND", core.StringVal(strconv.Itoa(optind+1)))
 		}
 		return 1, nil
 	}
 
 	optOfs := 1
-	if v, ok := env.Get("__ISH_OPTOFS"); ok {
+	if v, ok := scope.Get("__ISH_OPTOFS"); ok {
 		if n, err := strconv.Atoi(v.ToStr()); err == nil {
 			optOfs = n
 		}
@@ -120,13 +122,13 @@ func builtinGetopts(args []string, env *core.Env) (int, error) {
 		optind++
 		optOfs = 1
 		if optind > len(optArgs) {
-			env.Set(name, core.StringVal("?"))
-			env.Set("OPTIND", core.StringVal(strconv.Itoa(optind)))
+			scope.Set(name, core.StringVal("?"))
+			scope.Set("OPTIND", core.StringVal(strconv.Itoa(optind)))
 			return 1, nil
 		}
 		current = optArgs[optind-1]
 		if !strings.HasPrefix(current, "-") || current == "-" {
-			env.Set(name, core.StringVal("?"))
+			scope.Set(name, core.StringVal("?"))
 			return 1, nil
 		}
 	}
@@ -136,33 +138,33 @@ func builtinGetopts(args []string, env *core.Env) (int, error) {
 
 	idx := strings.IndexByte(optstring, ch)
 	if idx < 0 {
-		env.Set(name, core.StringVal("?"))
-		env.Set("OPTARG", core.StringVal(string(ch)))
+		scope.Set(name, core.StringVal("?"))
+		scope.Set("OPTARG", core.StringVal(string(ch)))
 		if optOfs >= len(current) {
 			optind++
-			env.Set("__ISH_OPTOFS", core.StringVal("1"))
+			scope.Set("__ISH_OPTOFS", core.StringVal("1"))
 		} else {
-			env.Set("__ISH_OPTOFS", core.StringVal(strconv.Itoa(optOfs)))
+			scope.Set("__ISH_OPTOFS", core.StringVal(strconv.Itoa(optOfs)))
 		}
-		env.Set("OPTIND", core.StringVal(strconv.Itoa(optind)))
+		scope.Set("OPTIND", core.StringVal(strconv.Itoa(optind)))
 		return 0, nil
 	}
 
-	env.Set(name, core.StringVal(string(ch)))
+	scope.Set(name, core.StringVal(string(ch)))
 
 	if idx+1 < len(optstring) && optstring[idx+1] == ':' {
 		if optOfs < len(current) {
-			env.Set("OPTARG", core.StringVal(current[optOfs:]))
+			scope.Set("OPTARG", core.StringVal(current[optOfs:]))
 			optind++
 			optOfs = 1
 		} else {
 			optind++
 			if optind > len(optArgs) {
-				env.Set(name, core.StringVal("?"))
-				env.Set("OPTIND", core.StringVal(strconv.Itoa(optind)))
+				scope.Set(name, core.StringVal("?"))
+				scope.Set("OPTIND", core.StringVal(strconv.Itoa(optind)))
 				return 0, nil
 			}
-			env.Set("OPTARG", core.StringVal(optArgs[optind-1]))
+			scope.Set("OPTARG", core.StringVal(optArgs[optind-1]))
 			optind++
 			optOfs = 1
 		}
@@ -173,16 +175,16 @@ func builtinGetopts(args []string, env *core.Env) (int, error) {
 		}
 	}
 
-	env.Set("OPTIND", core.StringVal(strconv.Itoa(optind)))
-	env.Set("__ISH_OPTOFS", core.StringVal(strconv.Itoa(optOfs)))
+	scope.Set("OPTIND", core.StringVal(strconv.Itoa(optind)))
+	scope.Set("__ISH_OPTOFS", core.StringVal(strconv.Itoa(optOfs)))
 	return 0, nil
 }
 
-func builtinUmask(args []string, env *core.Env) (int, error) {
+func builtinUmask(args []string, scope core.Scope) (int, error) {
 	if len(args) == 0 {
 		old := syscall.Umask(0)
 		syscall.Umask(old)
-		fmt.Fprintf(env.Stdout(), "%04o\n", old)
+		fmt.Fprintf(scope.GetCtx().Stdout, "%04o\n", old)
 		return 0, nil
 	}
 
@@ -212,8 +214,8 @@ var ulimitTable = []ulimitEntry{
 	{'v', "virtual memory", syscall.RLIMIT_AS, 1024},
 }
 
-func builtinUlimit(args []string, env *core.Env) (int, error) {
-	w := env.Stdout()
+func builtinUlimit(args []string, scope core.Scope) (int, error) {
+	w := scope.GetCtx().Stdout
 
 	if len(args) == 0 {
 		return showUlimit(w, syscall.RLIMIT_FSIZE, 512)

@@ -9,93 +9,10 @@ import (
 	"ish/internal/process"
 )
 
-func evalLambda(node *ast.Node, env *core.Env) (core.Value, error) {
-	var params []ast.Node
-	for _, child := range node.Children {
-		params = append(params, *child)
-	}
-	fnVal := &core.FnValue{
-		Name: "<lambda>",
-		Env:  env,
-		Clauses: []core.FnClause{{
-			Params: params,
-			Body:   node.Clauses[0].Body,
-		}},
-	}
-	return core.Value{Kind: core.VFn, Fn: fnVal}, nil
-}
-
-func evalIshFn(node *ast.Node, env *core.Env) (core.Value, error) {
-	name := node.Tok.Val
-
-	if len(node.Children) == 0 && len(node.Clauses) > 0 && node.Clauses[0].Pattern != nil {
-		var fnClauses []core.FnClause
-		for _, clause := range node.Clauses {
-			var params []ast.Node
-			if clause.Pattern != nil {
-				if clause.Pattern.Kind == ast.NBlock {
-					for _, child := range clause.Pattern.Children {
-						params = append(params, *child)
-					}
-				} else {
-					params = append(params, *clause.Pattern)
-				}
-			}
-			fnClauses = append(fnClauses, core.FnClause{
-				Params: params,
-				Guard:  clause.Guard,
-				Body:   clause.Body,
-			})
-		}
-		fnVal := &core.FnValue{Name: name, Clauses: fnClauses, Env: env}
-		if name == "<anon>" {
-			return core.Value{Kind: core.VFn, Fn: fnVal}, nil
-		}
-		// Arrow-clause form provides a complete dispatch table — replace.
-		env.SetFnClauses(name, fnVal)
-		return core.Nil, nil
-	}
-
-	var params []ast.Node
-	for _, child := range node.Children {
-		params = append(params, *child)
-	}
-
-	clause := core.FnClause{
-		Params: params,
-		Guard:  node.Clauses[0].Guard,
-		Body:   node.Clauses[0].Body,
-	}
-
-	fnVal := &core.FnValue{Name: name, Clauses: []core.FnClause{clause}, Env: env}
-
-	if name == "<anon>" {
-		return core.Value{Kind: core.VFn, Fn: fnVal}, nil
-	}
-
-	env.AddFnClauses(name, fnVal)
-	return core.Nil, nil
-}
-
-func evalIshMatch(node *ast.Node, env *core.Env) (core.Value, error) {
-	subject, err := Eval(node.Children[0], env)
-	if err != nil {
-		return core.Nil, err
-	}
-
-	for _, clause := range node.Clauses {
-		matchEnv := core.NewEnv(env)
-		if TryBind(clause.Pattern, subject, matchEnv) {
-			return Eval(clause.Body, matchEnv)
-		}
-	}
-	return core.Nil, fmt.Errorf("no matching clause for %s", subject.Inspect())
-}
-
-func spawnProcess(node *ast.Node, env *core.Env) (*process.Process, error) {
+func spawnProcess(node *ast.Node, scope core.Scope) (*process.Process, error) {
 	proc := process.NewProcess()
-	childEnv := core.CopyEnv(env)
-	childEnv.Shell.Proc = proc
+	childEnv := core.CopyEnv(scope.NearestEnv())
+	childEnv.Proc = proc
 	child := node.Children[0]
 
 	go func() {
@@ -114,8 +31,8 @@ func spawnProcess(node *ast.Node, env *core.Env) (*process.Process, error) {
 			proc.CloseWithReason(core.TupleVal(core.AtomVal("error"), core.StringVal(err.Error())))
 			return
 		}
-		if val.Kind == core.VFn && val.Fn != nil {
-			result, err := CallFn(val.Fn, nil, childEnv)
+		if val.Kind == core.VFn && val.GetFn() != nil {
+			result, err := CallFn(val.GetFn(), nil, childEnv)
 			proc.SetResult(result)
 			if err != nil {
 				proc.CloseWithReason(core.TupleVal(core.AtomVal("error"), core.StringVal(err.Error())))
@@ -129,45 +46,45 @@ func spawnProcess(node *ast.Node, env *core.Env) (*process.Process, error) {
 	return proc, nil
 }
 
-func evalIshSpawn(node *ast.Node, env *core.Env) (core.Value, error) {
-	proc, err := spawnProcess(node, env)
+func evalIshSpawn(node *ast.Node, scope core.Scope) (core.Value, error) {
+	proc, err := spawnProcess(node, scope)
 	if err != nil {
 		return core.Nil, err
 	}
-	return core.Value{Kind: core.VPid, Pid: proc}, nil
+	return core.PidVal(proc), nil
 }
 
-func evalIshSpawnLink(node *ast.Node, env *core.Env) (core.Value, error) {
-	proc, err := spawnProcess(node, env)
+func evalIshSpawnLink(node *ast.Node, scope core.Scope) (core.Value, error) {
+	proc, err := spawnProcess(node, scope)
 	if err != nil {
 		return core.Nil, err
 	}
-	parentProc := env.GetProc()
+	parentProc := scope.NearestEnv().GetProc()
 	if parentProc != nil {
 		parentProc.Link(proc)
 	}
-	return core.Value{Kind: core.VPid, Pid: proc}, nil
+	return core.PidVal(proc), nil
 }
 
-func evalIshSend(node *ast.Node, env *core.Env) (core.Value, error) {
-	target, err := Eval(node.Children[0], env)
+func evalIshSend(node *ast.Node, scope core.Scope) (core.Value, error) {
+	target, err := Eval(node.Children[0], scope)
 	if err != nil {
 		return core.Nil, err
 	}
-	msg, err := Eval(node.Children[1], env)
+	msg, err := Eval(node.Children[1], scope)
 	if err != nil {
 		return core.Nil, err
 	}
 
-	if target.Kind != core.VPid || target.Pid == nil {
+	if target.Kind != core.VPid || target.GetPid() == nil {
 		return core.Nil, fmt.Errorf("send: first argument must be a pid, got %s", target.Inspect())
 	}
-	target.Pid.Send(msg)
+	target.GetPid().Send(msg)
 	return msg, nil
 }
 
-func evalIshReceive(node *ast.Node, env *core.Env) (core.Value, error) {
-	proc := env.GetProc()
+func evalIshReceive(node *ast.Node, scope core.Scope) (core.Value, error) {
+	proc := scope.NearestEnv().GetProc()
 	if proc == nil {
 		return core.Nil, fmt.Errorf("receive: not in a process")
 	}
@@ -184,18 +101,18 @@ func evalIshReceive(node *ast.Node, env *core.Env) (core.Value, error) {
 	var msg core.Value
 	var ok bool
 	if node.Timeout != nil {
-		timeoutVal, err := Eval(node.Timeout, env)
+		timeoutVal, err := Eval(node.Timeout, scope)
 		if err != nil {
 			return core.Nil, err
 		}
 		if timeoutVal.Kind != core.VInt {
 			return core.Nil, fmt.Errorf("receive: timeout must be an integer (milliseconds), got %s", timeoutVal.Inspect())
 		}
-		ms := timeoutVal.Int
+		ms := timeoutVal.GetInt()
 		msg, ok = proc.ReceiveSelectiveTimeout(matchFn, time.Duration(ms)*time.Millisecond)
 		if !ok {
 			if node.TimeoutBody != nil {
-				return Eval(node.TimeoutBody, env)
+				return Eval(node.TimeoutBody, scope)
 			}
 			return core.Nil, nil
 		}
@@ -207,7 +124,7 @@ func evalIshReceive(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	for _, clause := range node.Clauses {
-		matchEnv := core.NewEnv(env)
+		matchEnv := core.NewEnv(scope)
 		if TryBind(clause.Pattern, msg, matchEnv) {
 			return Eval(clause.Body, matchEnv)
 		}
@@ -215,36 +132,36 @@ func evalIshReceive(node *ast.Node, env *core.Env) (core.Value, error) {
 	return core.Nil, fmt.Errorf("no matching receive clause for %s", msg.Inspect())
 }
 
-func evalIshMonitor(node *ast.Node, env *core.Env) (core.Value, error) {
-	target, err := Eval(node.Children[0], env)
+func evalIshMonitor(node *ast.Node, scope core.Scope) (core.Value, error) {
+	target, err := Eval(node.Children[0], scope)
 	if err != nil {
 		return core.Nil, err
 	}
-	if target.Kind != core.VPid || target.Pid == nil {
+	if target.Kind != core.VPid || target.GetPid() == nil {
 		return core.Nil, fmt.Errorf("monitor: expected pid, got %s", target.Inspect())
 	}
-	watcher := env.GetProc()
+	watcher := scope.NearestEnv().GetProc()
 	if watcher == nil {
 		return core.Nil, fmt.Errorf("monitor: not in a process")
 	}
-	ref := target.Pid.Monitor(watcher)
+	ref := target.GetPid().Monitor(watcher)
 	return core.IntVal(ref), nil
 }
 
-func evalIshAwait(node *ast.Node, env *core.Env) (core.Value, error) {
-	target, err := Eval(node.Children[0], env)
+func evalIshAwait(node *ast.Node, scope core.Scope) (core.Value, error) {
+	target, err := Eval(node.Children[0], scope)
 	if err != nil {
 		return core.Nil, err
 	}
-	if target.Kind != core.VPid || target.Pid == nil {
+	if target.Kind != core.VPid || target.GetPid() == nil {
 		return core.Nil, fmt.Errorf("await: expected pid, got %s", target.Inspect())
 	}
-	result := target.Pid.Await()
+	result := target.GetPid().Await()
 	return result, nil
 }
 
-func evalIshSupervise(node *ast.Node, env *core.Env) (core.Value, error) {
-	strategy, err := Eval(node.Children[0], env)
+func evalIshSupervise(node *ast.Node, scope core.Scope) (core.Value, error) {
+	strategy, err := Eval(node.Children[0], scope)
 	if err != nil {
 		return core.Nil, err
 	}
@@ -253,16 +170,16 @@ func evalIshSupervise(node *ast.Node, env *core.Env) (core.Value, error) {
 
 	for _, workerNode := range node.Children[1:] {
 		if workerNode.Kind == ast.NCmd && len(workerNode.Children) == 2 {
-			nameVal, err := Eval(workerNode.Children[0], env)
+			nameVal, err := Eval(workerNode.Children[0], scope)
 			if err != nil {
 				return core.Nil, err
 			}
-			fnVal, err := Eval(workerNode.Children[1], env)
+			fnVal, err := Eval(workerNode.Children[1], scope)
 			if err != nil {
 				return core.Nil, err
 			}
-			if fnVal.Kind == core.VFn && fnVal.Fn != nil {
-				sup.AddChild(nameVal.ToStr(), fnVal.Fn, core.CopyEnv(env))
+			if fnVal.Kind == core.VFn && fnVal.GetFn() != nil {
+				sup.AddChild(nameVal.ToStr(), fnVal.GetFn(), core.CopyEnv(scope.NearestEnv()))
 			} else {
 				return core.Nil, fmt.Errorf("supervise: worker %s is not a function", nameVal.ToStr())
 			}
@@ -271,11 +188,11 @@ func evalIshSupervise(node *ast.Node, env *core.Env) (core.Value, error) {
 
 	go sup.Run()
 
-	return core.Value{Kind: core.VPid, Pid: sup.Proc}, nil
+	return core.PidVal(sup.Proc), nil
 }
 
-func evalIshTry(node *ast.Node, env *core.Env) (core.Value, error) {
-	val, err := Eval(node.Children[0], env)
+func evalIshTry(node *ast.Node, scope core.Scope) (core.Value, error) {
+	val, err := Eval(node.Children[0], scope)
 	if err == nil {
 		return val, nil
 	}
@@ -285,7 +202,7 @@ func evalIshTry(node *ast.Node, env *core.Env) (core.Value, error) {
 	errVal := core.TupleVal(core.AtomVal("error"), core.StringVal(err.Error()))
 
 	for _, clause := range node.Clauses {
-		matchEnv := core.NewEnv(env)
+		matchEnv := core.NewEnv(scope)
 		if TryBind(clause.Pattern, errVal, matchEnv) {
 			return Eval(clause.Body, matchEnv)
 		}

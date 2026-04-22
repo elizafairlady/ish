@@ -217,7 +217,7 @@ func (p *Process) notifyMonitors() {
 	p.monitors = nil
 	p.mu.Unlock()
 
-	pid := core.Value{Kind: core.VPid, Pid: p}
+	pid := core.PidVal(p)
 	for _, mon := range monitors {
 		msg := core.TupleVal(
 			core.AtomVal("DOWN"),
@@ -305,13 +305,13 @@ func (s *Supervisor) AddChild(name string, fn *core.FnValue, env *core.Env) {
 func (s *Supervisor) startChild(child SupervisorChild) *Process {
 	proc := NewProcess()
 	childEnv := core.CopyEnv(child.Env)
-	childEnv.Shell.Proc = proc
+	childEnv.Proc = proc
 
 	// Copy closure env to avoid races with parent goroutine
 	fn := child.Fn
 	if fn.Env != nil {
 		fnCopy := *fn
-		fnCopy.Env = core.CopyEnv(fn.Env)
+		fnCopy.Env = core.CopyEnv(fn.Env.NearestEnv())
 		fn = &fnCopy
 	}
 
@@ -325,8 +325,8 @@ func (s *Supervisor) startChild(child SupervisorChild) *Process {
 			s.Proc.Send(core.TupleVal(core.AtomVal("child_exit"), core.StringVal(child.Name), reason))
 		}()
 
-		if childEnv.CallFn != nil {
-			val, err := childEnv.CallFn(fn, nil, childEnv)
+		if childEnv.Ctx.CallFn != nil {
+			val, err := childEnv.Ctx.CallFn(fn, nil, childEnv)
 			proc.result = val
 			if err != nil {
 				reason = core.TupleVal(core.AtomVal("error"), core.StringVal(err.Error()))
@@ -344,15 +344,16 @@ func (s *Supervisor) Run() {
 			return
 		}
 
-		if msg.Kind != core.VTuple || len(msg.Elems) != 3 {
+		elems := msg.GetElems()
+		if msg.Kind != core.VTuple || len(elems) != 3 {
 			continue
 		}
-		if msg.Elems[0].Kind != core.VAtom || msg.Elems[0].Str != "child_exit" {
+		if elems[0].Kind != core.VAtom || elems[0].Str != "child_exit" {
 			continue
 		}
 
-		childName := msg.Elems[1].ToStr()
-		reason := msg.Elems[2]
+		childName := elems[1].ToStr()
+		reason := elems[2]
 
 		isNormal := reason.Kind == core.VAtom && reason.Str == "normal"
 		if isNormal {

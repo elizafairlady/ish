@@ -10,7 +10,8 @@ import (
 	"ish/internal/debug"
 )
 
-func builtinExport(args []string, env *core.Env) (int, error) {
+func builtinExport(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	for _, arg := range args {
 		if i := strings.IndexByte(arg, '='); i >= 0 {
 			env.Export(arg[:i], arg[i+1:])
@@ -21,7 +22,8 @@ func builtinExport(args []string, env *core.Env) (int, error) {
 	return 0, nil
 }
 
-func builtinUnset(args []string, env *core.Env) (int, error) {
+func builtinUnset(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	unsetFn := false
 	var names []string
 	for _, arg := range args {
@@ -48,10 +50,11 @@ func builtinUnset(args []string, env *core.Env) (int, error) {
 	return exitCode, nil
 }
 
-func builtinSet(args []string, env *core.Env) (int, error) {
+func builtinSet(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	if len(args) == 0 {
 		for k, v := range env.Bindings {
-			fmt.Fprintf(env.Stdout(), "%s=%s\n", k, v.ToStr())
+			fmt.Fprintf(scope.GetCtx().Stdout, "%s=%s\n", k, v.ToStr())
 		}
 		return 0, nil
 	}
@@ -90,9 +93,9 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 				case 'e', 'u', 'x':
 					env.SetFlag(byte(ch), true)
 				case 'X':
-					ensureDebugger(env)
+					ensureDebugger(scope)
 					env.SetFlag('X', true)
-					if d, ok := env.Debugger.(*debug.Debugger); ok {
+					if d, ok := scope.GetCtx().Debugger.(*debug.Debugger); ok {
 						d.TraceAll = true
 					}
 				default:
@@ -109,7 +112,7 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 					env.SetFlag(byte(ch), false)
 				case 'X':
 					env.SetFlag('X', false)
-					if d, ok := env.Debugger.(*debug.Debugger); ok {
+					if d, ok := scope.GetCtx().Debugger.(*debug.Debugger); ok {
 						d.TraceAll = false
 					}
 				default:
@@ -125,24 +128,26 @@ func builtinSet(args []string, env *core.Env) (int, error) {
 }
 
 // ensureDebugger lazily creates a Debugger if one doesn't exist yet.
-func ensureDebugger(env *core.Env) {
-	if env.Debugger != nil {
+func ensureDebugger(scope core.Scope) {
+	ctx := scope.GetCtx()
+	if ctx.Debugger != nil {
 		return
 	}
 	d := debug.New()
-	env.Debugger = d
-	// Build source map from current source if available
-	if env.Shell != nil && env.Shell.Source != "" {
-		name := env.Shell.SourceName
+	ctx.Debugger = d
+	env := scope.NearestEnv()
+	if env.Source != "" {
+		name := env.SourceName
 		if name == "" {
 			name = "<eval>"
 		}
-		sm := debug.NewSourceMap(name, env.Shell.Source)
+		sm := debug.NewSourceMap(name, env.Source)
 		d.PushSource(sm)
 	}
 }
 
-func builtinShift(args []string, env *core.Env) (int, error) {
+func builtinShift(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	n := 1
 	if len(args) > 0 {
 		var err error
@@ -162,44 +167,42 @@ func builtinShift(args []string, env *core.Env) (int, error) {
 	return 0, nil
 }
 
-func builtinLocal(args []string, env *core.Env) (int, error) {
+func builtinLocal(args []string, scope core.Scope) (int, error) {
 	for _, arg := range args {
 		if idx := strings.IndexByte(arg, '='); idx >= 0 {
 			name := arg[:idx]
 			val := arg[idx+1:]
-			env.SetLocal(name, core.StringVal(val))
+			scope.SetLocal(name, core.StringVal(val))
 		} else {
-			env.SetLocal(arg, core.StringVal(""))
+			scope.SetLocal(arg, core.StringVal(""))
 		}
 	}
 	return 0, nil
 }
 
-func builtinDeleteFn(args []string, env *core.Env) (int, error) {
+func builtinDeleteFn(args []string, scope core.Scope) (int, error) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "delete_fn: usage: delete_fn name [name ...]")
 		return 1, nil
 	}
+	env := scope.NearestEnv()
 	for _, name := range args {
 		env.DeleteFn(name)
 	}
 	return 0, nil
 }
 
-func builtinReadonly(args []string, env *core.Env) (int, error) {
+func builtinReadonly(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	if len(args) == 0 || (len(args) == 1 && args[0] == "-p") {
-		w := env.Stdout()
-		for c := env; c != nil; c = c.Parent {
-			if c.Shell != nil && c.Shell.ReadonlySet != nil {
-				for name := range c.Shell.ReadonlySet {
-					if v, ok := env.Get(name); ok {
-						fmt.Fprintf(w, "declare -r %s=%s\n", name, v.ToStr())
-					} else {
-						fmt.Fprintf(w, "declare -r %s\n", name)
-					}
-				}
+		w := scope.GetCtx().Stdout
+		env.AllReadonly(func(name string) {
+			if v, ok := scope.Get(name); ok {
+				fmt.Fprintf(w, "declare -r %s=%s\n", name, v.ToStr())
+			} else {
+				fmt.Fprintf(w, "declare -r %s\n", name)
 			}
-		}
+		})
 		return 0, nil
 	}
 
@@ -210,7 +213,7 @@ func builtinReadonly(args []string, env *core.Env) (int, error) {
 		if idx := strings.IndexByte(arg, '='); idx >= 0 {
 			name := arg[:idx]
 			val := arg[idx+1:]
-			if err := env.Set(name, core.StringVal(val)); err != nil {
+			if err := scope.Set(name, core.StringVal(val)); err != nil {
 				return 1, fmt.Errorf("readonly: %s", err)
 			}
 			env.SetReadonly(name)

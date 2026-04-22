@@ -21,7 +21,7 @@ func mapKey(v core.Value) string {
 }
 
 // hd list -> first element (error on empty)
-func stdlibHd(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibHd(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("hd: expected 1 argument, got %d", len(args))
 	}
@@ -29,13 +29,13 @@ func stdlibHd(args []core.Value, env *core.Env) (core.Value, error) {
 	if list.Kind != core.VList {
 		return core.Nil, fmt.Errorf("hd: expected list, got %s", list.Inspect())
 	}
-	if len(list.Elems) == 0 {
+	if len(list.GetElems()) == 0 {
 		return core.Nil, fmt.Errorf("hd: empty list")
 	}
-	return list.Elems[0], nil
+	return list.GetElems()[0], nil
 }
 
-func stdlibTl(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibTl(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("tl: expected 1 argument, got %d", len(args))
 	}
@@ -43,35 +43,35 @@ func stdlibTl(args []core.Value, env *core.Env) (core.Value, error) {
 	if list.Kind != core.VList {
 		return core.Nil, fmt.Errorf("tl: expected list, got %s", list.Inspect())
 	}
-	if len(list.Elems) == 0 {
+	if len(list.GetElems()) == 0 {
 		return core.Nil, fmt.Errorf("tl: empty list")
 	}
-	return core.ListVal(list.Elems[1:]...), nil
+	return core.ListVal(list.GetElems()[1:]...), nil
 }
 
-func stdlibLength(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibLength(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("length: expected 1 argument, got %d", len(args))
 	}
 	v := args[0]
 	switch v.Kind {
 	case core.VList:
-		return core.IntVal(int64(len(v.Elems))), nil
+		return core.IntVal(int64(len(v.GetElems()))), nil
 	case core.VTuple:
-		return core.IntVal(int64(len(v.Elems))), nil
+		return core.IntVal(int64(len(v.GetElems()))), nil
 	case core.VString:
 		return core.IntVal(int64(utf8.RuneCountInString(v.Str))), nil
 	case core.VMap:
-		if v.Map == nil {
+		if v.GetMap() == nil {
 			return core.IntVal(0), nil
 		}
-		return core.IntVal(int64(len(v.Map.Keys))), nil
+		return core.IntVal(int64(len(v.GetMap().Keys))), nil
 	default:
 		return core.Nil, fmt.Errorf("length: unsupported type %s", v.Inspect())
 	}
 }
 
-func stdlibAppend(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibAppend(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("append: expected 2 arguments, got %d", len(args))
 	}
@@ -79,13 +79,13 @@ func stdlibAppend(args []core.Value, env *core.Env) (core.Value, error) {
 	if list.Kind != core.VList {
 		return core.Nil, fmt.Errorf("append: first argument must be a list, got %s", list.Inspect())
 	}
-	newElems := make([]core.Value, len(list.Elems)+1)
-	copy(newElems, list.Elems)
-	newElems[len(list.Elems)] = args[1]
+	newElems := make([]core.Value, len(list.GetElems())+1)
+	copy(newElems, list.GetElems())
+	newElems[len(list.GetElems())] = args[1]
 	return core.ListVal(newElems...), nil
 }
 
-func stdlibConcat(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibConcat(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("concat: expected 2 arguments, got %d", len(args))
 	}
@@ -96,13 +96,13 @@ func stdlibConcat(args []core.Value, env *core.Env) (core.Value, error) {
 	if b.Kind != core.VList {
 		return core.Nil, fmt.Errorf("concat: second argument must be a list, got %s", b.Inspect())
 	}
-	newElems := make([]core.Value, 0, len(a.Elems)+len(b.Elems))
-	newElems = append(newElems, a.Elems...)
-	newElems = append(newElems, b.Elems...)
+	newElems := make([]core.Value, 0, len(a.GetElems())+len(b.GetElems()))
+	newElems = append(newElems, a.GetElems()...)
+	newElems = append(newElems, b.GetElems()...)
 	return core.ListVal(newElems...), nil
 }
 
-func stdlibMap(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibMap(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("map: expected 2 arguments, got %d", len(args))
 	}
@@ -111,15 +111,15 @@ func stdlibMap(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("map: first argument must be a list, got %s", list.Inspect())
 	}
 	fn := args[1]
-	if fn.Kind != core.VFn || fn.Fn == nil {
+	if fn.Kind != core.VFn || fn.GetFn() == nil {
 		return core.Nil, fmt.Errorf("map: second argument must be a function, got %s", fn.Inspect())
 	}
-	if env.CallFn == nil {
+	if scope.GetCtx().CallFn == nil {
 		return core.Nil, fmt.Errorf("map: CallFn not set")
 	}
-	result := make([]core.Value, len(list.Elems))
-	for i, elem := range list.Elems {
-		v, err := env.CallFn(fn.Fn, []core.Value{elem}, env)
+	result := make([]core.Value, len(list.GetElems()))
+	for i, elem := range list.GetElems() {
+		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
 		if err != nil {
 			return core.Nil, fmt.Errorf("map: %w", err)
 		}
@@ -128,7 +128,7 @@ func stdlibMap(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.ListVal(result...), nil
 }
 
-func stdlibFilter(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibFilter(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("filter: expected 2 arguments, got %d", len(args))
 	}
@@ -137,15 +137,15 @@ func stdlibFilter(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("filter: first argument must be a list, got %s", list.Inspect())
 	}
 	fn := args[1]
-	if fn.Kind != core.VFn || fn.Fn == nil {
+	if fn.Kind != core.VFn || fn.GetFn() == nil {
 		return core.Nil, fmt.Errorf("filter: second argument must be a function, got %s", fn.Inspect())
 	}
-	if env.CallFn == nil {
+	if scope.GetCtx().CallFn == nil {
 		return core.Nil, fmt.Errorf("filter: CallFn not set")
 	}
 	var result []core.Value
-	for _, elem := range list.Elems {
-		v, err := env.CallFn(fn.Fn, []core.Value{elem}, env)
+	for _, elem := range list.GetElems() {
+		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
 		if err != nil {
 			return core.Nil, fmt.Errorf("filter: %w", err)
 		}
@@ -156,7 +156,7 @@ func stdlibFilter(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.ListVal(result...), nil
 }
 
-func stdlibReduce(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibReduce(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("reduce: expected 3 arguments, got %d", len(args))
 	}
@@ -166,15 +166,15 @@ func stdlibReduce(args []core.Value, env *core.Env) (core.Value, error) {
 	}
 	acc := args[1]
 	fn := args[2]
-	if fn.Kind != core.VFn || fn.Fn == nil {
+	if fn.Kind != core.VFn || fn.GetFn() == nil {
 		return core.Nil, fmt.Errorf("reduce: third argument must be a function, got %s", fn.Inspect())
 	}
-	if env.CallFn == nil {
+	if scope.GetCtx().CallFn == nil {
 		return core.Nil, fmt.Errorf("reduce: CallFn not set")
 	}
-	for _, elem := range list.Elems {
+	for _, elem := range list.GetElems() {
 		var err error
-		acc, err = env.CallFn(fn.Fn, []core.Value{acc, elem}, env)
+		acc, err = scope.GetCtx().CallFn(fn.GetFn(), []core.Value{acc, elem}, scope)
 		if err != nil {
 			return core.Nil, fmt.Errorf("reduce: %w", err)
 		}
@@ -182,7 +182,7 @@ func stdlibReduce(args []core.Value, env *core.Env) (core.Value, error) {
 	return acc, nil
 }
 
-func stdlibRange(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibRange(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("range: expected 2 arguments, got %d", len(args))
 	}
@@ -192,7 +192,7 @@ func stdlibRange(args []core.Value, env *core.Env) (core.Value, error) {
 	if args[1].Kind != core.VInt {
 		return core.Nil, fmt.Errorf("range: stop must be an integer, got %s", args[1].Inspect())
 	}
-	start, stop := args[0].Int, args[1].Int
+	start, stop := args[0].GetInt(), args[1].GetInt()
 	if start >= stop {
 		return core.ListVal(), nil
 	}
@@ -207,7 +207,7 @@ func stdlibRange(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.ListVal(elems...), nil
 }
 
-func stdlibAt(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibAt(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("at: expected 2 arguments, got %d", len(args))
 	}
@@ -218,16 +218,16 @@ func stdlibAt(args []core.Value, env *core.Env) (core.Value, error) {
 	if args[1].Kind != core.VInt {
 		return core.Nil, fmt.Errorf("at: index must be an integer, got %s", args[1].Inspect())
 	}
-	idx := args[1].Int
-	if idx < 0 || idx >= int64(len(list.Elems)) {
-		return core.Nil, fmt.Errorf("at: index %d out of bounds (list length %d)", idx, len(list.Elems))
+	idx := args[1].GetInt()
+	if idx < 0 || idx >= int64(len(list.GetElems())) {
+		return core.Nil, fmt.Errorf("at: index %d out of bounds (list length %d)", idx, len(list.GetElems()))
 	}
-	return list.Elems[idx], nil
+	return list.GetElems()[idx], nil
 }
 
 // String functions
 
-func stdlibSplit(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibSplit(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("split: expected 2 arguments, got %d", len(args))
 	}
@@ -239,7 +239,7 @@ func stdlibSplit(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.ListVal(elems...), nil
 }
 
-func stdlibJoin(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibJoin(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("join: expected 2 arguments, got %d", len(args))
 	}
@@ -248,49 +248,49 @@ func stdlibJoin(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("join: first argument must be a list, got %s", list.Inspect())
 	}
 	delim := args[1].ToStr()
-	strs := make([]string, len(list.Elems))
-	for i, elem := range list.Elems {
+	strs := make([]string, len(list.GetElems()))
+	for i, elem := range list.GetElems() {
 		strs[i] = elem.ToStr()
 	}
 	return core.StringVal(strings.Join(strs, delim)), nil
 }
 
-func stdlibTrim(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibTrim(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("trim: expected 1 argument, got %d", len(args))
 	}
 	return core.StringVal(strings.TrimSpace(args[0].ToStr())), nil
 }
 
-func stdlibUpcase(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibUpcase(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("upcase: expected 1 argument, got %d", len(args))
 	}
 	return core.StringVal(strings.ToUpper(args[0].ToStr())), nil
 }
 
-func stdlibDowncase(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibDowncase(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("downcase: expected 1 argument, got %d", len(args))
 	}
 	return core.StringVal(strings.ToLower(args[0].ToStr())), nil
 }
 
-func stdlibReplace(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibReplace(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("replace: expected 3 arguments, got %d", len(args))
 	}
 	return core.StringVal(strings.Replace(args[0].ToStr(), args[1].ToStr(), args[2].ToStr(), 1)), nil
 }
 
-func stdlibReplaceAll(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibReplaceAll(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("replace_all: expected 3 arguments, got %d", len(args))
 	}
 	return core.StringVal(strings.ReplaceAll(args[0].ToStr(), args[1].ToStr(), args[2].ToStr())), nil
 }
 
-func stdlibStartsWith(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibStartsWith(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("starts_with: expected 2 arguments, got %d", len(args))
 	}
@@ -300,7 +300,7 @@ func stdlibStartsWith(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.AtomVal("false"), nil
 }
 
-func stdlibEndsWith(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibEndsWith(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("ends_with: expected 2 arguments, got %d", len(args))
 	}
@@ -310,7 +310,7 @@ func stdlibEndsWith(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.AtomVal("false"), nil
 }
 
-func stdlibContains(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibContains(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("contains: expected 2 arguments, got %d", len(args))
 	}
@@ -320,7 +320,7 @@ func stdlibContains(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.AtomVal("false"), nil
 }
 
-func stdlibSubstring(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibSubstring(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("substring: expected 3 arguments, got %d", len(args))
 	}
@@ -331,8 +331,8 @@ func stdlibSubstring(args []core.Value, env *core.Env) (core.Value, error) {
 	if args[2].Kind != core.VInt {
 		return core.Nil, fmt.Errorf("substring: length must be an integer, got %s", args[2].Inspect())
 	}
-	start := int(args[1].Int)
-	length := int(args[2].Int)
+	start := int(args[1].GetInt())
+	length := int(args[2].GetInt())
 	if start < 0 {
 		start = 0
 	}
@@ -346,7 +346,7 @@ func stdlibSubstring(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.StringVal(string(runes[start:end])), nil
 }
 
-func stdlibIndexOf(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibIndexOf(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("index_of: expected 2 arguments, got %d", len(args))
 	}
@@ -360,7 +360,7 @@ func stdlibIndexOf(args []core.Value, env *core.Env) (core.Value, error) {
 
 // Map operations
 
-func stdlibPut(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibPut(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("put: expected 3 arguments, got %d", len(args))
 	}
@@ -368,16 +368,16 @@ func stdlibPut(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("put: first argument must be a map, got %s", args[0].Inspect())
 	}
 	m := core.NewOrdMap()
-	if args[0].Map != nil {
-		for _, k := range args[0].Map.Keys {
-			m.Set(k, args[0].Map.Vals[k])
+	if args[0].GetMap() != nil {
+		for _, k := range args[0].GetMap().Keys {
+			m.Set(k, args[0].GetMap().Vals[k])
 		}
 	}
 	m.Set(mapKey(args[1]), args[2])
-	return core.Value{Kind: core.VMap, Map: m}, nil
+	return core.MapVal(m), nil
 }
 
-func stdlibDelete(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibDelete(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("delete: expected 2 arguments, got %d", len(args))
 	}
@@ -386,17 +386,17 @@ func stdlibDelete(args []core.Value, env *core.Env) (core.Value, error) {
 	}
 	key := mapKey(args[1])
 	m := core.NewOrdMap()
-	if args[0].Map != nil {
-		for _, k := range args[0].Map.Keys {
+	if args[0].GetMap() != nil {
+		for _, k := range args[0].GetMap().Keys {
 			if k != key {
-				m.Set(k, args[0].Map.Vals[k])
+				m.Set(k, args[0].GetMap().Vals[k])
 			}
 		}
 	}
-	return core.Value{Kind: core.VMap, Map: m}, nil
+	return core.MapVal(m), nil
 }
 
-func stdlibMerge(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibMerge(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("merge: expected 2 arguments, got %d", len(args))
 	}
@@ -407,54 +407,54 @@ func stdlibMerge(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("merge: second argument must be a map, got %s", args[1].Inspect())
 	}
 	m := core.NewOrdMap()
-	if args[0].Map != nil {
-		for _, k := range args[0].Map.Keys {
-			m.Set(k, args[0].Map.Vals[k])
+	if args[0].GetMap() != nil {
+		for _, k := range args[0].GetMap().Keys {
+			m.Set(k, args[0].GetMap().Vals[k])
 		}
 	}
-	if args[1].Map != nil {
-		for _, k := range args[1].Map.Keys {
-			m.Set(k, args[1].Map.Vals[k])
+	if args[1].GetMap() != nil {
+		for _, k := range args[1].GetMap().Keys {
+			m.Set(k, args[1].GetMap().Vals[k])
 		}
 	}
-	return core.Value{Kind: core.VMap, Map: m}, nil
+	return core.MapVal(m), nil
 }
 
-func stdlibKeys(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibKeys(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("keys: expected 1 argument, got %d", len(args))
 	}
 	if args[0].Kind != core.VMap {
 		return core.Nil, fmt.Errorf("keys: argument must be a map, got %s", args[0].Inspect())
 	}
-	if args[0].Map == nil {
+	if args[0].GetMap() == nil {
 		return core.ListVal(), nil
 	}
-	elems := make([]core.Value, len(args[0].Map.Keys))
-	for i, k := range args[0].Map.Keys {
+	elems := make([]core.Value, len(args[0].GetMap().Keys))
+	for i, k := range args[0].GetMap().Keys {
 		elems[i] = core.StringVal(k)
 	}
 	return core.ListVal(elems...), nil
 }
 
-func stdlibValues(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibValues(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("values: expected 1 argument, got %d", len(args))
 	}
 	if args[0].Kind != core.VMap {
 		return core.Nil, fmt.Errorf("values: argument must be a map, got %s", args[0].Inspect())
 	}
-	if args[0].Map == nil {
+	if args[0].GetMap() == nil {
 		return core.ListVal(), nil
 	}
-	elems := make([]core.Value, len(args[0].Map.Keys))
-	for i, k := range args[0].Map.Keys {
-		elems[i] = args[0].Map.Vals[k]
+	elems := make([]core.Value, len(args[0].GetMap().Keys))
+	for i, k := range args[0].GetMap().Keys {
+		elems[i] = args[0].GetMap().Vals[k]
 	}
 	return core.ListVal(elems...), nil
 }
 
-func stdlibHasKey(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibHasKey(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("has_key: expected 2 arguments, got %d", len(args))
 	}
@@ -462,8 +462,8 @@ func stdlibHasKey(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("has_key: first argument must be a map, got %s", args[0].Inspect())
 	}
 	key := mapKey(args[1])
-	if args[0].Map != nil {
-		if _, ok := args[0].Map.Get(key); ok {
+	if args[0].GetMap() != nil {
+		if _, ok := args[0].GetMap().Get(key); ok {
 			return core.True, nil
 		}
 	}
@@ -471,17 +471,17 @@ func stdlibHasKey(args []core.Value, env *core.Env) (core.Value, error) {
 }
 
 // get map, key -> value (dynamic map access)
-func stdlibGet(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibGet(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("get: expected 2 arguments, got %d", len(args))
 	}
 	if args[0].Kind != core.VMap {
 		return core.Nil, fmt.Errorf("get: first argument must be a map, got %s", args[0].Inspect())
 	}
-	if args[0].Map == nil {
+	if args[0].GetMap() == nil {
 		return core.Nil, nil
 	}
-	val, ok := args[0].Map.Get(mapKey(args[1]))
+	val, ok := args[0].GetMap().Get(mapKey(args[1]))
 	if !ok {
 		return core.Nil, nil
 	}
@@ -489,7 +489,7 @@ func stdlibGet(args []core.Value, env *core.Env) (core.Value, error) {
 }
 
 // each list, fn -> nil (apply fn for side effects, discard results)
-func stdlibEach(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibEach(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("each: expected 2 arguments, got %d", len(args))
 	}
@@ -498,14 +498,14 @@ func stdlibEach(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("each: first argument must be a list, got %s", list.Inspect())
 	}
 	fn := args[1]
-	if fn.Kind != core.VFn || fn.Fn == nil {
+	if fn.Kind != core.VFn || fn.GetFn() == nil {
 		return core.Nil, fmt.Errorf("each: second argument must be a function, got %s", fn.Inspect())
 	}
-	if env.CallFn == nil {
+	if scope.GetCtx().CallFn == nil {
 		return core.Nil, fmt.Errorf("each: CallFn not set")
 	}
-	for _, elem := range list.Elems {
-		_, err := env.CallFn(fn.Fn, []core.Value{elem}, env)
+	for _, elem := range list.GetElems() {
+		_, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
 		if err != nil {
 			return core.Nil, fmt.Errorf("each: %w", err)
 		}
@@ -515,7 +515,7 @@ func stdlibEach(args []core.Value, env *core.Env) (core.Value, error) {
 
 
 // sort list -> sorted list
-func stdlibSort(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibSort(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("sort: expected 1 argument, got %d", len(args))
 	}
@@ -523,12 +523,12 @@ func stdlibSort(args []core.Value, env *core.Env) (core.Value, error) {
 	if list.Kind != core.VList {
 		return core.Nil, fmt.Errorf("sort: expected list, got %s", list.Inspect())
 	}
-	sorted := make([]core.Value, len(list.Elems))
-	copy(sorted, list.Elems)
+	sorted := make([]core.Value, len(list.GetElems()))
+	copy(sorted, list.GetElems())
 	sort.SliceStable(sorted, func(i, j int) bool {
 		a, b := sorted[i], sorted[j]
 		if a.Kind == core.VInt && b.Kind == core.VInt {
-			return a.Int < b.Int
+			return a.GetInt() < b.GetInt()
 		}
 		return a.ToStr() < b.ToStr()
 	})
@@ -536,7 +536,7 @@ func stdlibSort(args []core.Value, env *core.Env) (core.Value, error) {
 }
 
 // reverse list -> reversed list
-func stdlibReverse(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibReverse(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("reverse: expected 1 argument, got %d", len(args))
 	}
@@ -544,15 +544,15 @@ func stdlibReverse(args []core.Value, env *core.Env) (core.Value, error) {
 	if list.Kind != core.VList {
 		return core.Nil, fmt.Errorf("reverse: expected list, got %s", list.Inspect())
 	}
-	reversed := make([]core.Value, len(list.Elems))
-	for i, v := range list.Elems {
-		reversed[len(list.Elems)-1-i] = v
+	reversed := make([]core.Value, len(list.GetElems()))
+	for i, v := range list.GetElems() {
+		reversed[len(list.GetElems())-1-i] = v
 	}
 	return core.ListVal(reversed...), nil
 }
 
 // any list, fn -> true if fn returns truthy for any element
-func stdlibAny(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibAny(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("any: expected 2 arguments, got %d", len(args))
 	}
@@ -561,14 +561,14 @@ func stdlibAny(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("any: first argument must be a list, got %s", list.Inspect())
 	}
 	fn := args[1]
-	if fn.Kind != core.VFn || fn.Fn == nil {
+	if fn.Kind != core.VFn || fn.GetFn() == nil {
 		return core.Nil, fmt.Errorf("any: second argument must be a function, got %s", fn.Inspect())
 	}
-	if env.CallFn == nil {
+	if scope.GetCtx().CallFn == nil {
 		return core.Nil, fmt.Errorf("any: CallFn not set")
 	}
-	for _, elem := range list.Elems {
-		v, err := env.CallFn(fn.Fn, []core.Value{elem}, env)
+	for _, elem := range list.GetElems() {
+		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
 		if err != nil {
 			return core.Nil, fmt.Errorf("any: %w", err)
 		}
@@ -580,7 +580,7 @@ func stdlibAny(args []core.Value, env *core.Env) (core.Value, error) {
 }
 
 // all list, fn -> true if fn returns truthy for all elements
-func stdlibAll(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibAll(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("all: expected 2 arguments, got %d", len(args))
 	}
@@ -589,14 +589,14 @@ func stdlibAll(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("all: first argument must be a list, got %s", list.Inspect())
 	}
 	fn := args[1]
-	if fn.Kind != core.VFn || fn.Fn == nil {
+	if fn.Kind != core.VFn || fn.GetFn() == nil {
 		return core.Nil, fmt.Errorf("all: second argument must be a function, got %s", fn.Inspect())
 	}
-	if env.CallFn == nil {
+	if scope.GetCtx().CallFn == nil {
 		return core.Nil, fmt.Errorf("all: CallFn not set")
 	}
-	for _, elem := range list.Elems {
-		v, err := env.CallFn(fn.Fn, []core.Value{elem}, env)
+	for _, elem := range list.GetElems() {
+		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
 		if err != nil {
 			return core.Nil, fmt.Errorf("all: %w", err)
 		}
@@ -608,7 +608,7 @@ func stdlibAll(args []core.Value, env *core.Env) (core.Value, error) {
 }
 
 // find list, fn -> first element where fn is truthy, or nil
-func stdlibFind(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibFind(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 2 {
 		return core.Nil, fmt.Errorf("find: expected 2 arguments, got %d", len(args))
 	}
@@ -617,14 +617,14 @@ func stdlibFind(args []core.Value, env *core.Env) (core.Value, error) {
 		return core.Nil, fmt.Errorf("find: first argument must be a list, got %s", list.Inspect())
 	}
 	fn := args[1]
-	if fn.Kind != core.VFn || fn.Fn == nil {
+	if fn.Kind != core.VFn || fn.GetFn() == nil {
 		return core.Nil, fmt.Errorf("find: second argument must be a function, got %s", fn.Inspect())
 	}
-	if env.CallFn == nil {
+	if scope.GetCtx().CallFn == nil {
 		return core.Nil, fmt.Errorf("find: CallFn not set")
 	}
-	for _, elem := range list.Elems {
-		v, err := env.CallFn(fn.Fn, []core.Value{elem}, env)
+	for _, elem := range list.GetElems() {
+		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
 		if err != nil {
 			return core.Nil, fmt.Errorf("find: %w", err)
 		}
@@ -636,25 +636,25 @@ func stdlibFind(args []core.Value, env *core.Env) (core.Value, error) {
 }
 
 // pairs map -> list of {key, value} tuples
-func stdlibPairs(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibPairs(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("pairs: expected 1 argument, got %d", len(args))
 	}
 	if args[0].Kind != core.VMap {
 		return core.Nil, fmt.Errorf("pairs: expected map, got %s", args[0].Inspect())
 	}
-	if args[0].Map == nil {
+	if args[0].GetMap() == nil {
 		return core.ListVal(), nil
 	}
-	elems := make([]core.Value, len(args[0].Map.Keys))
-	for i, k := range args[0].Map.Keys {
-		elems[i] = core.TupleVal(core.StringVal(k), args[0].Map.Vals[k])
+	elems := make([]core.Value, len(args[0].GetMap().Keys))
+	for i, k := range args[0].GetMap().Keys {
+		elems[i] = core.TupleVal(core.StringVal(k), args[0].GetMap().Vals[k])
 	}
 	return core.ListVal(elems...), nil
 }
 
 // enumerate list -> list of {index, value} tuples
-func stdlibEnumerate(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibEnumerate(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("enumerate: expected 1 argument, got %d", len(args))
 	}
@@ -662,38 +662,38 @@ func stdlibEnumerate(args []core.Value, env *core.Env) (core.Value, error) {
 	if list.Kind != core.VList {
 		return core.Nil, fmt.Errorf("enumerate: expected list, got %s", list.Inspect())
 	}
-	elems := make([]core.Value, len(list.Elems))
-	for i, v := range list.Elems {
+	elems := make([]core.Value, len(list.GetElems()))
+	for i, v := range list.GetElems() {
 		elems[i] = core.TupleVal(core.IntVal(int64(i)), v)
 	}
 	return core.ListVal(elems...), nil
 }
 
 // sleep ms -> nil (pause for milliseconds)
-func stdlibSleep(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibSleep(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("sleep: expected 1 argument, got %d", len(args))
 	}
 	if args[0].Kind != core.VInt {
 		return core.Nil, fmt.Errorf("sleep: expected integer (milliseconds), got %s", args[0].Inspect())
 	}
-	time.Sleep(time.Duration(args[0].Int) * time.Millisecond)
+	time.Sleep(time.Duration(args[0].GetInt()) * time.Millisecond)
 	return core.Nil, nil
 }
 
 // send_after delay_ms, pid, msg -> :ok
-func stdlibSendAfter(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibSendAfter(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("send_after: expected 3 arguments, got %d", len(args))
 	}
 	if args[0].Kind != core.VInt {
 		return core.Nil, fmt.Errorf("send_after: delay must be an integer (milliseconds), got %s", args[0].Inspect())
 	}
-	if args[1].Kind != core.VPid || args[1].Pid == nil {
+	if args[1].Kind != core.VPid || args[1].GetPid() == nil {
 		return core.Nil, fmt.Errorf("send_after: target must be a pid, got %s", args[1].Inspect())
 	}
-	delay := time.Duration(args[0].Int) * time.Millisecond
-	target := args[1].Pid
+	delay := time.Duration(args[0].GetInt()) * time.Millisecond
+	target := args[1].GetPid()
 	msg := args[2]
 	go func() {
 		time.Sleep(delay)
@@ -703,7 +703,7 @@ func stdlibSendAfter(args []core.Value, env *core.Env) (core.Value, error) {
 }
 
 // chars string -> list of single-character strings
-func stdlibChars(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibChars(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("chars: expected 1 argument, got %d", len(args))
 	}
@@ -716,7 +716,7 @@ func stdlibChars(args []core.Value, env *core.Env) (core.Value, error) {
 }
 
 // pad_left string, width, pad -> padded string
-func stdlibPadLeft(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibPadLeft(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("pad_left: expected 3 arguments, got %d", len(args))
 	}
@@ -724,7 +724,7 @@ func stdlibPadLeft(args []core.Value, env *core.Env) (core.Value, error) {
 	if args[1].Kind != core.VInt {
 		return core.Nil, fmt.Errorf("pad_left: width must be an integer, got %s", args[1].Inspect())
 	}
-	width := int(args[1].Int)
+	width := int(args[1].GetInt())
 	pad := args[2].ToStr()
 	if pad == "" {
 		return core.StringVal(s), nil
@@ -740,7 +740,7 @@ func stdlibPadLeft(args []core.Value, env *core.Env) (core.Value, error) {
 }
 
 // pad_right string, width, pad -> padded string
-func stdlibPadRight(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibPadRight(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 3 {
 		return core.Nil, fmt.Errorf("pad_right: expected 3 arguments, got %d", len(args))
 	}
@@ -748,7 +748,7 @@ func stdlibPadRight(args []core.Value, env *core.Env) (core.Value, error) {
 	if args[1].Kind != core.VInt {
 		return core.Nil, fmt.Errorf("pad_right: width must be an integer, got %s", args[1].Inspect())
 	}
-	width := int(args[1].Int)
+	width := int(args[1].GetInt())
 	pad := args[2].ToStr()
 	if pad == "" {
 		return core.StringVal(s), nil

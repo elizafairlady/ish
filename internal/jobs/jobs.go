@@ -137,8 +137,8 @@ func ResolveJob(spec string) *Job {
 }
 
 // BuiltinJobs lists all jobs.
-func BuiltinJobs(args []string, env *core.Env) (int, error) {
-	w := env.Stdout()
+func BuiltinJobs(args []string, scope core.Scope) (int, error) {
+	w := scope.GetCtx().Stdout
 	jobs := ListJobs()
 	for _, j := range jobs {
 		j.Mu.Lock()
@@ -150,7 +150,7 @@ func BuiltinJobs(args []string, env *core.Env) (int, error) {
 }
 
 // BuiltinFg brings a job to the foreground.
-func BuiltinFg(args []string, env *core.Env) (int, error) {
+func BuiltinFg(args []string, scope core.Scope) (int, error) {
 	var j *Job
 	if len(args) == 0 {
 		j = LastJob()
@@ -224,7 +224,7 @@ func WaitFg(pid int) (syscall.WaitStatus, error) {
 }
 
 // BuiltinBg resumes a stopped job in the background.
-func BuiltinBg(args []string, env *core.Env) (int, error) {
+func BuiltinBg(args []string, scope core.Scope) (int, error) {
 	if len(args) == 0 {
 		return 1, fmt.Errorf("bg: no current job")
 	}

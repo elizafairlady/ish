@@ -48,13 +48,13 @@ func (r ResolvedCmd) IsCmd() bool {
 
 // ResolveCmd performs the canonical lookup chain for a command name.
 // Order: module-qualified -> user fn -> native fn -> var fn -> builtin -> external (PATH).
-func ResolveCmd(name string, env *core.Env) ResolvedCmd {
+func ResolveCmd(name string, scope core.Scope) ResolvedCmd {
 	// 1. Module-qualified (contains '.')
 	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
 		modName := name[:dotIdx]
 		fnName := name[dotIdx+1:]
-		if env != nil {
-			if mod, ok := env.GetModule(modName); ok {
+		if scope != nil {
+			if mod, ok := scope.GetModule(modName); ok {
 				if fn, ok := mod.Fns[fnName]; ok {
 					return ResolvedCmd{Kind: KindModuleFn, Fn: fn, ModName: modName, FnName: fnName}
 				}
@@ -66,23 +66,23 @@ func ResolveCmd(name string, env *core.Env) ResolvedCmd {
 	}
 
 	// 2. User-defined function
-	if env != nil {
-		if fn, ok := env.GetFn(name); ok {
+	if scope != nil {
+		if fn, ok := scope.GetFn(name); ok {
 			return ResolvedCmd{Kind: KindUserFn, Fn: fn}
 		}
 	}
 
 	// 3. Native function (stdlib)
-	if env != nil {
-		if nfn, ok := env.GetNativeFn(name); ok {
+	if scope != nil {
+		if nfn, ok := scope.GetNativeFn(name); ok {
 			return ResolvedCmd{Kind: KindNativeFn, NativeFn: nfn}
 		}
 	}
 
 	// 4. Variable holding a function value
-	if env != nil {
-		if v, ok := env.Get(name); ok && v.Kind == core.VFn && v.Fn != nil {
-			return ResolvedCmd{Kind: KindVarFn, Fn: v.Fn}
+	if scope != nil {
+		if v, ok := scope.Get(name); ok && v.Kind == core.VFn && v.GetFn() != nil {
+			return ResolvedCmd{Kind: KindVarFn, Fn: v.GetFn()}
 		}
 	}
 
@@ -101,22 +101,22 @@ func ResolveCmd(name string, env *core.Env) ResolvedCmd {
 
 // ResolveCmdCached returns a closure that resolves commands with cached PATH lookups.
 // Used by MakeIsCommand for parser disambiguation.
-func ResolveCmdCached(env *core.Env) func(string) bool {
+func ResolveCmdCached(scope core.Scope) func(string) bool {
 	pathCache := make(map[string]bool)
 	return func(name string) bool {
 		// Module-qualified
 		if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 {
-			if env != nil {
-				if _, ok := env.GetModule(name[:dotIdx]); ok {
+			if scope != nil {
+				if _, ok := scope.GetModule(name[:dotIdx]); ok {
 					return true
 				}
 			}
 		}
-		if env != nil {
-			if _, ok := env.GetFn(name); ok {
+		if scope != nil {
+			if _, ok := scope.GetFn(name); ok {
 				return true
 			}
-			if _, ok := env.GetNativeFn(name); ok {
+			if _, ok := scope.GetNativeFn(name); ok {
 				return true
 			}
 		}

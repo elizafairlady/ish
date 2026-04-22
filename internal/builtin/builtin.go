@@ -9,11 +9,11 @@ import (
 // Builtins are commands — they receive string arguments, same as any external
 // command. The evaluator converts values to strings before calling builtins,
 // just as it does for exec.Command.
-type BuiltinFunc func(args []string, env *core.Env) (int, error)
+type BuiltinFunc func(args []string, scope core.Scope) (int, error)
 
 // EvalContext provides callbacks that builtins need from eval, breaking the import cycle.
 type EvalContext struct {
-	RunSource func(src string, env *core.Env) (core.Value, error)
+	RunSource func(src string, scope core.Scope) (core.Value, error)
 }
 
 var evalCtx EvalContext

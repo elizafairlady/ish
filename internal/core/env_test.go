@@ -16,8 +16,8 @@ func TestEnvGetSet(t *testing.T) {
 		if !ok {
 			t.Fatal("expected x to exist")
 		}
-		if v.Int != 42 {
-			t.Errorf("expected 42, got %d", v.Int)
+		if v.GetInt() != 42 {
+			t.Errorf("expected 42, got %d", v.GetInt())
 		}
 	})
 
@@ -36,13 +36,13 @@ func TestEnvGetSet(t *testing.T) {
 		child.Set("x", IntVal(2))
 
 		v, _ := child.Get("x")
-		if v.Int != 2 {
-			t.Errorf("child should see updated value: got %d, want 2", v.Int)
+		if v.GetInt() != 2 {
+			t.Errorf("child should see updated value: got %d, want 2", v.GetInt())
 		}
 
 		v, _ = parent.Get("x")
-		if v.Int != 2 {
-			t.Errorf("parent should be updated by child Set: got %d, want 2", v.Int)
+		if v.GetInt() != 2 {
+			t.Errorf("parent should be updated by child Set: got %d, want 2", v.GetInt())
 		}
 	})
 
@@ -53,13 +53,13 @@ func TestEnvGetSet(t *testing.T) {
 		child.SetLocal("x", IntVal(2))
 
 		v, _ := child.Get("x")
-		if v.Int != 2 {
-			t.Errorf("child should shadow parent: got %d, want 2", v.Int)
+		if v.GetInt() != 2 {
+			t.Errorf("child should shadow parent: got %d, want 2", v.GetInt())
 		}
 
 		v, _ = parent.Get("x")
-		if v.Int != 1 {
-			t.Errorf("parent should be unchanged: got %d, want 1", v.Int)
+		if v.GetInt() != 1 {
+			t.Errorf("parent should be unchanged: got %d, want 1", v.GetInt())
 		}
 	})
 
@@ -69,7 +69,7 @@ func TestEnvGetSet(t *testing.T) {
 		child.Set("newvar", IntVal(99))
 
 		v, ok := child.Get("newvar")
-		if !ok || v.Int != 99 {
+		if !ok || v.GetInt() != 99 {
 			t.Errorf("child should have newvar=99, got %v", v)
 		}
 
@@ -179,7 +179,7 @@ func TestEnvExpand(t *testing.T) {
 		},
 		{
 			name:  "$$ pid",
-			setup: func(e *Env) { e.Shell.ShellPid = 1234 },
+			setup: func(e *Env) { e.ShellPid = 1234 },
 			input: "pid=$$",
 			want:  "pid=1234",
 		},
@@ -264,7 +264,7 @@ func TestEnvStdout(t *testing.T) {
 	t.Run("direct stdout", func(t *testing.T) {
 		e := NewEnv(nil)
 		var buf bytes.Buffer
-		e.Stdout_ = &buf
+		e.Ctx.Stdout = &buf
 
 		got := e.Stdout()
 		if got != &buf {
@@ -275,7 +275,7 @@ func TestEnvStdout(t *testing.T) {
 	t.Run("walks parent", func(t *testing.T) {
 		parent := NewEnv(nil)
 		var buf bytes.Buffer
-		parent.Stdout_ = &buf
+		parent.Ctx.Stdout = &buf
 
 		child := NewEnv(parent)
 		got := child.Stdout()
@@ -317,9 +317,9 @@ func TestEnvExpandNoMarkers(t *testing.T) {
 func TestEnvBuildEnv(t *testing.T) {
 	t.Run("includes exported vars", func(t *testing.T) {
 		e := NewEnv(nil)
-		e.Shell.Exported = make(map[string]bool)
+		e.Exported = make(map[string]bool)
 		e.SetLocal("FOO", StringVal("bar"))
-		e.Shell.Exported["FOO"] = true
+		e.Exported["FOO"] = true
 		e.SetLocal("SECRET", StringVal("hidden"))
 
 		envVars := e.BuildEnv()
@@ -343,9 +343,9 @@ func TestEnvBuildEnv(t *testing.T) {
 
 	t.Run("child scope overrides parent", func(t *testing.T) {
 		parent := NewEnv(nil)
-		parent.Shell.Exported = make(map[string]bool)
+		parent.Exported = make(map[string]bool)
 		parent.SetLocal("X", StringVal("old"))
-		parent.Shell.Exported["X"] = true
+		parent.Exported["X"] = true
 
 		child := NewEnv(parent)
 		child.SetLocal("X", StringVal("new"))
@@ -387,7 +387,7 @@ func TestEnvDeleteFn(t *testing.T) {
 
 func TestEnvExpandShellName(t *testing.T) {
 	e := NewEnv(nil)
-	e.Shell.ShellName = "testshell"
+	e.ShellName = "testshell"
 	got := e.Expand("name=$0")
 	if got != "name=testshell" {
 		t.Errorf("$0 expansion: got %q, want %q", got, "name=testshell")
@@ -423,13 +423,15 @@ func TestEnvExpandIFSStar(t *testing.T) {
 	}
 }
 
-func TestEnvExitCodeIsolation(t *testing.T) {
+func TestEnvExitCodeShared(t *testing.T) {
+	// POSIX model: exit codes are a single register shared via ExecCtx.
+	// Parent and child sharing the same Ctx see each other's exit codes.
 	parent := NewEnv(nil)
 	parent.SetExit(1)
 	child := NewEnv(parent)
 
 	if child.ExitCode() != 1 {
-		t.Errorf("expected 1 from parent, got %d", child.ExitCode())
+		t.Errorf("expected 1 from shared ctx, got %d", child.ExitCode())
 	}
 
 	child.SetExit(0)
@@ -437,8 +439,9 @@ func TestEnvExitCodeIsolation(t *testing.T) {
 		t.Errorf("after child SetExit(0), expected 0, got %d", child.ExitCode())
 	}
 
-	if parent.ExitCode() != 1 {
-		t.Errorf("parent should still have 1, got %d", parent.ExitCode())
+	// Parent sees child's exit code because they share ExecCtx
+	if parent.ExitCode() != 0 {
+		t.Errorf("parent should see shared 0, got %d", parent.ExitCode())
 	}
 }
 

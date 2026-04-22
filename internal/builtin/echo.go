@@ -7,7 +7,7 @@ import (
 	"ish/internal/core"
 )
 
-func builtinEcho(args []string, env *core.Env) (int, error) {
+func builtinEcho(args []string, scope core.Scope) (int, error) {
 	newline := true
 	escapes := false
 	start := 0
@@ -42,7 +42,7 @@ func builtinEcho(args []string, env *core.Env) (int, error) {
 	if escapes {
 		out = expandEchoEscapes(out)
 	}
-	w := env.Stdout()
+	w := scope.GetCtx().Stdout
 	if newline {
 		fmt.Fprintln(w, out)
 	} else {

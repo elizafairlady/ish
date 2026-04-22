@@ -156,20 +156,20 @@ func TestMonitorSendsDownMessage(t *testing.T) {
 		t.Fatal("watcher should receive :DOWN message")
 	}
 
-	if msg.Kind != core.VTuple || len(msg.Elems) != 4 {
+	if msg.Kind != core.VTuple || len(msg.GetElems()) != 4 {
 		t.Fatalf("expected 4-tuple, got %s", msg.Inspect())
 	}
-	if msg.Elems[0].Kind != core.VAtom || msg.Elems[0].Str != "DOWN" {
-		t.Errorf("elem 0 = %s, want :DOWN", msg.Elems[0].Inspect())
+	if msg.GetElems()[0].Kind != core.VAtom || msg.GetElems()[0].Str != "DOWN" {
+		t.Errorf("elem 0 = %s, want :DOWN", msg.GetElems()[0].Inspect())
 	}
-	if msg.Elems[1].Kind != core.VInt || msg.Elems[1].Int != ref {
-		t.Errorf("elem 1 = %s, want %d", msg.Elems[1].Inspect(), ref)
+	if msg.GetElems()[1].Kind != core.VInt || msg.GetElems()[1].GetInt() != ref {
+		t.Errorf("elem 1 = %s, want %d", msg.GetElems()[1].Inspect(), ref)
 	}
-	if msg.Elems[2].Kind != core.VPid {
-		t.Errorf("elem 2 = %s, want PID", msg.Elems[2].Inspect())
+	if msg.GetElems()[2].Kind != core.VPid {
+		t.Errorf("elem 2 = %s, want PID", msg.GetElems()[2].Inspect())
 	}
-	if msg.Elems[3].Kind != core.VAtom || msg.Elems[3].Str != "normal" {
-		t.Errorf("elem 3 = %s, want :normal", msg.Elems[3].Inspect())
+	if msg.GetElems()[3].Kind != core.VAtom || msg.GetElems()[3].Str != "normal" {
+		t.Errorf("elem 3 = %s, want :normal", msg.GetElems()[3].Inspect())
 	}
 }
 
@@ -185,8 +185,8 @@ func TestMonitorWithAbnormalReason(t *testing.T) {
 	if !ok {
 		t.Fatal("should receive DOWN")
 	}
-	reason := msg.Elems[3]
-	if reason.Kind != core.VTuple || reason.Elems[0].Str != "error" {
+	reason := msg.GetElems()[3]
+	if reason.Kind != core.VTuple || reason.GetElems()[0].Str != "error" {
 		t.Errorf("reason = %s, want {:error, ...}", reason.Inspect())
 	}
 }

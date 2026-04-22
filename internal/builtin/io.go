@@ -14,7 +14,8 @@ import (
 	"ish/internal/core"
 )
 
-func builtinRead(args []string, env *core.Env) (int, error) {
+func builtinRead(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	var prompt string
 	raw := false
 	silent := false
@@ -139,24 +140,24 @@ func builtinRead(args []string, env *core.Env) (int, error) {
 	}
 
 	if len(varNames) == 0 {
-		env.Set("REPLY", core.StringVal(line))
+		scope.Set("REPLY", core.StringVal(line))
 	} else if len(varNames) == 1 {
-		env.Set(varNames[0], core.StringVal(line))
+		scope.Set(varNames[0], core.StringVal(line))
 	} else {
 		fields := env.SplitFieldsIFS(line)
 		for idx, name := range varNames {
 			if idx < len(varNames)-1 {
 				if idx < len(fields) {
-					env.Set(name, core.StringVal(fields[idx]))
+					scope.Set(name, core.StringVal(fields[idx]))
 				} else {
-					env.Set(name, core.StringVal(""))
+					scope.Set(name, core.StringVal(""))
 				}
 			} else {
 				if idx < len(fields) {
 					remainder := strings.Join(fields[idx:], " ")
-					env.Set(name, core.StringVal(remainder))
+					scope.Set(name, core.StringVal(remainder))
 				} else {
-					env.Set(name, core.StringVal(""))
+					scope.Set(name, core.StringVal(""))
 				}
 			}
 		}
@@ -164,10 +165,11 @@ func builtinRead(args []string, env *core.Env) (int, error) {
 	return 0, nil
 }
 
-func builtinExec(args []string, env *core.Env) (int, error) {
+func builtinExec(args []string, scope core.Scope) (int, error) {
 	if len(args) == 0 {
 		return 0, nil
 	}
+	env := scope.NearestEnv()
 	path, err := exec.LookPath(args[0])
 	if err != nil {
 		return 127, fmt.Errorf("exec: %s: %s", args[0], err)
@@ -176,25 +178,26 @@ func builtinExec(args []string, env *core.Env) (int, error) {
 	return 127, fmt.Errorf("exec: %s", err)
 }
 
-func builtinEval(args []string, env *core.Env) (int, error) {
+func builtinEval(args []string, scope core.Scope) (int, error) {
 	if len(args) == 0 {
 		return 0, nil
 	}
 	line := strings.Join(args, " ")
-	val, _ := evalCtx.RunSource(line, env)
+	val, _ := evalCtx.RunSource(line, scope)
 	if val.Kind != core.VNil {
-		fmt.Fprintln(env.Stdout(), val.String())
+		fmt.Fprintln(scope.GetCtx().Stdout, val.String())
 	}
-	return env.LastExit, nil
+	return scope.GetCtx().ExitCode(), nil
 }
 
-func builtinSource(args []string, env *core.Env) (int, error) {
+func builtinSource(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	if len(args) == 0 {
 		return 1, fmt.Errorf("source: filename argument required")
 	}
 	filename := args[0]
 	if !strings.Contains(filename, "/") {
-		if pathVal, ok := env.Get("PATH"); ok {
+		if pathVal, ok := scope.Get("PATH"); ok {
 			for _, dir := range strings.Split(pathVal.ToStr(), ":") {
 				candidate := dir + "/" + filename
 				if _, err := os.Stat(candidate); err == nil {
@@ -214,21 +217,21 @@ func builtinSource(args []string, env *core.Env) (int, error) {
 		env.Args = args[1:]
 	}
 
-	evalCtx.RunSource(string(data), env) //nolint: errcheck
+	evalCtx.RunSource(string(data), scope) //nolint: errcheck
 
 	env.Args = savedArgs
 
-	return env.LastExit, nil
+	return scope.GetCtx().ExitCode(), nil
 }
 
-func builtinPrintf(args []string, env *core.Env) (int, error) {
+func builtinPrintf(args []string, scope core.Scope) (int, error) {
 	if len(args) == 0 {
 		return 0, nil
 	}
 
 	format := args[0]
 	fmtArgs := args[1:]
-	w := env.Stdout()
+	w := scope.GetCtx().Stdout
 
 	argIdx := 0
 	getArg := func() string {

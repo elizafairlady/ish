@@ -15,11 +15,11 @@ import (
 // TestEnv creates a fully-initialized environment for tests.
 func TestEnv() *core.Env {
 	env := core.TopEnv()
-	env.Shell.Proc = process.NewProcess()
+	env.Proc = process.NewProcess()
 	stdlib.Register(env)
 	builtin.Init(builtin.EvalContext{RunSource: eval.RunSource})
-	env.Shell.CmdSub = eval.RunCmdSub
-	env.CallFn = eval.CallFn
+	env.Ctx.CmdSub = eval.RunCmdSub
+	env.Ctx.CallFn = eval.CallFn
 	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
 		eval.RunSource(src, e) //nolint: errcheck
 	})
@@ -29,9 +29,11 @@ func TestEnv() *core.Env {
 // CaptureOutput runs fn and captures what is written to the env's stdout.
 func CaptureOutput(env *core.Env, fn func()) string {
 	r, w, _ := os.Pipe()
-	env.Stdout_ = w
+	old := env.Ctx.Stdout
+	env.Ctx.Stdout = w
 	fn()
 	w.Close()
+	env.Ctx.Stdout = old
 	var buf bytes.Buffer
 	io.Copy(&buf, r)
 	r.Close()

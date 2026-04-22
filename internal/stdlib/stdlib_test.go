@@ -416,10 +416,10 @@ result = Map.put(m, "c", 3)`)
 	if got.Kind != core.VMap {
 		t.Fatalf("expected map, got %s", got.Inspect())
 	}
-	if v, ok := got.Map.Get("c"); !ok || !v.Equal(core.IntVal(3)) {
+	if v, ok := got.GetMap().Get("c"); !ok || !v.Equal(core.IntVal(3)) {
 		t.Errorf("Map.put: expected c=3, got %s", got.Inspect())
 	}
-	if v, ok := got.Map.Get("a"); !ok || !v.Equal(core.IntVal(1)) {
+	if v, ok := got.GetMap().Get("a"); !ok || !v.Equal(core.IntVal(1)) {
 		t.Errorf("Map.put: expected a=1, got %s", got.Inspect())
 	}
 }
@@ -432,11 +432,11 @@ result = Map.delete(m, "b")`)
 	if got.Kind != core.VMap {
 		t.Fatalf("expected map, got %s", got.Inspect())
 	}
-	if _, ok := got.Map.Get("b"); ok {
+	if _, ok := got.GetMap().Get("b"); ok {
 		t.Error("Map.delete: expected b to be removed")
 	}
-	if len(got.Map.Keys) != 2 {
-		t.Errorf("Map.delete: expected 2 keys, got %d", len(got.Map.Keys))
+	if len(got.GetMap().Keys) != 2 {
+		t.Errorf("Map.delete: expected 2 keys, got %d", len(got.GetMap().Keys))
 	}
 }
 
@@ -449,7 +449,7 @@ result = Map.merge(m1, m2)`)
 	if got.Kind != core.VMap {
 		t.Fatalf("expected map, got %s", got.Inspect())
 	}
-	if v, ok := got.Map.Get("b"); !ok || !v.Equal(core.IntVal(99)) {
+	if v, ok := got.GetMap().Get("b"); !ok || !v.Equal(core.IntVal(99)) {
 		t.Errorf("Map.merge: expected b=99, got %s", got.Inspect())
 	}
 }
@@ -462,8 +462,8 @@ result = Map.keys m`)
 	if got.Kind != core.VList {
 		t.Fatalf("expected list, got %s", got.Inspect())
 	}
-	if len(got.Elems) != 2 {
-		t.Errorf("Map.keys: expected 2 elements, got %d", len(got.Elems))
+	if len(got.GetElems()) != 2 {
+		t.Errorf("Map.keys: expected 2 elements, got %d", len(got.GetElems()))
 	}
 }
 
@@ -475,8 +475,8 @@ result = Map.values m`)
 	if got.Kind != core.VList {
 		t.Fatalf("expected list, got %s", got.Inspect())
 	}
-	if len(got.Elems) != 2 {
-		t.Errorf("Map.values: expected 2 elements, got %d", len(got.Elems))
+	if len(got.GetElems()) != 2 {
+		t.Errorf("Map.values: expected 2 elements, got %d", len(got.GetElems()))
 	}
 }
 

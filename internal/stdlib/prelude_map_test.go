@@ -14,10 +14,10 @@ func TestPreludeMapFromPairs(t *testing.T) {
 	if got.Kind != core.VMap {
 		t.Fatalf("got %s", got.Inspect())
 	}
-	if v, _ := got.Map.Get("a"); !v.Equal(core.IntVal(1)) {
+	if v, _ := got.GetMap().Get("a"); !v.Equal(core.IntVal(1)) {
 		t.Errorf("a = %s", v.Inspect())
 	}
-	if v, _ := got.Map.Get("b"); !v.Equal(core.IntVal(2)) {
+	if v, _ := got.GetMap().Get("b"); !v.Equal(core.IntVal(2)) {
 		t.Errorf("b = %s", v.Inspect())
 	}
 }
@@ -41,10 +41,10 @@ func TestPreludeMapUpdate(t *testing.T) {
 	env := testutil.TestEnv()
 	evalScript(t, env, `result = Map.update(%{a: 1, b: 2}, "a", \v -> v * 100)`)
 	got, _ := env.Get("result")
-	if v, _ := got.Map.Get("a"); !v.Equal(core.IntVal(100)) {
+	if v, _ := got.GetMap().Get("a"); !v.Equal(core.IntVal(100)) {
 		t.Errorf("a = %s", v.Inspect())
 	}
-	if v, _ := got.Map.Get("b"); !v.Equal(core.IntVal(2)) {
+	if v, _ := got.GetMap().Get("b"); !v.Equal(core.IntVal(2)) {
 		t.Errorf("b = %s", v.Inspect())
 	}
 }

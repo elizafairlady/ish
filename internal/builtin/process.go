@@ -12,7 +12,7 @@ import (
 	"ish/internal/process"
 )
 
-func builtinWait(args []string, env *core.Env) (int, error) {
+func builtinWait(args []string, scope core.Scope) (int, error) {
 	if len(args) == 0 {
 		jl := jobs.ListJobs()
 		for _, j := range jl {
@@ -86,13 +86,13 @@ var signalNumbers = map[int]syscall.Signal{
 	19: syscall.SIGSTOP,
 }
 
-func builtinKill(args []string, env *core.Env) (int, error) {
+func builtinKill(args []string, scope core.Scope) (int, error) {
 	if len(args) == 0 {
 		return 1, fmt.Errorf("kill: usage: kill [-signal] pid")
 	}
 
 	if args[0] == "-l" {
-		w := env.Stdout()
+		w := scope.GetCtx().Stdout
 		fmt.Fprintln(w, " 1) HUP\t 2) INT\t 3) QUIT\t 9) KILL")
 		fmt.Fprintln(w, "10) USR1\t12) USR2\t15) TERM\t18) CONT")
 		fmt.Fprintln(w, "19) STOP")

@@ -34,17 +34,17 @@ func main() {
 	})
 
 	env := core.TopEnv()
-	env.Shell.ShellName = os.Args[0]
-	env.Shell.CmdSub = eval.RunCmdSub
+	env.ShellName = os.Args[0]
+	env.Ctx.CmdSub = eval.RunCmdSub
 
 	// Create main process
-	env.Shell.Proc = process.NewProcess()
+	env.Proc = process.NewProcess()
 
 	// Register stdlib
 	stdlib.Register(env)
 
 	// Set CallFn on env so stdlib/process can call user functions
-	env.CallFn = eval.CallFn
+	env.Ctx.CallFn = eval.CallFn
 
 	// Load embedded ish prelude (List/Map/Enum/Math/String extensions written in ish)
 	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
@@ -78,12 +78,12 @@ func main() {
 		}
 	}
 	args = filteredArgs
-	env.Shell.IsLoginShell = loginShell
+	env.IsLoginShell = loginShell
 
 	// Set up debugger if requested
 	if debugMode {
 		d := debug.New()
-		env.Debugger = d
+		env.Ctx.Debugger = d
 	}
 
 	// --dump-ast mode: parse and print AST, then exit
@@ -122,22 +122,22 @@ func main() {
 	// Non-interactive modes: -c command or script file
 	if len(args) > 0 {
 		if args[0] == "-c" && len(args) > 1 {
-			env.Shell.SourceName = "<stdin>"
+			env.SourceName = "<stdin>"
 			eval.RunSource(args[1], env) //nolint: errcheck
 			shellExit(env)
-			os.Exit(env.LastExit)
+			os.Exit(env.Ctx.LastExit)
 		}
 		data, err := os.ReadFile(args[0])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
 			os.Exit(1)
 		}
-		env.Shell.ShellName = args[0]
-		env.Shell.SourceName = args[0]
+		env.ShellName = args[0]
+		env.SourceName = args[0]
 		env.Args = args[1:]
 		eval.RunSource(string(data), env) //nolint: errcheck
 		shellExit(env)
-		os.Exit(env.LastExit)
+		os.Exit(env.Ctx.LastExit)
 	}
 
 	// Piped stdin: read and execute as a script
@@ -147,10 +147,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "ish: %s\n", err)
 			os.Exit(1)
 		}
-		env.Shell.SourceName = "<stdin>"
+		env.SourceName = "<stdin>"
 		eval.RunSource(string(data), env) //nolint: errcheck
 		shellExit(env)
-		os.Exit(env.LastExit)
+		os.Exit(env.Ctx.LastExit)
 	}
 
 	// Interactive mode — source startup files
@@ -205,7 +205,7 @@ func main() {
 		os.Exit(129) // 128 + SIGHUP(1)
 	}()
 
-	env.Shell.SourceName = "<repl>"
+	env.SourceName = "<repl>"
 	repl(env)
 	shellExit(env)
 }
@@ -213,7 +213,7 @@ func main() {
 // shellExit runs cleanup for shell exit: exit traps, logout file, HUP to jobs.
 func shellExit(env *core.Env) {
 	builtin.RunExitTraps(env)
-	if env.Shell != nil && env.Shell.IsLoginShell {
+	if env.IsLoginShell {
 		home := homeDir(env)
 		sourceIfExists(home+"/.ish_logout", env)
 		// Send SIGHUP to remaining background jobs
@@ -463,11 +463,20 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 
 		if strings.HasPrefix(prefix, "$") {
 			varPrefix := prefix[1:]
-			for c := env; c != nil; c = c.Parent {
-				for k := range c.Bindings {
-					if strings.HasPrefix(k, varPrefix) {
-						candidates = append(candidates, "$"+k)
+			for s := core.Scope(env); s != nil; s = s.GetParent() {
+				switch sc := s.(type) {
+				case *core.Env:
+					for k := range sc.Bindings {
+						if strings.HasPrefix(k, varPrefix) {
+							candidates = append(candidates, "$"+k)
+						}
 					}
+				case *core.Frame:
+					sc.EachBinding(func(k string, _ core.Value) {
+						if strings.HasPrefix(k, varPrefix) {
+							candidates = append(candidates, "$"+k)
+						}
+					})
 				}
 			}
 			sort.Strings(candidates)
@@ -532,23 +541,21 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 					candidates = append(candidates, name)
 				}
 			}
-			for c := env; c != nil; c = c.Parent {
-				if c.Shell != nil {
-					for name := range c.Shell.Fns {
+			for s := core.Scope(env); s != nil; s = s.GetParent() {
+				if c, ok := s.(*core.Env); ok {
+					for name := range c.Fns {
 						if strings.HasPrefix(name, prefix) {
 							candidates = append(candidates, name)
 						}
 					}
-					for name := range c.Shell.NativeFns {
+					for name := range c.NativeFns {
 						if strings.HasPrefix(name, prefix) {
 							candidates = append(candidates, name)
 						}
 					}
-					if c.Shell.Modules != nil {
-						for name := range c.Shell.Modules {
-							if strings.HasPrefix(name, prefix) {
-								candidates = append(candidates, name+".")
-							}
+					for name := range c.Modules {
+						if strings.HasPrefix(name, prefix) {
+							candidates = append(candidates, name+".")
 						}
 					}
 				}

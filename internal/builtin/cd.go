@@ -8,10 +8,11 @@ import (
 	"ish/internal/core"
 )
 
-func builtinCd(args []string, env *core.Env) (int, error) {
+func builtinCd(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
 	dir := ""
 	if len(args) == 0 {
-		if v, ok := env.Get("HOME"); ok {
+		if v, ok := scope.Get("HOME"); ok {
 			dir = v.ToStr()
 		}
 		if dir == "" {
@@ -21,13 +22,13 @@ func builtinCd(args []string, env *core.Env) (int, error) {
 		dir = args[0]
 	}
 	if dir == "-" {
-		if v, ok := env.Get("OLDPWD"); ok {
+		if v, ok := scope.Get("OLDPWD"); ok {
 			dir = v.ToStr()
 		}
 	}
 
 	if !strings.HasPrefix(dir, "/") && !strings.HasPrefix(dir, "./") && !strings.HasPrefix(dir, "../") && dir != "-" {
-		if cdpath, ok := env.Get("CDPATH"); ok {
+		if cdpath, ok := scope.Get("CDPATH"); ok {
 			for _, prefix := range strings.Split(cdpath.ToStr(), ":") {
 				if prefix == "" {
 					prefix = "."
@@ -35,7 +36,7 @@ func builtinCd(args []string, env *core.Env) (int, error) {
 				candidate := prefix + "/" + dir
 				if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 					dir = candidate
-					fmt.Fprintln(env.Stdout(), dir)
+					fmt.Fprintln(scope.GetCtx().Stdout, dir)
 					break
 				}
 			}

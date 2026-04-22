@@ -47,7 +47,7 @@ func matchPattern(pattern, s string) bool {
 	return matched
 }
 
-func checkUnsetVars(s string, env *core.Env) error {
+func checkUnsetVars(s string, scope core.Scope) error {
 	i := 0
 	for i < len(s) {
 		if s[i] != '$' {
@@ -80,7 +80,7 @@ func checkUnsetVars(s string, env *core.Env) error {
 			if strings.ContainsAny(expr, ":-+?=") {
 				continue
 			}
-			if _, ok := env.Get(expr); !ok {
+			if _, ok := scope.Get(expr); !ok {
 				return fmt.Errorf("%s: unbound variable", expr)
 			}
 			continue
@@ -97,7 +97,7 @@ func checkUnsetVars(s string, env *core.Env) error {
 		if varName == "" {
 			continue
 		}
-		if _, ok := env.Get(varName); !ok {
+		if _, ok := scope.Get(varName); !ok {
 			return fmt.Errorf("%s: unbound variable", varName)
 		}
 	}

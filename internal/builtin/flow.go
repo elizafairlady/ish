@@ -8,7 +8,7 @@ import (
 	"ish/internal/core"
 )
 
-func builtinExit(args []string, env *core.Env) (int, error) {
+func builtinExit(args []string, scope core.Scope) (int, error) {
 	code := 0
 	if len(args) > 0 {
 		n, err := strconv.Atoi(args[0])
@@ -19,18 +19,19 @@ func builtinExit(args []string, env *core.Env) (int, error) {
 			code = n
 		}
 	}
-	env.SetExit(code)
+	scope.GetCtx().SetExit(code)
 	return code, core.ErrExit
 }
 
-func builtinLogout(args []string, env *core.Env) (int, error) {
-	if env.Shell == nil || !env.Shell.IsLoginShell {
+func builtinLogout(args []string, scope core.Scope) (int, error) {
+	env := scope.NearestEnv()
+	if !env.IsLoginShell {
 		return 1, fmt.Errorf("logout: not login shell: use 'exit'")
 	}
-	return builtinExit(args, env)
+	return builtinExit(args, scope)
 }
 
-func builtinReturn(args []string, env *core.Env) (int, error) {
+func builtinReturn(args []string, scope core.Scope) (int, error) {
 	code := 0
 	if len(args) > 0 {
 		n, err := strconv.Atoi(args[0])
@@ -39,22 +40,22 @@ func builtinReturn(args []string, env *core.Env) (int, error) {
 		}
 		code = n
 	}
-	env.SetExit(code)
+	scope.GetCtx().SetExit(code)
 	return code, core.ErrReturn
 }
 
-func builtinBreak(args []string, env *core.Env) (int, error) {
+func builtinBreak(args []string, scope core.Scope) (int, error) {
 	return 0, core.ErrBreak
 }
 
-func builtinContinue(args []string, env *core.Env) (int, error) {
+func builtinContinue(args []string, scope core.Scope) (int, error) {
 	return 0, core.ErrContinue
 }
 
-func builtinTrue(args []string, env *core.Env) (int, error) {
+func builtinTrue(args []string, scope core.Scope) (int, error) {
 	return 0, nil
 }
 
-func builtinFalse(args []string, env *core.Env) (int, error) {
+func builtinFalse(args []string, scope core.Scope) (int, error) {
 	return 1, nil
 }

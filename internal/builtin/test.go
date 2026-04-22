@@ -11,7 +11,7 @@ import (
 	"ish/internal/core"
 )
 
-func builtinTest(args []string, env *core.Env) (int, error) {
+func builtinTest(args []string, scope core.Scope) (int, error) {
 	if len(args) > 0 && args[len(args)-1] == "]" {
 		args = args[:len(args)-1]
 	}

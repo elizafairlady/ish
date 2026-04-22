@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -24,11 +25,9 @@ const (
 	VTailCall
 )
 
-type Value struct {
-	Kind     ValueKind
-	Str      string
-	Int      int64
-	Float    float64
+// Compound holds fields for non-scalar value kinds (tuple, list, map, pid, fn, tailcall).
+// Scalar kinds (string, int, float, atom, nil) leave extra nil.
+type Compound struct {
 	Elems    []Value
 	Map      *OrdMap
 	Pid      Pid
@@ -37,10 +36,20 @@ type Value struct {
 	TailArgs []Value
 }
 
+// Value is a 40-byte tagged union. Scalar kinds (string, int, float, atom, nil)
+// use only Kind+Str+num with no heap allocation. Compound kinds (tuple, list, map,
+// pid, fn, tailcall) allocate a Compound struct on the heap via extra.
+type Value struct {
+	Kind  ValueKind
+	Str   string   // VString, VAtom: the string data
+	num   int64    // VInt: the int64 value; VFloat: Float64bits
+	extra *Compound // nil for scalar kinds
+}
+
 type FnValue struct {
 	Name    string
 	Clauses []FnClause
-	Env     *Env     // closure environment (nil for non-closures)
+	Env     Scope    // closure environment (nil for non-closures)
 	Native  NativeFn // non-nil for wrapped native functions
 }
 
@@ -51,7 +60,7 @@ type FnClause struct {
 }
 
 // NativeFn is a Go function callable as an ish function.
-type NativeFn func(args []Value, env *Env) (Value, error)
+type NativeFn func(args []Value, scope Scope) (Value, error)
 
 // Module is a named collection of functions.
 type Module struct {
@@ -82,19 +91,29 @@ func (m *OrdMap) Get(k string) (Value, bool) {
 	return v, ok
 }
 
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
+
 var Nil = Value{Kind: VNil}
 var True = Value{Kind: VAtom, Str: "true"}
 var False = Value{Kind: VAtom, Str: "false"}
 
-func StringVal(s string) Value     { return Value{Kind: VString, Str: s} }
-func IntVal(n int64) Value         { return Value{Kind: VInt, Int: n} }
-func FloatVal(f float64) Value     { return Value{Kind: VFloat, Float: f} }
-func AtomVal(s string) Value       { return Value{Kind: VAtom, Str: s} }
-func TupleVal(elems ...Value) Value { return Value{Kind: VTuple, Elems: elems} }
-func ListVal(elems ...Value) Value  { return Value{Kind: VList, Elems: elems} }
+func StringVal(s string) Value { return Value{Kind: VString, Str: s} }
+func IntVal(n int64) Value     { return Value{Kind: VInt, num: n} }
+func FloatVal(f float64) Value { return Value{Kind: VFloat, num: int64(math.Float64bits(f))} }
+func AtomVal(s string) Value   { return Value{Kind: VAtom, Str: s} }
+
+func TupleVal(elems ...Value) Value {
+	return Value{Kind: VTuple, extra: &Compound{Elems: elems}}
+}
+
+func ListVal(elems ...Value) Value {
+	return Value{Kind: VList, extra: &Compound{Elems: elems}}
+}
 
 func TailCallVal(fn *FnValue, args []Value) Value {
-	return Value{Kind: VTailCall, TailFn: fn, TailArgs: args}
+	return Value{Kind: VTailCall, extra: &Compound{TailFn: fn, TailArgs: args}}
 }
 
 func BoolVal(b bool) Value {
@@ -104,14 +123,67 @@ func BoolVal(b bool) Value {
 	return False
 }
 
+func PidVal(p Pid) Value {
+	return Value{Kind: VPid, extra: &Compound{Pid: p}}
+}
+
+func FnVal(fn *FnValue) Value {
+	return Value{Kind: VFn, extra: &Compound{Fn: fn}}
+}
+
+func MapVal(m *OrdMap) Value {
+	return Value{Kind: VMap, extra: &Compound{Map: m}}
+}
+
+// ---------------------------------------------------------------------------
+// Accessors for fields behind the compound pointer
+// ---------------------------------------------------------------------------
+
+func (v Value) GetInt() int64        { return v.num }
+func (v Value) GetFloat() float64    { return math.Float64frombits(uint64(v.num)) }
+
+func (v Value) GetElems() []Value {
+	if v.extra == nil { return nil }
+	return v.extra.Elems
+}
+
+func (v Value) GetMap() *OrdMap {
+	if v.extra == nil { return nil }
+	return v.extra.Map
+}
+
+func (v Value) GetPid() Pid {
+	if v.extra == nil { return nil }
+	return v.extra.Pid
+}
+
+func (v Value) GetFn() *FnValue {
+	if v.extra == nil { return nil }
+	return v.extra.Fn
+}
+
+func (v Value) GetTailFn() *FnValue {
+	if v.extra == nil { return nil }
+	return v.extra.TailFn
+}
+
+func (v Value) GetTailArgs() []Value {
+	if v.extra == nil { return nil }
+	return v.extra.TailArgs
+}
+
+// ---------------------------------------------------------------------------
+// Display / conversion methods
+// ---------------------------------------------------------------------------
+
 func (v Value) String() string {
 	switch v.Kind {
 	case VString:
 		return v.Str
 	case VInt:
-		return fmt.Sprintf("%d", v.Int)
+		return fmt.Sprintf("%d", v.num)
 	case VFloat:
-		s := fmt.Sprintf("%g", v.Float)
+		s := fmt.Sprintf("%g", v.GetFloat())
 		if !strings.Contains(s, ".") {
 			s += ".0"
 		}
@@ -119,34 +191,39 @@ func (v Value) String() string {
 	case VAtom:
 		return ":" + v.Str
 	case VTuple:
-		parts := make([]string, len(v.Elems))
-		for i, e := range v.Elems {
+		elems := v.GetElems()
+		parts := make([]string, len(elems))
+		for i, e := range elems {
 			parts[i] = e.Inspect()
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
 	case VList:
-		parts := make([]string, len(v.Elems))
-		for i, e := range v.Elems {
+		elems := v.GetElems()
+		parts := make([]string, len(elems))
+		for i, e := range elems {
 			parts[i] = e.Inspect()
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
 	case VMap:
-		if v.Map == nil {
+		m := v.GetMap()
+		if m == nil {
 			return "%{}"
 		}
-		parts := make([]string, len(v.Map.Keys))
-		for i, k := range v.Map.Keys {
-			parts[i] = k + ": " + v.Map.Vals[k].Inspect()
+		parts := make([]string, len(m.Keys))
+		for i, k := range m.Keys {
+			parts[i] = k + ": " + m.Vals[k].Inspect()
 		}
 		return "%{" + strings.Join(parts, ", ") + "}"
 	case VPid:
-		if v.Pid != nil {
-			return fmt.Sprintf("#PID<%d>", v.Pid.ID())
+		p := v.GetPid()
+		if p != nil {
+			return fmt.Sprintf("#PID<%d>", p.ID())
 		}
 		return "#PID<nil>"
 	case VFn:
-		if v.Fn != nil {
-			return fmt.Sprintf("#Function<%s/%d>", v.Fn.Name, len(v.Fn.Clauses))
+		fn := v.GetFn()
+		if fn != nil {
+			return fmt.Sprintf("#Function<%s/%d>", fn.Name, len(fn.Clauses))
 		}
 		return "#Function<>"
 	case VNil:
@@ -175,9 +252,9 @@ func (v Value) Truthy() bool {
 	case VString:
 		return v.Str != ""
 	case VInt:
-		return v.Int != 0
+		return v.num != 0
 	case VFloat:
-		return v.Float != 0
+		return v.GetFloat() != 0
 	default:
 		return true
 	}
@@ -187,22 +264,21 @@ func (v Value) Truthy() bool {
 func (v Value) Equal(other Value) bool {
 	// Cross-kind int/float comparison
 	if v.Kind == VInt && other.Kind == VFloat {
-		return float64(v.Int) == other.Float
+		return float64(v.num) == other.GetFloat()
 	}
 	if v.Kind == VFloat && other.Kind == VInt {
-		return v.Float == float64(other.Int)
+		return v.GetFloat() == float64(other.num)
 	}
-	// Cross-kind int/string coercion: shell variables are strings,
-	// but pattern matching on integer literals should still work.
+	// Cross-kind int/string coercion
 	if v.Kind == VInt && other.Kind == VString {
 		if n, err := strconv.ParseInt(other.Str, 10, 64); err == nil {
-			return v.Int == n
+			return v.num == n
 		}
 		return false
 	}
 	if v.Kind == VString && other.Kind == VInt {
 		if n, err := strconv.ParseInt(v.Str, 10, 64); err == nil {
-			return n == other.Int
+			return n == other.num
 		}
 		return false
 	}
@@ -213,48 +289,51 @@ func (v Value) Equal(other Value) bool {
 	case VString, VAtom:
 		return v.Str == other.Str
 	case VInt:
-		return v.Int == other.Int
+		return v.num == other.num
 	case VFloat:
-		return v.Float == other.Float
+		return v.num == other.num // bitwise: same bits = same float
 	case VNil:
 		return true
 	case VTuple, VList:
-		if len(v.Elems) != len(other.Elems) {
+		ve, oe := v.GetElems(), other.GetElems()
+		if len(ve) != len(oe) {
 			return false
 		}
-		for i := range v.Elems {
-			if !v.Elems[i].Equal(other.Elems[i]) {
+		for i := range ve {
+			if !ve[i].Equal(oe[i]) {
 				return false
 			}
 		}
 		return true
 	case VMap:
-		if v.Map == nil && other.Map == nil {
+		vm, om := v.GetMap(), other.GetMap()
+		if vm == nil && om == nil {
 			return true
 		}
-		if v.Map == nil || other.Map == nil {
+		if vm == nil || om == nil {
 			return false
 		}
-		if len(v.Map.Keys) != len(other.Map.Keys) {
+		if len(vm.Keys) != len(om.Keys) {
 			return false
 		}
-		for _, k := range v.Map.Keys {
-			ov, ok := other.Map.Get(k)
-			if !ok || !v.Map.Vals[k].Equal(ov) {
+		for _, k := range vm.Keys {
+			ov, ok := om.Get(k)
+			if !ok || !vm.Vals[k].Equal(ov) {
 				return false
 			}
 		}
 		return true
 	case VPid:
-		if v.Pid == nil && other.Pid == nil {
+		vp, op := v.GetPid(), other.GetPid()
+		if vp == nil && op == nil {
 			return true
 		}
-		if v.Pid == nil || other.Pid == nil {
+		if vp == nil || op == nil {
 			return false
 		}
-		return v.Pid.ID() == other.Pid.ID()
+		return vp.ID() == op.ID()
 	case VFn:
-		return v.Fn == other.Fn
+		return v.GetFn() == other.GetFn()
 	}
 	return false
 }

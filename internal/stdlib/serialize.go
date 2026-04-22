@@ -9,7 +9,7 @@ import (
 	"ish/internal/core"
 )
 
-func stdlibFromJSON(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibFromJSON(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("from_json: expected 1 argument, got %d", len(args))
 	}
@@ -48,7 +48,7 @@ func jsonToValue(v interface{}) core.Value {
 			if id, ok := pid.(float64); ok {
 				if core.FindPid != nil {
 					if p := core.FindPid(int64(id)); p != nil {
-						return core.Value{Kind: core.VPid, Pid: p}
+						return core.PidVal(p)
 					}
 				}
 			}
@@ -65,12 +65,12 @@ func jsonToValue(v interface{}) core.Value {
 		for k, v := range val {
 			m.Set(k, jsonToValue(v))
 		}
-		return core.Value{Kind: core.VMap, Map: m}
+		return core.MapVal(m)
 	}
 	return core.StringVal(fmt.Sprintf("%v", v))
 }
 
-func stdlibToJSON(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibToJSON(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("to_json: expected 1 argument, got %d", len(args))
 	}
@@ -95,40 +95,42 @@ func valueToJSON(v core.Value) interface{} {
 		}
 		return v.Str
 	case core.VInt:
-		return v.Int
+		return v.GetInt()
 	case core.VFloat:
-		return v.Float
+		return v.GetFloat()
 	case core.VString:
 		return v.Str
 	case core.VList:
-		arr := make([]interface{}, len(v.Elems))
-		for i, elem := range v.Elems {
+		elems := v.GetElems()
+		arr := make([]interface{}, len(elems))
+		for i, elem := range elems {
 			arr[i] = valueToJSON(elem)
 		}
 		return arr
 	case core.VTuple:
-		arr := make([]interface{}, len(v.Elems))
-		for i, elem := range v.Elems {
+		elems := v.GetElems()
+		arr := make([]interface{}, len(elems))
+		for i, elem := range elems {
 			arr[i] = valueToJSON(elem)
 		}
 		return arr
 	case core.VMap:
 		obj := make(map[string]interface{})
-		if v.Map != nil {
-			for _, k := range v.Map.Keys {
-				obj[k] = valueToJSON(v.Map.Vals[k])
+		if m := v.GetMap(); m != nil {
+			for _, k := range m.Keys {
+				obj[k] = valueToJSON(m.Vals[k])
 			}
 		}
 		return obj
 	case core.VPid:
-		if v.Pid != nil {
-			return map[string]interface{}{"__pid": v.Pid.ID()}
+		if p := v.GetPid(); p != nil {
+			return map[string]interface{}{"__pid": p.ID()}
 		}
 		return nil
 	case core.VFn:
 		name := ""
-		if v.Fn != nil {
-			name = v.Fn.Name
+		if fn := v.GetFn(); fn != nil {
+			name = fn.Name
 		}
 		return map[string]interface{}{"__fn": name}
 	default:
@@ -136,28 +138,28 @@ func valueToJSON(v core.Value) interface{} {
 	}
 }
 
-func stdlibFromCSV(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibFromCSV(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("from_csv: expected 1 argument, got %d", len(args))
 	}
 	return parseDelimited(args[0].ToStr(), ',')
 }
 
-func stdlibToCSV(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibToCSV(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("to_csv: expected 1 argument, got %d", len(args))
 	}
 	return formatDelimited(args[0], ',')
 }
 
-func stdlibFromTSV(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibFromTSV(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("from_tsv: expected 1 argument, got %d", len(args))
 	}
 	return parseDelimited(args[0].ToStr(), '\t')
 }
 
-func stdlibToTSV(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibToTSV(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("to_tsv: expected 1 argument, got %d", len(args))
 	}
@@ -197,7 +199,7 @@ func parseDelimited(s string, delim rune) (core.Value, error) {
 			}
 			m.Set(header, core.StringVal(val))
 		}
-		rows = append(rows, core.Value{Kind: core.VMap, Map: m})
+		rows = append(rows, core.MapVal(m))
 	}
 	return core.ListVal(rows...), nil
 }
@@ -206,7 +208,8 @@ func formatDelimited(v core.Value, delim rune) (core.Value, error) {
 	if v.Kind != core.VList {
 		return core.Nil, fmt.Errorf("expected a list, got %s", v.Inspect())
 	}
-	if len(v.Elems) == 0 {
+	vElems := v.GetElems()
+	if len(vElems) == 0 {
 		return core.StringVal(""), nil
 	}
 
@@ -214,36 +217,38 @@ func formatDelimited(v core.Value, delim rune) (core.Value, error) {
 	w := csv.NewWriter(&buf)
 	w.Comma = delim
 
-	first := v.Elems[0]
-	if first.Kind == core.VMap && first.Map != nil {
-		headers := first.Map.Keys
+	first := vElems[0]
+	if first.Kind == core.VMap && first.GetMap() != nil {
+		headers := first.GetMap().Keys
 		w.Write(headers)
-		for _, elem := range v.Elems {
-			if elem.Kind != core.VMap || elem.Map == nil {
+		for _, elem := range vElems {
+			em := elem.GetMap()
+			if elem.Kind != core.VMap || em == nil {
 				continue
 			}
 			row := make([]string, len(headers))
 			for i, h := range headers {
-				if val, ok := elem.Map.Get(h); ok {
+				if val, ok := em.Get(h); ok {
 					row[i] = val.ToStr()
 				}
 			}
 			w.Write(row)
 		}
 	} else if first.Kind == core.VList {
-		for _, elem := range v.Elems {
+		for _, elem := range vElems {
 			if elem.Kind != core.VList {
 				continue
 			}
-			row := make([]string, len(elem.Elems))
-			for i, field := range elem.Elems {
+			elemElems := elem.GetElems()
+			row := make([]string, len(elemElems))
+			for i, field := range elemElems {
 				row[i] = field.ToStr()
 			}
 			w.Write(row)
 		}
 	} else {
-		row := make([]string, len(v.Elems))
-		for i, elem := range v.Elems {
+		row := make([]string, len(vElems))
+		for i, elem := range vElems {
 			row[i] = elem.ToStr()
 		}
 		w.Write(row)
@@ -255,7 +260,7 @@ func formatDelimited(v core.Value, delim rune) (core.Value, error) {
 	return core.StringVal(result), nil
 }
 
-func stdlibFromLines(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibFromLines(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("from_lines: expected 1 argument, got %d", len(args))
 	}
@@ -274,15 +279,16 @@ func stdlibFromLines(args []core.Value, env *core.Env) (core.Value, error) {
 	return core.ListVal(elems...), nil
 }
 
-func stdlibToLines(args []core.Value, env *core.Env) (core.Value, error) {
+func stdlibToLines(args []core.Value, scope core.Scope) (core.Value, error) {
 	if len(args) != 1 {
 		return core.Nil, fmt.Errorf("to_lines: expected 1 argument, got %d", len(args))
 	}
 	if args[0].Kind != core.VList {
 		return core.Nil, fmt.Errorf("to_lines: expected a list, got %s", args[0].Inspect())
 	}
-	parts := make([]string, len(args[0].Elems))
-	for i, elem := range args[0].Elems {
+	a0Elems := args[0].GetElems()
+	parts := make([]string, len(a0Elems))
+	for i, elem := range a0Elems {
 		parts[i] = elem.ToStr()
 	}
 	return core.StringVal(strings.Join(parts, "\n")), nil

@@ -19,8 +19,8 @@ func TestIntVal(t *testing.T) {
 	if v.Kind != VInt {
 		t.Fatalf("expected VInt, got %d", v.Kind)
 	}
-	if v.Int != 42 {
-		t.Fatalf("expected 42, got %d", v.Int)
+	if v.GetInt() != 42 {
+		t.Fatalf("expected 42, got %d", v.GetInt())
 	}
 }
 
@@ -39,8 +39,8 @@ func TestTupleVal(t *testing.T) {
 	if v.Kind != VTuple {
 		t.Fatalf("expected VTuple, got %d", v.Kind)
 	}
-	if len(v.Elems) != 2 {
-		t.Fatalf("expected 2 elems, got %d", len(v.Elems))
+	if len(v.GetElems()) != 2 {
+		t.Fatalf("expected 2 elems, got %d", len(v.GetElems()))
 	}
 }
 
@@ -49,8 +49,8 @@ func TestListVal(t *testing.T) {
 	if v.Kind != VList {
 		t.Fatalf("expected VList, got %d", v.Kind)
 	}
-	if len(v.Elems) != 2 {
-		t.Fatalf("expected 2 elems, got %d", len(v.Elems))
+	if len(v.GetElems()) != 2 {
+		t.Fatalf("expected 2 elems, got %d", len(v.GetElems()))
 	}
 }
 
@@ -73,10 +73,10 @@ func TestString(t *testing.T) {
 		{"nil", Nil, "nil"},
 		{"true", True, ":true"},
 		{"false", False, ":false"},
-		{"map nil", Value{Kind: VMap, Map: nil}, "%{}"},
-		{"pid nil", Value{Kind: VPid, Pid: nil}, "#PID<nil>"},
-		{"fn nil", Value{Kind: VFn, Fn: nil}, "#Function<>"},
-		{"fn with name", Value{Kind: VFn, Fn: &FnValue{Name: "add", Clauses: []FnClause{{}, {}}}}, "#Function<add/2>"},
+		{"map nil", MapVal(nil), "%{}"},
+		{"pid nil", PidVal(nil), "#PID<nil>"},
+		{"fn nil", FnVal(nil), "#Function<>"},
+		{"fn with name", FnVal(&FnValue{Name: "add", Clauses: []FnClause{{}, {}}}), "#Function<add/2>"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -92,7 +92,7 @@ func TestStringMap(t *testing.T) {
 	m := NewOrdMap()
 	m.Set("name", StringVal("ish"))
 	m.Set("ver", IntVal(1))
-	v := Value{Kind: VMap, Map: m}
+	v := MapVal(m)
 	got := v.String()
 	want := `%{name: "ish", ver: 1}`
 	if got != want {
@@ -142,7 +142,7 @@ func TestTruthy(t *testing.T) {
 		{"int -1 is true", IntVal(-1), true},
 		{"empty tuple is true", TupleVal(), true},
 		{"empty list is true", ListVal(), true},
-		{"map is true", Value{Kind: VMap, Map: NewOrdMap()}, true},
+		{"map is true", MapVal(NewOrdMap()), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -178,8 +178,8 @@ func TestEqual(t *testing.T) {
 		{"nested tuple", TupleVal(TupleVal(IntVal(1))), TupleVal(TupleVal(IntVal(1))), true},
 		{"nested list", ListVal(ListVal(IntVal(1), IntVal(2))), ListVal(ListVal(IntVal(1), IntVal(2))), true},
 		{"nested diff", ListVal(ListVal(IntVal(1))), ListVal(ListVal(IntVal(2))), false},
-		{"map both nil", Value{Kind: VMap, Map: nil}, Value{Kind: VMap, Map: nil}, true},
-		{"map one nil", Value{Kind: VMap, Map: NewOrdMap()}, Value{Kind: VMap, Map: nil}, false},
+		{"map both nil", MapVal(nil), MapVal(nil), true},
+		{"map one nil", MapVal(NewOrdMap()), MapVal(nil), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -200,8 +200,8 @@ func TestEqualMaps(t *testing.T) {
 	m2.Set("a", IntVal(1))
 	m2.Set("b", IntVal(2))
 
-	v1 := Value{Kind: VMap, Map: m1}
-	v2 := Value{Kind: VMap, Map: m2}
+	v1 := MapVal(m1)
+	v2 := MapVal(m2)
 	if !v1.Equal(v2) {
 		t.Error("expected equal maps to be equal")
 	}
@@ -209,14 +209,14 @@ func TestEqualMaps(t *testing.T) {
 	m3 := NewOrdMap()
 	m3.Set("a", IntVal(1))
 	m3.Set("b", IntVal(99))
-	v3 := Value{Kind: VMap, Map: m3}
+	v3 := MapVal(m3)
 	if v1.Equal(v3) {
 		t.Error("expected maps with different values to not be equal")
 	}
 
 	m4 := NewOrdMap()
 	m4.Set("a", IntVal(1))
-	v4 := Value{Kind: VMap, Map: m4}
+	v4 := MapVal(m4)
 	if v1.Equal(v4) {
 		t.Error("expected maps with different lengths to not be equal")
 	}
@@ -258,8 +258,8 @@ func TestOrdMap(t *testing.T) {
 		if !ok {
 			t.Fatal("expected key x to exist")
 		}
-		if v.Int != 10 {
-			t.Errorf("expected 10, got %d", v.Int)
+		if v.GetInt() != 10 {
+			t.Errorf("expected 10, got %d", v.GetInt())
 		}
 	})
 
@@ -272,8 +272,8 @@ func TestOrdMap(t *testing.T) {
 			t.Errorf("expected 2 keys after overwrite, got %d", len(m.Keys))
 		}
 		v, _ := m.Get("a")
-		if v.Int != 99 {
-			t.Errorf("expected 99 after overwrite, got %d", v.Int)
+		if v.GetInt() != 99 {
+			t.Errorf("expected 99 after overwrite, got %d", v.GetInt())
 		}
 		if m.Keys[0] != "a" || m.Keys[1] != "b" {
 			t.Errorf("expected key order [a, b], got %v", m.Keys)
@@ -295,9 +295,9 @@ func TestEqualFn(t *testing.T) {
 	fn1 := &FnValue{Name: "add"}
 	fn2 := &FnValue{Name: "add"}
 
-	v1 := Value{Kind: VFn, Fn: fn1}
-	v2 := Value{Kind: VFn, Fn: fn1}
-	v3 := Value{Kind: VFn, Fn: fn2}
+	v1 := FnVal(fn1)
+	v2 := FnVal(fn1)
+	v3 := FnVal(fn2)
 
 	if !v1.Equal(v2) {
 		t.Error("same fn pointer should be equal")

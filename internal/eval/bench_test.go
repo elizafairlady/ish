@@ -12,10 +12,10 @@ import (
 
 func benchEnv() *core.Env {
 	env := core.TopEnv()
-	env.Shell.Proc = process.NewProcess()
+	env.Proc = process.NewProcess()
 	stdlib.Register(env)
-	env.Shell.CmdSub = RunCmdSub
-	env.CallFn = CallFn
+	env.Ctx.CmdSub = RunCmdSub
+	env.Ctx.CallFn = CallFn
 	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
 		RunSource(src, e) //nolint: errcheck
 	})

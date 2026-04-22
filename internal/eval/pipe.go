@@ -15,7 +15,7 @@ import (
 // rather than an ish value. Used to decide pipe coercion.
 // For NCmd, we check whether the command name resolves to a function
 // (value-producing) or external command/builtin (byte-producing).
-func isCommandNode(node *ast.Node, env *core.Env) bool {
+func isCommandNode(node *ast.Node, scope core.Scope) bool {
 	switch node.Kind {
 	case ast.NPipe, ast.NSubshell, ast.NGroup,
 		ast.NIf, ast.NFor, ast.NWhile, ast.NUntil, ast.NCase:
@@ -36,7 +36,7 @@ func isCommandNode(node *ast.Node, env *core.Env) bool {
 		if name == "" {
 			return true
 		}
-		r := ResolveCmd(name, env)
+		r := ResolveCmd(name, scope)
 		return r.IsCmd() || r.Kind == KindNotFound
 	}
 	return false
@@ -76,7 +76,7 @@ func isBridgeFn(node *ast.Node) bool {
 	return false
 }
 
-func evalPipe(node *ast.Node, env *core.Env) (core.Value, error) {
+func evalPipe(node *ast.Node, scope core.Scope) (core.Value, error) {
 	left := node.Children[0]
 	right := node.Children[1]
 	if right == nil {
@@ -85,15 +85,16 @@ func evalPipe(node *ast.Node, env *core.Env) (core.Value, error) {
 	pipeStderr := node.Tok.Val == "|&"
 
 	// Auto-coerce: if left produces a value (not bytes), convert to lines
-	if !isCommandNode(left, env) {
-		val, err := Eval(left, env)
+	if !isCommandNode(left, scope) {
+		val, err := Eval(left, scope)
 		if err != nil {
 			return core.Nil, err
 		}
 		var text string
 		if val.Kind == core.VList {
-			parts := make([]string, len(val.Elems))
-			for i, elem := range val.Elems {
+			valElems := val.GetElems()
+			parts := make([]string, len(valElems))
+			for i, elem := range valElems {
 				parts[i] = elem.ToStr()
 			}
 			text = strings.Join(parts, "\n") + "\n"
@@ -110,10 +111,10 @@ func evalPipe(node *ast.Node, env *core.Env) (core.Value, error) {
 			pw.Close()
 		}()
 		finalStdout := os.Stdout
-		if f, ok := env.Stdout().(*os.File); ok {
+		if f, ok := scope.GetCtx().Stdout.(*os.File); ok {
 			finalStdout = f
 		}
-		val2, err2 := evalWithIO(right, env, pr, finalStdout)
+		val2, err2 := evalWithIO(right, scope, pr, finalStdout)
 		pr.Close()
 		return val2, err2
 	}
@@ -124,9 +125,9 @@ func evalPipe(node *ast.Node, env *core.Env) (core.Value, error) {
 	}
 
 	done := make(chan error, 1)
-	leftEnv := core.CopyEnv(env)
+	leftEnv := core.CopyEnv(scope.NearestEnv())
 	if pipeStderr {
-		leftEnv.Stdout_ = pw
+		leftEnv.Ctx = scope.GetCtx().ForRedirect(pw)
 	}
 	go func() {
 		_, err := evalWithIO(left, leftEnv, os.Stdin, pw)
@@ -135,22 +136,22 @@ func evalPipe(node *ast.Node, env *core.Env) (core.Value, error) {
 	}()
 
 	finalStdout := os.Stdout
-	if f, ok := env.Stdout().(*os.File); ok {
+	if f, ok := scope.GetCtx().Stdout.(*os.File); ok {
 		finalStdout = f
 	}
-	val, err2 := evalWithIO(right, env, pr, finalStdout)
+	val, err2 := evalWithIO(right, scope, pr, finalStdout)
 	pr.Close()
 	<-done
 
 	// pipefail: if any stage failed, use the first non-zero exit code
-	if env.HasFlag('P') && leftEnv.ExitCode() != 0 && env.ExitCode() == 0 {
-		env.SetExit(leftEnv.ExitCode())
+	if scope.NearestEnv().HasFlag('P') && leftEnv.ExitCode() != 0 && scope.GetCtx().ExitCode() == 0 {
+		scope.GetCtx().SetExit(leftEnv.ExitCode())
 	}
 
 	return val, err2
 }
 
-func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) (core.Value, error) {
+func evalWithIO(node *ast.Node, scope core.Scope, stdin *os.File, stdout *os.File) (core.Value, error) {
 	if node.Kind == ast.NCmd {
 		if len(node.Children) == 0 {
 			return core.Nil, nil
@@ -160,26 +161,26 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 		if nameNode.Kind == ast.NIdent {
 			name = nameNode.Tok.Val
 		} else {
-			v, err := Eval(nameNode, env)
+			v, err := Eval(nameNode, scope)
 			if err != nil {
 				return core.Nil, err
 			}
 			name = v.ToStr()
 		}
 
-		r := ResolveCmd(name, env)
+		r := ResolveCmd(name, scope)
 		if r.IsFn() {
-			pipeEnv := core.NewEnv(env)
-			pipeEnv.Stdout_ = stdout
+			pipeEnv := core.NewEnv(scope)
+			pipeEnv.Ctx = scope.GetCtx().ForRedirect(stdout)
 			argVals := make([]core.Value, 0, len(node.Children)-1)
 			for _, child := range node.Children[1:] {
 				if child.Kind == ast.NVarRef && child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
-					for _, arg := range env.PosArgs() {
+					for _, arg := range scope.NearestEnv().PosArgs() {
 						argVals = append(argVals, core.StringVal(arg))
 					}
 					continue
 				}
-				v, err := Eval(child, env)
+				v, err := Eval(child, scope)
 				if err != nil {
 					return core.Nil, err
 				}
@@ -196,10 +197,10 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 		var strArgs []string
 		for _, child := range node.Children[1:] {
 			if child.Kind == ast.NVarRef && child.Tok.Type == ast.TSpecialVar && child.Tok.Val == "$@" {
-				strArgs = append(strArgs, env.PosArgs()...)
+				strArgs = append(strArgs, scope.NearestEnv().PosArgs()...)
 				continue
 			}
-			v, err := Eval(child, env)
+			v, err := Eval(child, scope)
 			if err != nil {
 				return core.Nil, err
 			}
@@ -208,10 +209,10 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 		expanded := expandGlobs(strArgs)
 
 		if r.Kind == KindBuiltin {
-			pipeEnv := core.NewEnv(env)
-			pipeEnv.Stdout_ = stdout
+			pipeEnv := core.NewEnv(scope)
+			pipeEnv.Ctx = scope.GetCtx().ForRedirect(stdout)
 			code, err := r.Builtin(expanded, pipeEnv)
-			env.SetExit(code)
+			scope.GetCtx().SetExit(code)
 			if err != nil && err != core.ErrReturn && err != core.ErrBreak && err != core.ErrContinue {
 				fmt.Fprintln(os.Stderr, err)
 			}
@@ -221,13 +222,13 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 		cmd := exec.Command(name, expanded...)
 		cmd.Stdin = stdin
 		cmd.Stdout = stdout
-		cmd.Env = env.BuildEnv()
-		if envOut, ok := env.Stdout().(*os.File); ok && envOut == stdout {
+		cmd.Env = scope.NearestEnv().BuildEnv()
+		if envOut, ok := scope.GetCtx().Stdout.(*os.File); ok && envOut == stdout {
 			cmd.Stderr = stdout
 		} else {
 			cmd.Stderr = os.Stderr
 		}
-		cleanup, redirErr := applyRedirects(cmd, node.Redirs, env)
+		cleanup, redirErr := applyRedirects(cmd, node.Redirs, scope)
 		if redirErr != nil {
 			return core.Nil, redirErr
 		}
@@ -235,12 +236,12 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 		err := cmd.Run()
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
-				env.SetExit(exitErr.ExitCode())
+				scope.GetCtx().SetExit(exitErr.ExitCode())
 			} else {
-				env.SetExit(127)
+				scope.GetCtx().SetExit(127)
 			}
 		} else {
-			env.SetExit(0)
+			scope.GetCtx().SetExit(0)
 		}
 		return core.Nil, nil
 	}
@@ -255,11 +256,11 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 		}
 		done := make(chan error, 1)
 		go func() {
-			_, err := evalWithIO(inner, env, stdin, pw2)
+			_, err := evalWithIO(inner, scope, stdin, pw2)
 			pw2.Close()
 			done <- err
 		}()
-		val, err2 := evalWithIO(right, env, pr2, stdout)
+		val, err2 := evalWithIO(right, scope, pr2, stdout)
 		pr2.Close()
 		<-done
 		return val, err2
@@ -269,15 +270,15 @@ func evalWithIO(node *ast.Node, env *core.Env, stdin *os.File, stdout *os.File) 
 	// produces NIdent "cat") — treat as a command invocation.
 	if node.Kind == ast.NIdent {
 		wrapped := &ast.Node{Kind: ast.NCmd, Children: []*ast.Node{node}, Pos: node.Pos}
-		return evalWithIO(wrapped, env, stdin, stdout)
+		return evalWithIO(wrapped, scope, stdin, stdout)
 	}
 
-	pipeEnv := core.NewEnv(env)
-	pipeEnv.Stdout_ = stdout
+	pipeEnv := core.NewEnv(scope)
+	pipeEnv.Ctx = scope.GetCtx().ForRedirect(stdout)
 	return Eval(node, pipeEnv)
 }
 
-func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
+func evalPipeFn(node *ast.Node, scope core.Scope) (core.Value, error) {
 	leftNode := node.Children[0]
 	right := node.Children[1]
 	if right == nil {
@@ -287,13 +288,13 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 	// Auto-coerce: if left is a command (produces bytes) and right is not
 	// an explicit bridge function, capture stdout and apply from_lines
 	var left core.Value
-	if isCommandNode(leftNode, env) && !isBridgeFn(right) {
+	if isCommandNode(leftNode, scope) && !isBridgeFn(right) {
 		pr, pw, err := os.Pipe()
 		if err != nil {
 			return core.Nil, err
 		}
 		done := make(chan error, 1)
-		leftEnv := core.CopyEnv(env)
+		leftEnv := core.CopyEnv(scope.NearestEnv())
 		go func() {
 			_, err := evalWithIO(leftNode, leftEnv, os.Stdin, pw)
 			pw.Close()
@@ -317,14 +318,14 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 			}
 			left = core.ListVal(elems...)
 		}
-	} else if isCommandNode(leftNode, env) && isBridgeFn(right) {
+	} else if isCommandNode(leftNode, scope) && isBridgeFn(right) {
 		// Explicit bridge: capture stdout as raw string, pass to bridge fn
 		pr, pw, err := os.Pipe()
 		if err != nil {
 			return core.Nil, err
 		}
 		done := make(chan error, 1)
-		leftEnv := core.CopyEnv(env)
+		leftEnv := core.CopyEnv(scope.NearestEnv())
 		go func() {
 			_, err := evalWithIO(leftNode, leftEnv, os.Stdin, pw)
 			pw.Close()
@@ -336,7 +337,7 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 		left = core.StringVal(string(output))
 	} else {
 		var err error
-		left, err = Eval(leftNode, env)
+		left, err = Eval(leftNode, scope)
 		if err != nil {
 			return core.Nil, err
 		}
@@ -346,25 +347,25 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 	case ast.NCall:
 		// Function call on right side of |>: prepend pipe value as first arg.
 		// e.g. list |> List.filter \x -> x > 1 → List.filter(list, \x -> x > 1)
-		callee, err := Eval(right.Children[0], env)
+		callee, err := Eval(right.Children[0], scope)
 		if err != nil {
 			return core.Nil, err
 		}
-		if callee.Kind != core.VFn || callee.Fn == nil {
+		if callee.Kind != core.VFn || callee.GetFn() == nil {
 			return core.Nil, fmt.Errorf("pipe arrow: not a function: %s", callee.Inspect())
 		}
 		argVals := []core.Value{left}
 		for _, child := range right.Children[1:] {
-			v, err := Eval(child, env)
+			v, err := Eval(child, scope)
 			if err != nil {
 				return core.Nil, err
 			}
 			argVals = append(argVals, v)
 		}
 		if node.Tail {
-			return core.TailCallVal(callee.Fn, argVals), nil
+			return core.TailCallVal(callee.GetFn(), argVals), nil
 		}
-		return CallFn(callee.Fn, argVals, env)
+		return CallFn(callee.GetFn(), argVals, scope)
 
 	case ast.NCmd, ast.NIdent:
 		var name string
@@ -374,27 +375,27 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 			if len(right.Children) == 0 {
 				return core.Nil, fmt.Errorf("pipe arrow requires a function name on the right")
 			}
-			nameVal, err := Eval(right.Children[0], env)
+			nameVal, err := Eval(right.Children[0], scope)
 			if err != nil {
 				return core.Nil, err
 			}
 			// If the name evaluated to a function value directly, call it
-			if nameVal.Kind == core.VFn && nameVal.Fn != nil {
+			if nameVal.Kind == core.VFn && nameVal.GetFn() != nil {
 				for _, child := range right.Children[1:] {
-					v, err := Eval(child, env)
+					v, err := Eval(child, scope)
 					if err != nil {
 						return core.Nil, err
 					}
 					argVals = append(argVals, v)
 				}
 				if node.Tail {
-					return core.TailCallVal(nameVal.Fn, argVals), nil
+					return core.TailCallVal(nameVal.GetFn(), argVals), nil
 				}
-				return CallFn(nameVal.Fn, argVals, env)
+				return CallFn(nameVal.GetFn(), argVals, scope)
 			}
 			name = nameVal.ToStr()
 			for _, child := range right.Children[1:] {
-				v, err := Eval(child, env)
+				v, err := Eval(child, scope)
 				if err != nil {
 					return core.Nil, err
 				}
@@ -404,18 +405,18 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 			name = right.Tok.Val
 		}
 
-		return callResolved(name, argVals, node.Tail, env)
+		return callResolved(name, argVals, node.Tail, scope)
 
 	default:
-		val, err := Eval(right, env)
+		val, err := Eval(right, scope)
 		if err != nil {
 			return core.Nil, err
 		}
-		if val.Kind == core.VFn && val.Fn != nil {
+		if val.Kind == core.VFn && val.GetFn() != nil {
 			if node.Tail {
-				return core.TailCallVal(val.Fn, []core.Value{left}), nil
+				return core.TailCallVal(val.GetFn(), []core.Value{left}), nil
 			}
-			return CallFn(val.Fn, []core.Value{left}, env)
+			return CallFn(val.GetFn(), []core.Value{left}, scope)
 		}
 		return core.Nil, fmt.Errorf("pipe arrow: right side must be a function or command")
 	}
@@ -423,23 +424,23 @@ func evalPipeFn(node *ast.Node, env *core.Env) (core.Value, error) {
 
 // callResolved resolves a name and dispatches with the given value args.
 // Used by both |> NCmd and |> NWord paths.
-func callResolved(name string, argVals []core.Value, tail bool, env *core.Env) (core.Value, error) {
-	r := ResolveCmd(name, env)
+func callResolved(name string, argVals []core.Value, tail bool, scope core.Scope) (core.Value, error) {
+	r := ResolveCmd(name, scope)
 	switch r.Kind {
 	case KindModuleFn, KindUserFn, KindVarFn:
 		if tail {
 			return core.TailCallVal(r.Fn, argVals), nil
 		}
-		return CallFn(r.Fn, argVals, env)
+		return CallFn(r.Fn, argVals, scope)
 	case KindModuleNativeFn, KindNativeFn:
-		return r.NativeFn(argVals, env)
+		return r.NativeFn(argVals, scope)
 	case KindBuiltin:
 		strArgs := make([]string, len(argVals))
 		for i, v := range argVals {
 			strArgs[i] = v.ToStr()
 		}
-		code, err := r.Builtin(strArgs, env)
-		env.SetExit(code)
+		code, err := r.Builtin(strArgs, scope)
+		scope.GetCtx().SetExit(code)
 		if err != nil {
 			return core.Nil, err
 		}
@@ -449,6 +450,6 @@ func callResolved(name string, argVals []core.Value, tail bool, env *core.Env) (
 		for i, v := range argVals {
 			strArgs[i] = v.ToStr()
 		}
-		return evalExternalCmd(name, strArgs, nil, env)
+		return evalExternalCmd(name, strArgs, nil, scope)
 	}
 }

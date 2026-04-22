@@ -19,19 +19,21 @@ import (
 
 func testEnv() *core.Env {
 	env := core.TopEnv()
-	env.Shell.Proc = process.NewProcess()
+	env.Proc = process.NewProcess()
 	stdlib.Register(env)
 	builtin.Init(builtin.EvalContext{RunSource: RunSource})
-	env.Shell.CmdSub = RunCmdSub
-	env.CallFn = CallFn
+	env.Ctx.CmdSub = RunCmdSub
+	env.Ctx.CallFn = CallFn
 	return env
 }
 
 func captureOutput(env *core.Env, fn func()) string {
 	r, w, _ := os.Pipe()
-	env.Stdout_ = w
+	old := env.Ctx.Stdout
+	env.Ctx.Stdout = w
 	fn()
 	w.Close()
+	env.Ctx.Stdout = old
 	var buf bytes.Buffer
 	io.Copy(&buf, r)
 	r.Close()
@@ -632,7 +634,7 @@ func TestEvalPipe(t *testing.T) {
 	origStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	env.Stdout_ = w
+	env.Ctx.Stdout = w
 
 	runSource(script, env)
 
@@ -680,7 +682,7 @@ func TestEvalExternalCmd(t *testing.T) {
 	origStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	env.Stdout_ = w
+	env.Ctx.Stdout = w
 
 	runSource("/bin/echo external_test", env)
 
@@ -897,7 +899,7 @@ func TestEvalTuple(t *testing.T) {
 	if !ok {
 		t.Fatal("t not set")
 	}
-	if v.Kind != core.VTuple || len(v.Elems) != 3 {
+	if v.Kind != core.VTuple || len(v.GetElems()) != 3 {
 		t.Errorf("expected 3-tuple, got %s", v.Inspect())
 	}
 }
@@ -909,7 +911,7 @@ func TestEvalList(t *testing.T) {
 	if !ok {
 		t.Fatal("l not set")
 	}
-	if v.Kind != core.VList || len(v.Elems) != 2 {
+	if v.Kind != core.VList || len(v.GetElems()) != 2 {
 		t.Errorf("expected 2-list, got %s", v.Inspect())
 	}
 }
@@ -1374,7 +1376,7 @@ func TestSetXDoesNotImplyX(t *testing.T) {
 
 func TestDebuggerStackTrace(t *testing.T) {
 	env := testEnv()
-	env.Debugger = debug.New()
+	env.Ctx.Debugger = debug.New()
 	stderr := captureStderr(func() {
 		RunSource("fn add a b do\n  a + b\nend\nadd 1 :bad", env)
 	})
