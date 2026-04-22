@@ -373,6 +373,18 @@ func (f *Frame) NearestEnv() *Env {
 	return nil
 }
 
+// Init reinitializes a Frame for reuse (from pool or stack).
+func (f *Frame) Init(parent Scope) {
+	f.parent = parent
+	if parent != nil {
+		f.Ctx = parent.GetCtx()
+	} else {
+		f.Ctx = nil
+	}
+	f.flatN = 0
+	f.spill = nil
+}
+
 func (f *Frame) ResetFlat() {
 	for i := int8(0); i < f.flatN; i++ {
 		f.flatKeys[i] = ""
@@ -380,6 +392,17 @@ func (f *Frame) ResetFlat() {
 	}
 	f.flatN = 0
 	f.spill = nil
+}
+
+// Snapshot returns a copy of the Frame's bindings as an Env for closure capture.
+// Since ish bindings are immutable, this is a value copy — the closure sees
+// the bindings as they were at capture time.
+func (f *Frame) Snapshot() *Env {
+	env := NewEnv(f.parent)
+	f.EachBinding(func(name string, val Value) {
+		env.Bindings[name] = val
+	})
+	return env
 }
 
 func (f *Frame) EachBinding(fn func(name string, val Value)) {

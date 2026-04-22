@@ -257,3 +257,182 @@ func BenchmarkFull_HeadTailRecursion(b *testing.B) {
 fn sum [h | t] do h + sum t end
 r = sum [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]`)
 }
+
+func BenchmarkEval_FnCallAllocTrace(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn double x do x * 2 end", env)
+	node, _ := parser.Parse(lexer.New("double 21"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Frame + args allocation stress tests.
+// Vary arity, recursion depth, and call patterns to isolate the cost of
+// Frame allocation and args slice allocation.
+// ---------------------------------------------------------------------------
+
+// Arity 0: zero-arg function (no args slice, still allocates Frame)
+func BenchmarkAlloc_Arity0(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn ping do :pong end", env)
+	node, _ := parser.Parse(lexer.New("ping"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Arity 1: single-arg (most common — fib, double, inc)
+func BenchmarkAlloc_Arity1(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn double x do x * 2 end", env)
+	node, _ := parser.Parse(lexer.New("double 21"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Arity 2: two-arg (add, map operations)
+func BenchmarkAlloc_Arity2(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn add a, b do a + b end", env)
+	node, _ := parser.Parse(lexer.New("add 3, 4"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Arity 3: three-arg (reduce-style)
+func BenchmarkAlloc_Arity3(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn clamp x, lo, hi do\nif x < lo do lo\nelse if x > hi do hi\nelse x\nend\nend\nend", env)
+	node, _ := parser.Parse(lexer.New("clamp 5, 0, 10"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Arity 5: five-arg (exceeds flat buffer of 4 — tests spill)
+func BenchmarkAlloc_Arity5(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn sum5 a, b, c, d, e do a + b + c + d + e end", env)
+	node, _ := parser.Parse(lexer.New("sum5 1, 2, 3, 4, 5"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Deep recursion arity 1: countdown 100 (linear recursion, tail-call eligible)
+func BenchmarkAlloc_Recurse100(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn countdown n do\nif n == 0 do :done\nelse countdown (n - 1)\nend\nend", env)
+	node, _ := parser.Parse(lexer.New("countdown 100"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Deep recursion arity 2: ackermann(2,3) — non-tail-recursive, multi-arg
+func BenchmarkAlloc_Ackermann2_3(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn ack do\n0, n -> n + 1\nm, 0 -> ack(m - 1, 1)\nm, n -> ack(m - 1, ack(m, n - 1))\nend", env)
+	node, _ := parser.Parse(lexer.New("ack 2, 3"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Multi-clause dispatch: pattern matching iterates clauses before finding match
+func BenchmarkAlloc_MultiClause(b *testing.B) {
+	env := benchEnv()
+	RunSource(`fn classify do
+:zero -> 0
+:one -> 1
+:two -> 2
+:three -> 3
+n -> n
+end`, env)
+	node, _ := parser.Parse(lexer.New("classify :three"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Closure call: captured environment adds parent chain depth
+func BenchmarkAlloc_Closure(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn make_adder n do \\x -> x + n end\nadd5 = make_adder 5", env)
+	node, _ := parser.Parse(lexer.New("add5 10"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Module-qualified call via NCall: List.map(list, fn)
+func BenchmarkAlloc_ModuleNCall(b *testing.B) {
+	env := benchEnv()
+	RunSource("xs = [1, 2, 3, 4, 5]", env)
+	node, _ := parser.Parse(lexer.New("List.map(xs, \\x -> x * 2)"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Fib15: the canonical recursive benchmark
+func BenchmarkAlloc_Fib15(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn fib do\n0 -> 0\n1 -> 1\nn -> fib(n - 1) + fib(n - 2)\nend", env)
+	node, _ := parser.Parse(lexer.New("fib 15"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Higher-order: map over list calls a lambda per element
+func BenchmarkAlloc_MapLambda10(b *testing.B) {
+	env := benchEnv()
+	RunSource("xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]", env)
+	node, _ := parser.Parse(lexer.New("List.map(xs, \\x -> x * 2)"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}
+
+// Chain of pipe arrows: each |> is a function call
+func BenchmarkAlloc_PipeChain5(b *testing.B) {
+	env := benchEnv()
+	RunSource("fn inc x do x + 1 end\nfn dbl x do x * 2 end", env)
+	node, _ := parser.Parse(lexer.New("1 |> inc |> dbl |> inc |> dbl |> inc"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Eval(node, env)
+	}
+}

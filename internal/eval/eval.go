@@ -18,6 +18,21 @@ import (
 // osMu protects process-global OS state (cwd, umask) during subshell execution.
 var osMu sync.Mutex
 
+var framePool = sync.Pool{
+	New: func() interface{} { return &core.Frame{} },
+}
+
+func getFrame(parent core.Scope) *core.Frame {
+	f := framePool.Get().(*core.Frame)
+	f.Init(parent)
+	return f
+}
+
+func putFrame(f *core.Frame) {
+	f.ResetFlat()
+	framePool.Put(f)
+}
+
 // MakeIsCommand builds a callback for the parser that identifies known commands.
 func MakeIsCommand(scope core.Scope) func(string) bool {
 	return ResolveCmdCached(scope)
@@ -211,9 +226,10 @@ func CallFn(fn *core.FnValue, vals []core.Value, scope core.Scope) (retVal core.
 		}
 
 		matched := false
-		frame := core.NewFrame(parentScope)
+		frame := getFrame(parentScope)
 		for _, clause := range fn.Clauses {
 			if len(clause.Params) == 0 {
+				putFrame(frame)
 				// POSIX function path: uses $1/$@ positional args
 				posixEnv := core.NewEnv(parentScope)
 				strArgs := make([]string, len(vals))
@@ -255,6 +271,7 @@ func CallFn(fn *core.FnValue, vals []core.Value, scope core.Scope) (retVal core.
 			}
 
 			val, err := Eval(clause.Body, frame)
+			putFrame(frame)
 			if err == core.ErrReturn { return val, nil }
 			if err != nil { return val, err }
 			if val.Kind == core.VTailCall {
@@ -269,6 +286,7 @@ func CallFn(fn *core.FnValue, vals []core.Value, scope core.Scope) (retVal core.
 		}
 
 		if !matched {
+			putFrame(frame)
 			parts := make([]string, len(vals))
 			for i, v := range vals { parts[i] = v.Inspect() }
 			return core.Nil, fmt.Errorf("no matching clause for %s(%s)", fn.Name, strings.Join(parts, ", "))
