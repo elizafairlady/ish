@@ -363,8 +363,10 @@ func (p *Parser) parsePipeline() (*ast.Node, error) {
 		var right *ast.Node
 		var err error
 		if kind == ast.NPipeFn {
-			// |> right side: single expression operand (not a full chain)
 			right, err = p.parseExprLogicOr()
+			if err == nil {
+				right = p.collectExprArgs(right)
+			}
 		} else {
 			right, err = p.parseLogicCmd()
 		}
@@ -582,6 +584,14 @@ func isCmdCompoundContinue(tt ast.TokenType) bool {
 func (p *Parser) parseCmdArg() (*ast.Node, error) {
 	if p.cur().Type == ast.TLBrace {
 		return p.parseTuple()
+	}
+	// fn in arg position → anonymous function (expression context)
+	// Must be followed by do or by params+do to distinguish from bare word `fn`.
+	if p.cur().Type == ast.TIdent && p.cur().Val == "fn" && p.peek(1).Type == ast.TIdent {
+		next := p.peek(1).Val
+		if next == "do" || (next != "end" && next != "done" && next != "fi" && next != "esac") {
+			return p.parseFnDef(true)
+		}
 	}
 	// ( in arg position → expression context
 	if p.cur().Type == ast.TLParen {
@@ -949,6 +959,33 @@ func (p *Parser) parseGroup() (*ast.Node, error) {
 // EXPRESSION CONTEXT
 // ============================================================
 
+// collectExprArgs wraps a callable with any trailing bare arguments,
+// producing an NApply. Used by |> to collect e.g. `List.filter \x -> x > 1`.
+func (p *Parser) collectExprArgs(head *ast.Node) *ast.Node {
+	if !isCallable(head) {
+		return head
+	}
+	if !isExprArgStart(p.cur().Type) && p.cur().Type != ast.TComma {
+		return head
+	}
+	args := []*ast.Node{head}
+	for !p.isStopped() && (isExprArgStart(p.cur().Type) || p.cur().Type == ast.TComma) {
+		if p.cur().Type == ast.TComma {
+			p.advance()
+			continue
+		}
+		arg, err := p.parseExprLogicOr()
+		if err != nil {
+			break
+		}
+		args = append(args, arg)
+	}
+	if len(args) > 1 {
+		return &ast.Node{Kind: ast.NApply, Children: args}
+	}
+	return head
+}
+
 // parseExpr: full expression with juxtaposition + commas
 func (p *Parser) parseExpr() (*ast.Node, error) {
 	head, err := p.parseExprPipe()
@@ -987,6 +1024,7 @@ func (p *Parser) parseExprPipe() (*ast.Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		right = p.collectExprArgs(right)
 		left = &ast.Node{Kind: ast.NPipeFn, Tok: op, Children: []*ast.Node{left, right}}
 	}
 	return left, nil
@@ -1448,7 +1486,12 @@ func (p *Parser) parseLambda() (*ast.Node, error) {
 		return nil, fmt.Errorf("expected -> in lambda")
 	}
 	p.skipNewlines()
-	body, err := p.parseExpr()
+	// Lambda body does NOT consume |> so pipes chain:
+	// list |> filter \x -> x > 1 |> map \x -> x * 2
+	body, err := p.parseExprLogicOr()
+	if err == nil {
+		body = p.collectExprArgs(body)
+	}
 	if err != nil {
 		return nil, err
 	}

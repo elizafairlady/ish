@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"ish/internal/ast"
 	"ish/internal/lexer"
 	"ish/internal/parser"
@@ -542,6 +544,22 @@ func evalApply(node *ast.Node, scope Scope, tailPos bool) (value.Value, error) {
 		}
 	}
 
+	// Single ident with > or < redirect: if the ident resolves to a numeric
+	// or enum value, this is a comparison (x > 3), not a redirect (cmd > file).
+	if head.Kind == ast.NIdent && len(node.Children) == 1 && len(node.Redirs) > 0 {
+		if v, ok := scope.Get(head.Tok.Val); ok && v.Kind&(value.KindNumeric|value.KindEnum) != 0 {
+			r := node.Redirs[0]
+			if r.Op == ast.TGt || r.Op == ast.TLt {
+				binNode := &ast.Node{
+					Kind: ast.NBinOp,
+					Tok:  ast.Token{Type: r.Op},
+					Children: []*ast.Node{head, r.Target},
+				}
+				return evalBinOp(binNode, scope)
+			}
+		}
+	}
+
 	var name string
 	if head.Kind == ast.NIdent {
 		name = head.Tok.Val
@@ -817,6 +835,15 @@ func callFn(fn *value.FnDef, node *ast.Node, preArgs []value.Value, evalScope Sc
 		}
 	}
 
+	// If the caller's scope has __self (from spawn) but fn.Env overrode
+	// parentScope, the frame won't see __self. Stash it to inject later.
+	var selfPid value.Value
+	if parentScope != scope {
+		if pid, ok := scope.Get("__self"); ok && pid.Kind == value.VPid {
+			selfPid = pid
+		}
+	}
+
 	for {
 		if fn.Native != nil {
 			nativeArgs := make([]value.Value, argc)
@@ -827,6 +854,9 @@ func callFn(fn *value.FnDef, node *ast.Node, preArgs []value.Value, evalScope Sc
 		}
 
 		frame := NewFrame(parentScope)
+		if selfPid.Kind == value.VPid {
+			frame.SetLocal("__self", selfPid)
+		}
 
 		// POSIX compat: set positional args for zero-param functions
 		if argc > 0 && len(fn.Params) == 0 {
@@ -1056,22 +1086,36 @@ func execExternal(name string, args []string, scope Scope, redirs []ast.Redirect
 		}
 	}
 
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Job control path: only when stdin is a terminal
+	ttyFd := int(os.Stdin.Fd())
+	interactive := term.IsTerminal(ttyFd)
+
+	if interactive {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
+
 	if err := cmd.Start(); err != nil {
 		return value.ErrorVal(127), nil
 	}
 
-	pid := cmd.Process.Pid
-	ttyFd := int(os.Stdin.Fd())
+	if !interactive {
+		err := cmd.Wait()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				return value.ErrorVal(exitErr.ExitCode()), nil
+			}
+			return value.ErrorVal(1), nil
+		}
+		return value.OkVal(value.Nil), nil
+	}
 
-	// Give child the terminal for foreground execution
+	pid := cmd.Process.Pid
+
 	GiveTerm(ttyFd, pid)
 	ResetJobSignals()
 
-	// Wait with WUNTRACED so we detect Ctrl-Z (SIGTSTP)
 	ws, werr := WaitFg(pid)
 
-	// Reclaim terminal for the shell
 	RenotifyJobSignals()
 	ReclaimTerm(ttyFd)
 
@@ -1079,7 +1123,6 @@ func execExternal(name string, args []string, scope Scope, redirs []ast.Redirect
 		return value.ErrorVal(1), nil
 	}
 	if ws.Stopped() {
-		// Child was suspended — record as a job
 		cmdStr := name
 		if len(args) > 0 {
 			cmdStr += " " + strings.Join(args, " ")
@@ -1088,7 +1131,7 @@ func execExternal(name string, args []string, scope Scope, redirs []ast.Redirect
 		j.SetStatus("Stopped")
 		j.Pgid = pid
 		fmt.Fprintf(os.Stderr, "\n[%d]+  Stopped                 %s\n", j.ID, cmdStr)
-		return value.ErrorVal(148), nil // 128 + SIGTSTP(20) = 148
+		return value.ErrorVal(148), nil
 	}
 	if ws.Exited() {
 		code := ws.ExitStatus()
@@ -1393,6 +1436,8 @@ func evalFnDef(node *ast.Node, scope Scope) (value.Value, error) {
 		Body:     bodyNode,
 	}
 
+	isAnon := name == "<anon>"
+
 	// Clause-block fn: fn name do\n pattern -> body\n end
 	if len(node.Clauses) > 0 {
 		var clauses []value.FnClause
@@ -1412,18 +1457,25 @@ func evalFnDef(node *ast.Node, scope Scope) (value.Value, error) {
 			Params:  []string{"_arg"},
 			Clauses: clauses,
 		}
-		scope.Set(name, value.FnVal(fn))
+		if isAnon {
+			fn.Env = captureEnv(scope)
+		} else {
+			scope.Set(name, value.FnVal(fn))
+		}
 		return value.FnVal(fn), nil
 	}
 
-	if existing, ok := scope.Get(name); ok && existing.Kind == value.VFn && existing.Fn() != nil {
-		fn := existing.Fn()
-		fn.Clauses = append(fn.Clauses, clause)
-		if !hasPatterns {
-			fn.Params = params
-			fn.Body = bodyNode
+	// Named fn: accumulate clauses on existing definition
+	if !isAnon {
+		if existing, ok := scope.Get(name); ok && existing.Kind == value.VFn && existing.Fn() != nil {
+			fn := existing.Fn()
+			fn.Clauses = append(fn.Clauses, clause)
+			if !hasPatterns {
+				fn.Params = params
+				fn.Body = bodyNode
+			}
+			return existing, nil
 		}
-		return existing, nil
 	}
 
 	fn := &value.FnDef{
@@ -1432,7 +1484,11 @@ func evalFnDef(node *ast.Node, scope Scope) (value.Value, error) {
 		Body:    bodyNode,
 		Clauses: []value.FnClause{clause},
 	}
-	scope.Set(name, value.FnVal(fn))
+	if isAnon {
+		fn.Env = captureEnv(scope)
+	} else {
+		scope.Set(name, value.FnVal(fn))
+	}
 	return value.FnVal(fn), nil
 }
 
@@ -1460,6 +1516,7 @@ func captureEnv(scope Scope) Scope {
 	}
 	return scope
 }
+
 
 func evalAccess(node *ast.Node, scope Scope) (value.Value, error) {
 	obj, err := eval(node.Children[0], scope, false)

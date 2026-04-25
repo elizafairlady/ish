@@ -103,6 +103,53 @@ func mapModule() *value.OrdMap {
 			}
 			return value.ListVal(elems...), nil
 		},
+		"new": func(args []value.Value) (value.Value, error) {
+			if len(args) < 1 || args[0].Kind != value.VList { return value.MapVal(&value.OrdMap{Vals: make(map[string]value.Value)}), nil }
+			nm := &value.OrdMap{Vals: make(map[string]value.Value)}
+			for _, pair := range args[0].Elems() {
+				if pair.Kind == value.VTuple && len(pair.Elems()) >= 2 {
+					k := pair.Elems()[0].ToStr()
+					if _, exists := nm.Vals[k]; !exists { nm.Keys = append(nm.Keys, k) }
+					nm.Vals[k] = pair.Elems()[1]
+				}
+			}
+			return value.MapVal(nm), nil
+		},
+		"update": func(args []value.Value) (value.Value, error) {
+			if len(args) < 3 || args[0].Kind != value.VMap || args[2].Kind != value.VFn { return value.Nil, nil }
+			src := args[0].Map()
+			key := arg(args, 1).ToStr()
+			nm := &value.OrdMap{Vals: make(map[string]value.Value)}
+			for _, k := range src.Keys { nm.Keys = append(nm.Keys, k); nm.Vals[k] = src.Vals[k] }
+			if v, ok := nm.Vals[key]; ok {
+				nv, err := invoke(args[2].Fn(), []value.Value{v})
+				if err != nil { return value.Nil, err }
+				nm.Vals[key] = nv
+			}
+			return value.MapVal(nm), nil
+		},
+		"take": func(args []value.Value) (value.Value, error) {
+			if len(args) < 2 || args[0].Kind != value.VMap || args[1].Kind != value.VList { return value.Nil, nil }
+			src := args[0].Map()
+			want := make(map[string]bool)
+			for _, k := range args[1].Elems() { want[k.ToStr()] = true }
+			nm := &value.OrdMap{Vals: make(map[string]value.Value)}
+			for _, k := range src.Keys {
+				if want[k] { nm.Keys = append(nm.Keys, k); nm.Vals[k] = src.Vals[k] }
+			}
+			return value.MapVal(nm), nil
+		},
+		"drop": func(args []value.Value) (value.Value, error) {
+			if len(args) < 2 || args[0].Kind != value.VMap || args[1].Kind != value.VList { return value.Nil, nil }
+			src := args[0].Map()
+			drop := make(map[string]bool)
+			for _, k := range args[1].Elems() { drop[k.ToStr()] = true }
+			nm := &value.OrdMap{Vals: make(map[string]value.Value)}
+			for _, k := range src.Keys {
+				if !drop[k] { nm.Keys = append(nm.Keys, k); nm.Vals[k] = src.Vals[k] }
+			}
+			return value.MapVal(nm), nil
+		},
 		"reduce": func(args []value.Value) (value.Value, error) {
 			if arg(args, 0).Kind != value.VMap {
 				return arg(args, 1), nil

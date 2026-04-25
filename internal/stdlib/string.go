@@ -2,6 +2,8 @@ package stdlib
 
 import (
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"ish/internal/value"
 )
@@ -11,7 +13,7 @@ func stringModule() *value.OrdMap {
 		"upcase":      func(args []value.Value) (value.Value, error) { return value.StringVal(strings.ToUpper(arg(args, 0).ToStr())), nil },
 		"downcase":    func(args []value.Value) (value.Value, error) { return value.StringVal(strings.ToLower(arg(args, 0).ToStr())), nil },
 		"trim":        func(args []value.Value) (value.Value, error) { return value.StringVal(strings.TrimSpace(arg(args, 0).ToStr())), nil },
-		"length":      func(args []value.Value) (value.Value, error) { return value.IntVal(int64(len(arg(args, 0).ToStr()))), nil },
+		"length":      func(args []value.Value) (value.Value, error) { return value.IntVal(int64(utf8.RuneCountInString(arg(args, 0).ToStr()))), nil },
 		"contains":    func(args []value.Value) (value.Value, error) { return value.BoolVal(strings.Contains(arg(args, 0).ToStr(), arg(args, 1).ToStr())), nil },
 		"starts_with": func(args []value.Value) (value.Value, error) { return value.BoolVal(strings.HasPrefix(arg(args, 0).ToStr(), arg(args, 1).ToStr())), nil },
 		"ends_with":   func(args []value.Value) (value.Value, error) { return value.BoolVal(strings.HasSuffix(arg(args, 0).ToStr(), arg(args, 1).ToStr())), nil },
@@ -86,6 +88,19 @@ func stringModule() *value.OrdMap {
 		},
 		"index_of": func(args []value.Value) (value.Value, error) {
 			return value.IntVal(int64(strings.Index(arg(args, 0).ToStr(), arg(args, 1).ToStr()))), nil
+		},
+		"capitalize": func(args []value.Value) (value.Value, error) {
+			s := arg(args, 0).ToStr()
+			if len(s) == 0 { return value.StringVal(""), nil }
+			r, size := utf8.DecodeRuneInString(s)
+			return value.StringVal(string(unicode.ToUpper(r)) + s[size:]), nil
+		},
+		"trim_leading":  func(args []value.Value) (value.Value, error) { return value.StringVal(strings.TrimLeftFunc(arg(args, 0).ToStr(), unicode.IsSpace)), nil },
+		"trim_trailing": func(args []value.Value) (value.Value, error) { return value.StringVal(strings.TrimRightFunc(arg(args, 0).ToStr(), unicode.IsSpace)), nil },
+		"reverse": func(args []value.Value) (value.Value, error) {
+			runes := []rune(arg(args, 0).ToStr())
+			for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 { runes[i], runes[j] = runes[j], runes[i] }
+			return value.StringVal(string(runes)), nil
 		},
 	})
 }

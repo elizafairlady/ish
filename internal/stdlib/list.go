@@ -22,6 +22,18 @@ func listModule() *value.OrdMap {
 		"all":        listAll,
 		"find":       listFind,
 		"with_index": listWithIndex,
+		"first": func(args []value.Value) (value.Value, error) {
+			if len(args) < 1 || args[0].Kind != value.VList { return value.Nil, nil }
+			elems := args[0].Elems()
+			if len(elems) == 0 { return value.Nil, nil }
+			return elems[0], nil
+		},
+		"last": func(args []value.Value) (value.Value, error) {
+			if len(args) < 1 || args[0].Kind != value.VList { return value.Nil, nil }
+			elems := args[0].Elems()
+			if len(elems) == 0 { return value.Nil, nil }
+			return elems[len(elems)-1], nil
+		},
 	})
 }
 

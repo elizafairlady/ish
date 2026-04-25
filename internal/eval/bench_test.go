@@ -366,6 +366,148 @@ func BenchmarkAlloc_MapLambda10(b *testing.B) {
 	}
 }
 
+// --- Pipe + lambda benchmarks (the new fixes) ---
+
+func BenchmarkEval_PipeLambdaFilter(b *testing.B) {
+	env := benchChildEnv()
+	Run("xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]", env)
+	tokens := lexer.Lex(`r = xs |> List.filter \x -> x > 5`)
+	p := parser.New(tokens)
+	node, _ := p.Parse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		child := newChildEnv(env)
+		eval(node, child, false)
+	}
+}
+
+func BenchmarkEval_PipeLambdaChain3(b *testing.B) {
+	env := benchChildEnv()
+	Run("xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]", env)
+	tokens := lexer.Lex(`r = xs |> List.filter \x -> x > 3 |> List.map \x -> x * 2 |> List.reduce(0, \acc, x -> acc + x)`)
+	p := parser.New(tokens)
+	node, _ := p.Parse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		child := newChildEnv(env)
+		eval(node, child, false)
+	}
+}
+
+func BenchmarkEval_AnonFnCallback(b *testing.B) {
+	env := benchChildEnv()
+	Run("xs = [1, 2, 3, 4, 5]", env)
+	tokens := lexer.Lex(`r = List.map(xs, fn x do x * x end)`)
+	p := parser.New(tokens)
+	node, _ := p.Parse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		child := newChildEnv(env)
+		eval(node, child, false)
+	}
+}
+
+func BenchmarkEval_EnumGroupBy(b *testing.B) {
+	env := benchChildEnv()
+	Run(`xs = ["a", "b", "a", "c", "b", "a", "d", "c", "b", "a"]`, env)
+	tokens := lexer.Lex(`r = Enum.group_by(xs, \x -> x)`)
+	p := parser.New(tokens)
+	node, _ := p.Parse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		child := newChildEnv(env)
+		eval(node, child, false)
+	}
+}
+
+func BenchmarkEval_EnumSortBy(b *testing.B) {
+	env := benchChildEnv()
+	Run(`xs = [{5, "e"}, {2, "b"}, {8, "h"}, {1, "a"}, {3, "c"}]`, env)
+	tokens := lexer.Lex(`r = Enum.sort_by(xs, \x -> Tuple.at(x, 0))`)
+	p := parser.New(tokens)
+	node, _ := p.Parse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		child := newChildEnv(env)
+		eval(node, child, false)
+	}
+}
+
+func BenchmarkEval_EnumFrequencies(b *testing.B) {
+	env := benchChildEnv()
+	Run(`xs = ["a", "b", "a", "c", "b", "a", "d", "c", "b", "a"]`, env)
+	tokens := lexer.Lex(`r = Enum.frequencies(xs)`)
+	p := parser.New(tokens)
+	node, _ := p.Parse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		child := newChildEnv(env)
+		eval(node, child, false)
+	}
+}
+
+func BenchmarkEval_ClauseDispatch(b *testing.B) {
+	env := benchChildEnv()
+	Run("fn classify do\n0 -> :zero\n1 -> :one\nn when n > 0 -> :positive\n_ -> :negative\nend", env)
+	tokens := lexer.Lex("r = classify(42)")
+	p := parser.New(tokens)
+	node, _ := p.Parse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		child := newChildEnv(env)
+		eval(node, child, false)
+	}
+}
+
+func BenchmarkEval_Destructure(b *testing.B) {
+	benchEvalShared(b, `{status, [h | t]} = {:ok, [1, 2, 3, 4, 5]}`)
+}
+
+func BenchmarkEval_StringInterp(b *testing.B) {
+	env := benchChildEnv()
+	Run(`name = "world"`, env)
+	tokens := lexer.Lex(`r = "hello #{name}, 2 + 2 = #{2 + 2}"`)
+	p := parser.New(tokens)
+	node, _ := p.Parse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		child := newChildEnv(env)
+		eval(node, child, false)
+	}
+}
+
+func BenchmarkFull_PipeFilterMap(b *testing.B) {
+	benchFull(b, `r = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] |> List.filter \x -> x > 5 |> List.map \x -> x * 2`)
+}
+
+func BenchmarkFull_EnumGroupBy(b *testing.B) {
+	benchFull(b, `r = Enum.group_by(["a", "b", "a", "c", "b", "a"], \x -> x)`)
+}
+
+func BenchmarkFull_AnonFnMap(b *testing.B) {
+	benchFull(b, `r = List.map([1, 2, 3, 4, 5], fn x do x * x end)`)
+}
+
+func BenchmarkFull_DefmoduleUse(b *testing.B) {
+	benchFull(b, "defmodule V do\n  fn double x do x * 2 end\n  fn triple x do x * 3 end\nend\nr = V.double(21) + V.triple(7)")
+}
+
+func BenchmarkFull_ClauseGuard(b *testing.B) {
+	benchFull(b, "fn abs do\n  n when n >= 0 -> n\n  n -> 0 - n\nend\nr = abs(-42)")
+}
+
+func BenchmarkFull_ListTakeReverse(b *testing.B) {
+	benchFull(b, `r = List.take([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 5) |> List.reverse`)
+}
+
 func BenchmarkAlloc_PipeChain5(b *testing.B) {
 	env := benchChildEnv()
 	Run("fn inc x do x + 1 end\nfn dbl x do x * 2 end", env)
