@@ -852,7 +852,7 @@ func (p *Parser) parsePath() (*ast.Node, error) {
 	path := ""
 	for p.cur().Type == ast.TSlash || p.cur().Type == ast.TIdent || p.cur().Type == ast.TDot || p.cur().Type == ast.TTilde {
 		path += p.advance().Val
-		for !p.prev().SpaceAfter && (p.cur().Type == ast.TSlash || p.cur().Type == ast.TIdent || p.cur().Type == ast.TDot || p.cur().Type == ast.TInt) {
+		for !p.prev().SpaceAfter && (p.cur().Type == ast.TSlash || p.cur().Type == ast.TIdent || p.cur().Type == ast.TDot || p.cur().Type == ast.TInt || p.cur().Type == ast.TStar || p.cur().Type == ast.TMinus) {
 			path += p.advance().Val
 		}
 	}

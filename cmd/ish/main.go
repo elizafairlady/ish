@@ -163,7 +163,7 @@ func homeDir(env *eval.Env) string {
 	if v, ok := env.Get("HOME"); ok {
 		return v.ToStr()
 	}
-	return ""
+	return os.Getenv("HOME")
 }
 
 func sourceIfExists(path string, env *eval.Env) bool {
@@ -203,10 +203,24 @@ func repl(env *eval.Env) {
 		rl.AddHistory(line)
 
 		val := eval.Run(line, env)
-		if val.Kind != value.VNil {
+		if val.Kind != value.VNil && !isExitStatus(val) {
 			fmt.Fprintln(env.Ctx.Stdout, val.String())
 		}
 	}
+}
+
+// isExitStatus returns true for {:ok, _} and {:error, _} tuples.
+// These are command exit status, not computation results — $? captures them.
+func isExitStatus(v value.Value) bool {
+	if v.Kind != value.VTuple {
+		return false
+	}
+	elems := v.Elems()
+	if len(elems) < 1 || elems[0].Kind != value.VAtom {
+		return false
+	}
+	tag := elems[0].Str()
+	return tag == "ok" || tag == "error"
 }
 
 func hasStoppedJobs(env *eval.Env) bool {
@@ -384,7 +398,6 @@ func makeCompleter(env *eval.Env) readline.CompleteFn {
 
 	return func(prefix string, isFirst bool) []string {
 		var candidates []string
-
 		if strings.HasPrefix(prefix, "$") {
 			varPrefix := prefix[1:]
 			for s := eval.Scope(env); s != nil; s = s.GetParent() {
@@ -419,8 +432,12 @@ func makeCompleter(env *eval.Env) readline.CompleteFn {
 			expanded := prefix
 			if strings.HasPrefix(expanded, "~") {
 				home := homeDir(env)
-				if home != "" && strings.HasPrefix(expanded, "~/") {
-					expanded = home + expanded[1:]
+				if home != "" {
+					if expanded == "~" {
+						expanded = home
+					} else if strings.HasPrefix(expanded, "~/") {
+						expanded = home + expanded[1:]
+					}
 				}
 			}
 			matches, _ := filepath.Glob(expanded + "*")

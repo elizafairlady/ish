@@ -571,20 +571,21 @@ func (e *Env) Export(name, val string) {
 }
 
 func (e *Env) BuildEnv() []string {
-	seen := make(map[string]bool)
-	var result []string
+	// Collect ish-exported overrides
+	var overrides []string
 	for s := Scope(e); s != nil; s = s.GetParent() {
 		if env, ok := s.(*Env); ok {
 			for name, val := range env.Bindings {
-				if seen[name] {
-					continue
-				}
-				seen[name] = true
 				if e.Ctx.Shell.IsExported(name) {
-					result = append(result, name+"="+val.ToStr())
+					overrides = append(overrides, name+"="+val.ToStr())
 				}
 			}
 		}
 	}
-	return result
+	// No overrides → nil tells exec.Cmd to inherit OS env as-is
+	if len(overrides) == 0 {
+		return nil
+	}
+	// Append overrides to OS env (later entries win in exec.Cmd)
+	return append(os.Environ(), overrides...)
 }
