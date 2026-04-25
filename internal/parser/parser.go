@@ -171,7 +171,7 @@ func (p *Parser) parseStatement() (*ast.Node, error) {
 	if p.cur().Type == ast.TIdent {
 		switch p.cur().Val {
 		case "fn":
-			return p.parseFnDef()
+			return p.parseFnDef(false)
 		case "if":
 			return p.parseIf()
 		case "for":
@@ -1136,7 +1136,7 @@ func (p *Parser) parseExprPrimary() (*ast.Node, error) {
 			p.advance()
 			return &ast.Node{Kind: ast.NLit, Tok: t}, nil
 		case "fn":
-			return p.parseFnDef()
+			return p.parseFnDef(true)
 		case "match":
 			return p.parseMatch()
 		case "if":
@@ -1460,12 +1460,30 @@ func (p *Parser) parseLambda() (*ast.Node, error) {
 // Control flow
 // ============================================================
 
-func (p *Parser) parseFnDef() (*ast.Node, error) {
+func (p *Parser) parseFnDef(exprCtx bool) (*ast.Node, error) {
 	p.advance() // skip fn
 
 	// Anonymous fn: fn do ... end
 	if p.is("do") {
 		return p.parseAnonFn(nil)
+	}
+
+	// In expression context, idents after fn are params, not a name.
+	// fn x do x * 2 end → anonymous fn with param x
+	// fn x, y do x + y end → anonymous fn with params x, y
+	if exprCtx {
+		var params []*ast.Node
+		for !p.is("do") && p.cur().Type != ast.TEOF {
+			param, err := p.parseExprPrimary()
+			if err != nil {
+				break
+			}
+			params = append(params, param)
+			if p.cur().Type == ast.TComma {
+				p.advance()
+			}
+		}
+		return p.parseAnonFn(params)
 	}
 
 	name, err := p.expect(ast.TIdent)
@@ -1591,6 +1609,8 @@ func (p *Parser) looksLikeClauseBlock() bool {
 }
 
 func (p *Parser) parseFnClauseBlock(name ast.Token) (*ast.Node, error) {
+	savedStops := p.stops
+	p.stops = append(p.stops, "end", "when")
 	var clauses []ast.Clause
 	for p.cur().Type != ast.TEOF && !p.is("end") {
 		p.skipNewlines()
@@ -1601,9 +1621,10 @@ func (p *Parser) parseFnClauseBlock(name ast.Token) (*ast.Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		var guard *ast.Node
 		if p.is("when") {
 			p.advance()
-			_, err = p.parseExpr()
+			guard, err = p.parseExpr()
 			if err != nil {
 				return nil, err
 			}
@@ -1615,9 +1636,10 @@ func (p *Parser) parseFnClauseBlock(name ast.Token) (*ast.Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		clauses = append(clauses, ast.Clause{Pattern: pattern, Body: body})
+		clauses = append(clauses, ast.Clause{Pattern: pattern, Guard: guard, Body: body})
 		p.skipNewlines()
 	}
+	p.stops = savedStops
 	if _, err := p.expectWord("end"); err != nil {
 		return nil, fmt.Errorf("expected 'end' in fn clause block")
 	}

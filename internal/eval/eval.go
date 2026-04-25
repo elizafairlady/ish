@@ -1360,11 +1360,15 @@ func evalFnDef(node *ast.Node, scope Scope) (value.Value, error) {
 	if len(node.Clauses) > 0 {
 		var clauses []value.FnClause
 		for _, cl := range node.Clauses {
-			clauses = append(clauses, value.FnClause{
+			fc := value.FnClause{
 				Params:   []string{"_arg"},
 				Patterns: []interface{}{cl.Pattern},
 				Body:     cl.Body,
-			})
+			}
+			if cl.Guard != nil {
+				fc.Guard = cl.Guard
+			}
+			clauses = append(clauses, fc)
 		}
 		fn := &value.FnDef{
 			Name:    name,
