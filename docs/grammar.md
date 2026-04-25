@@ -1,392 +1,565 @@
-# ish Grammar
+# ish Grammar Reference
 
-ish is a POSIX sh superset with Elixir-inspired functional extensions. This grammar defines the complete syntax. Where POSIX sh and ish conflict, POSIX sh correctness takes priority.
+ish is a recursive descent parser with two contexts: **statement context** and
+**expression context**. The lexer is stateless and produces a flat token array;
+each token carries a `SpaceAfter` flag that drives adjacency disambiguation.
+All keywords are `TIdent` tokens — the parser checks `.Val` at statement head.
+
+---
 
 ## Notation
 
-- `WS` = required whitespace (spaces/tabs between tokens)
-- `ws` = optional whitespace
-- `ADJACENT(a b c)` = tokens a, b, c with NO whitespace between them (checked via SpaceAfter on preceding token)
-- `|` = alternative
-- `*` = zero or more
-- `+` = one or more
-- `?` = optional
-- Capitalized names = token types
-- lowercase names = grammar productions
-- `--` = comment
-
-## Program structure
-
 ```
-program        = ws statement_list ws EOF
-statement_list = (statement separator)* statement?
-separator      = NEWLINE | SEMICOLON
-statement      = pipeline (AND pipeline | OR pipeline | AMPERSAND)*
-pipeline       = stmt_with_ops (PIPE ws stmt_with_ops | PIPE_STDERR ws stmt_with_ops | PIPE_ARROW ws stmt_with_ops)*
-stmt_with_ops  = primary_stmt (binop primary_stmt)*
+=       definition
+|       alternative
+*       zero or more
++       one or more
+?       optional
+( )     grouping
 ```
 
-## Primary statement dispatch
+`SPACE` means the preceding token's `SpaceAfter` flag is true.
+`NOSPACE` means it is false.
+Newlines and semicolons are both statement terminators and may be skipped
+between clauses and sub-structures wherever the grammar says `skipNewlines`.
 
-At statement start, the parser examines the first token(s) to determine the form.
-Tentative parsing with commitment points resolves the command-vs-expression ambiguity:
-the parser tries expression first, and if a commitment point is reached (spaced infix
-operator, comma, data structure literal), keeps it. Otherwise rolls back to command.
+---
 
-```
-primary_stmt   = keyword_stmt
-               | binding              -- IDENT ws EQUALS ws pipeline
-               | posix_assign         -- ADJACENT(IDENT EQUALS value)  (no whitespace around =)
-               | expression_stmt      -- starts with literal, operator, bracket, $-expansion, or IDENT followed by operator/DOT
-               | command_stmt         -- IDENT/path/dot followed by args (juxtaposition)
-               | bracket_stmt         -- ( { [ at statement start, disambiguated by lookahead
-
-keyword_stmt   = if_stmt | for_stmt | while_stmt | until_stmt | case_stmt
-               | fn_stmt | defmodule_stmt | use_stmt | match_stmt
-               | spawn_stmt | spawn_link_stmt | send_stmt | receive_stmt
-               | monitor_stmt | await_stmt | supervise_stmt | try_stmt
-```
-
-## How the parser decides at statement start
-
-Given first token and what follows (with SpaceAfter visibility):
+## Top-level structure
 
 ```
-IDENT EQUALS (no WS around =)  ->  posix_assign        -- FOO=bar
-IDENT ws EQUALS ws              ->  binding              -- x = expr
-ADJACENT(IDENT DOT)             ->  expression_stmt      -- Module.func (field access)
-IDENT ws binop (spaced)         ->  expression_stmt      -- x + y, x * 2
-IDENT ws MINUS/PLUS (adjacent)  ->  command_stmt         -- ls -la, cmd +x (flag)
-IDENT ws GT/LT                  ->  command_stmt         -- echo > file (redirect)
-                                    UNLESS exprContext   -- \x -> x > 2 (comparison)
-IDENT ws REDIR_APPEND/etc       ->  command_stmt         -- echo >> file
-IDENT ws DOT                    ->  command_stmt         -- echo .hidden (path arg)
-IDENT ws LPAREN                 ->  expression_stmt      -- func (expr) (grouped arg)
-IDENT ws terminator             ->  standalone_value     -- x (alone on line)
-IDENT ws value                  ->  tentative parse      -- could be command or function call
-keyword                         ->  keyword_stmt
-DOT ws IDENT                    ->  command_stmt         -- . script (source)
-ADJACENT(DOT IDENT)             ->  command_stmt         -- .hidden as command
-ADJACENT(DOT DOT)               ->  command_stmt         -- .. as command
-ADJACENT(DOT DIV IDENT)         ->  command_stmt         -- ./script
-DIV                             ->  command_stmt         -- /usr/bin/foo
-TILDE                           ->  command_stmt         -- ~/bin/script
-INT | FLOAT | STRING | ATOM     ->  expression_stmt
-DOLLAR | DOLLAR_LPAREN | ...    ->  expression_stmt
-LBRACKET                        ->  list_expr or test_builtin (lookahead for commas/pipe)
-LBRACE                          ->  tuple_expr or group_cmd (lookahead for commas/atoms/newlines)
-LPAREN                          ->  subshell (or grouped expr if exprContext)
-BACKSLASH                       ->  lambda
-BANG                            ->  expression (unary not)
-PERCENT LBRACE                  ->  map_expr
+program  = statement* EOF
+block    = statement*
 ```
 
-### Tentative parsing with commitment points
+---
 
-When the parser cannot determine from syntax alone whether a statement is a command
-or an expression (IDENT followed by a value), it tries parsing as an expression first.
-If a commitment point is reached, the expression interpretation is kept. Otherwise the
-parser rolls back and tries command invocation.
+## Statement context
 
-Commitment points (things that can ONLY appear in expression syntax):
-- Spaced infix operators: `a + b` (adjacent operators like `a-z` do NOT commit)
-- Commas between function args: `func a, b`
-- Data structure literals as args: `func [1,2,3]`, `func {a, b}`
-- Parenthesized call args: `func(a, b)`
-
-Operators inside nested constructs ($(()), $(), #{}, [], {}, %{}, ()) do NOT
-propagate commitment to the outer tentative parse — each nested context
-saves and restores the committed flag.
-
-### exprContext
-
-Inside ish blocks (do...end), lambda bodies, and binding RHS, `>` and `<` are
-treated as comparison operators instead of POSIX redirects. The parser tracks this
-with an `exprContext` flag, separate from the tentative parse `committed` flag.
-
-## Binding vs POSIX assignment
-
-Determined by whitespace around TEquals:
-```
-binding        = pattern ws EQUALS ws pipeline           -- x = expr |> func
-posix_assign   = ADJACENT(IDENT EQUALS compound_word?)   -- FOO=bar (no whitespace around =)
-prefix_assign  = posix_assign+ WS command_stmt           -- FOO=bar cmd args
-```
-
-## Command statement
-
-A command is a callee followed by whitespace-separated arguments until a terminator.
-The evaluator resolves the callee at runtime: user function, native function, builtin, or PATH executable.
+Dispatch on the first token, examined in order:
 
 ```
-command_stmt   = callee (WS command_arg)* (WS redir)*
-callee         = IDENT                                   -- bare command name
-               | path                                    -- /usr/bin/foo, ./script, ../dir, ~/bin/cmd
-               | DOT WS                                  -- source command (. script)
-command_arg    = compound_word                            -- assembled from adjacent tokens
-               | LPAREN ws expression ws RPAREN           -- parenthesized expr always evaluated
+statement   = destructBind
+            | binding
+            | posixAssign [ pipeline ]
+            | posixFnDef
+            | keywordStmt
+            | tupleExpr              -- { when looksLikeTuple (comma at depth 1)
+            | braceGroup             -- { otherwise
+            | subshell               -- (
+            | pipeline [ & ]
 ```
 
-## Compound word
+After `parsePipeline`, if the result is a single value and the next token is
+`+ - * / % == != > < >= <= |> .`, the value is extended into an expression
+(`extendAsExpr`).
 
-A compound word is a sequence of adjacent tokens (no whitespace between them) that form a single string argument for exec. The parser collects adjacent tokens and builds a structured node.
-
-```
-compound_word  = word_part+                               -- all parts adjacent (no whitespace)
-
-word_part      = IDENT                                    -- bare text: hello, foo, txt
-               | STRING                                   -- "quoted" or 'quoted' (already one token)
-               | STRING_START interp_parts STRING_END     -- interpolated "hello $name"
-               | DOLLAR IDENT                             -- $var
-               | SPECIAL_VAR                              -- $?, $$, $!, $@, $*, $#, $0-$9
-               | DOLLAR_LBRACE ... RBRACE                 -- ${var:-default}
-               | DOLLAR_LPAREN ... RPAREN                 -- $(command)
-               | DOLLAR_DLPAREN ... RPAREN RPAREN         -- $((arithmetic))
-               | HASH_LBRACE ... RBRACE                   -- #{expr}
-               | DOT                                      -- literal . (in paths: file.txt, ../dir)
-               | DIV                                      -- literal / (in paths: /usr, path/to)
-               | MINUS                                    -- literal - (in flags: -la, --verbose)
-               | TILDE                                    -- literal ~ (in paths: ~/dir)
-               | PLUS                                     -- literal + (in +x flag)
-               | EQUALS                                   -- literal = (in --flag=value)
-               | COLON                                    -- literal : (in PATH-like values)
-               | AT                                       -- literal @
-               | MUL                                      -- glob * (in *.sh, path/*)
-               | INT                                      -- numeric segment (in 2>/dev/null, -5)
-               | FLOAT                                    -- numeric segment
-               | PERCENT                                  -- literal % (in %1 job spec)
-               | BACKSLASH any                            -- escaped character (\ followed by next token)
-               | keyword_token                            -- keywords in arg position are literal strings
-```
-
-The evaluator concatenates all parts into a single string for exec, expanding `$var`, `$(cmd)`, `${param}`, `#{expr}` as it goes.
-
-## Redirections (within command_stmt)
+**Destructuring bind** — triggered when the statement starts with `{` or `[`
+and a lookahead finds `=` immediately after the matching close bracket:
 
 ```
-redir          = GT ws redir_target                     -- > file
-               | REDIR_APPEND ws redir_target           -- >> file
-               | LT ws redir_target                     -- < file
-               | HEREDOC                                -- << (already handled by lexer)
-               | HERESTRING ws redir_target             -- <<< word
-               | ADJACENT(INT GT) ws redir_target       -- 2> file
-               | ADJACENT(INT LT) ws redir_target       -- 0< file
-               | GT AMPERSAND ws INT                    -- >& 2 (fd dup)
-               | AMPERSAND GT ws redir_target           -- &> file (stdout+stderr)
-
-redir_target   = compound_word
+destructBind    = tuplePattern = expr
+                | listPattern  = expr
 ```
 
-## Expression
-
-Expressions use precedence climbing. Function application binds tighter than all
-binary operators: `f x + g y` parses as `(f x) + (g y)`.
+**Simple binding** — IDENT with `SPACE` before `=`:
 
 ```
-expression     = expr (ws EQUALS ws pipeline)?          -- optional match/bind: expr = rhs
-
-expr           = call_or_value (ws binop ws call_or_value)*   -- precedence climbing
-
-call_or_value  = access_chain call_args?                -- function application
-               | unary                                  -- unary op or plain value
-
-unary          = BANG ws value                          -- !expr
-               | MINUS ws value                         -- -expr (when at expression start)
-               | value
-
-value          = INT | FLOAT
-               | STRING                                  -- single-quoted, no interpolation
-               | STRING_START interp_parts STRING_END    -- interpolated string
-               | DOLLAR_DQUOTE interp_parts STRING_END  -- $"..." with C escapes
-               | ATOM
-               | NIL | TRUE | FALSE
-               | IDENT                                   -- variable reference or function name
-               | DOLLAR IDENT                            -- $var
-               | SPECIAL_VAR                             -- $?
-               | DOLLAR_LPAREN stmt_list RPAREN          -- $(cmd)
-               | DOLLAR_DLPAREN expr RPAREN RPAREN       -- $((arith))
-               | DOLLAR_LBRACE ... RBRACE                -- ${param}
-               | HASH_LBRACE expr RBRACE                 -- #{interp}
-               | LPAREN ws pipeline ws RPAREN            -- (grouped expr)
-               | tuple_expr                              -- {a, b} or {a,} or {}
-               | list_expr                               -- [a, b] or [h | t] or []
-               | map_expr                                -- %{k: v}
-               | lambda                                  -- \params -> body
-               | FN fn_expr                              -- fn as value (always anonymous)
-
-access_chain   = value (DOT IDENT)*                     -- a.b.c field access chain
-
-call_args      = ADJACENT(LPAREN) ws (expr (ws COMMA ws expr)*)? ws RPAREN
-                                                         -- func(a, b) — parens ADJACENT to callee
-               | WS value                                -- func value — single value by juxtaposition
+binding         = IDENT SPACE = expr
 ```
 
-Function call syntax:
-- `func(a, b)` — adjacent parens, multi-arg. Required inside data structures.
-- `func value` — juxtaposition, single value arg. Application binds tighter than operators.
-- `func (expr)` — spaced parens = grouped expression as single arg (NOT multi-arg call).
-- At statement level via NCmd: `func arg1, arg2` with commas — resolved by evaluator.
+**POSIX assignment** — IDENT with no space before `=`:
 
 ```
-binop          = PLUS | MINUS | MUL | DIV | PERCENT
-               | EQ | NE | GT | LT | LE | GE
+posixAssign     = IDENT NOSPACE = [ cmdPrimary ]
 ```
 
-Operator precedence (lowest to highest):
-
-| Precedence | Operators | Description |
-|------------|-----------|-------------|
-| 1 | `==` `!=` | Equality / inequality |
-| 2 | `<` `>` `<=` `>=` | Comparison (only in exprContext or when committed) |
-| 3 | `+` `-` | Addition / subtraction |
-| 4 | `*` `/` `%` | Multiplication / division / modulo |
-| 5 | function application | `f x` binds tighter than all operators |
-
-## Tuple / List / Map
-
-Inside data structures, function calls must use adjacent parens for multi-arg:
-`{hd(list), List.map(items, fn)}`. Single-value application works bare: `{hd list, tl list}`.
+If the token after the assignment is not a statement terminator (`\n ; EOF |
+&& || ) }`), the assignment is a *prefix assignment* followed by a pipeline on
+the same line:
 
 ```
-tuple_expr     = LBRACE ws RBRACE                                -- {} empty tuple
-               | LBRACE ws expr ws COMMA ws RBRACE                -- {a,} single-element tuple
-               | LBRACE ws expr (ws COMMA ws expr)+ ws RBRACE     -- {a, b, ...}
-
-list_expr      = LBRACKET ws RBRACKET                              -- [] empty list
-               | LBRACKET ws expr (ws COMMA ws expr)* ws RBRACKET  -- [a, b, ...]
-               | LBRACKET ws expr+ ws PIPE ws expr ws RBRACKET    -- [h | t] cons
-
-map_expr       = PERCENT LBRACE ws (map_entry (ws COMMA ws map_entry)*)? ws RBRACE
-map_entry      = IDENT ws COLON ws expr                            -- key: value (atom key shorthand)
-               | expr ws COLON ws expr                             -- expr: value
+prefixAssign    = posixAssign pipeline
 ```
 
-## Function definition
+**POSIX function definition** — IDENT with no space before `()`:
 
 ```
-fn_stmt        = FN ws IDENT ws fn_params? ws guard? ws fn_body       -- named (at statement level)
-fn_expr        = FN ws fn_params? ws guard? ws fn_body                -- anonymous (in expression context)
-               | FN ws DO ws clause_list ws END                       -- anonymous multi-clause
-
-fn_params      = pattern (ws COMMA ws pattern)*
-guard          = WHEN ws expr                                          -- when condition
-fn_body        = DO ws statement_list ws END
-
--- Multi-clause dispatch (inside do...end):
-clause_list    = clause+
-clause         = pattern+ (ws guard)? ws ARROW ws statement_list
-
--- Named fn with multiple definition sites (adds clauses):
--- fn fib 0 do 0 end
--- fn fib 1 do 1 end
--- fn fib n when n > 1 do ... end
--- Each adds a clause to the same function.
+posixFnDef      = IDENT NOSPACE ( ) braceGroup
 ```
 
-At statement level, `fn name ...` is a named function definition.
-In expression context (binding RHS, data structure element, lambda body, etc.),
-`fn params do ... end` is always anonymous — the first identifier after `fn` is
-a parameter, not a name.
+**Background:**
+
+```
+backgroundStmt  = pipeline &
+```
+
+---
+
+## Pipeline (command context)
+
+```
+pipeline    = logicCmd ( pipeOp skipNewlines logicCmd
+                       | |> skipNewlines exprLogicOr )*
+
+logicCmd    = commandForm ( ( && | || ) skipNewlines commandForm )*
+
+commandForm = ! commandForm
+            | cmdApply redirect*
+```
+
+`|>` takes a single `exprLogicOr` operand on its right-hand side, not another
+command.
+
+**Redirects:**
+
+```
+redirect    = [ INT NOSPACE ] >  [ & ] cmdPrimary    -- stdout; >& = fd dup
+            | [ INT NOSPACE ] <  cmdPrimary           -- stdin
+            | [ INT NOSPACE ] >> cmdPrimary            -- append
+            | << IDENT heredocBody                    -- heredoc
+            | <<< cmdPrimary                          -- here-string
+```
+
+The fd prefix is recognised by looking at the last child of the command: if it
+is an INT literal and the preceding token has no SpaceAfter, and a redirect
+operator follows, that INT is consumed as the fd number and removed from the
+argument list.
+
+---
+
+## Command application
+
+```
+cmdApply    = cmdPrimary wordJoin? cmdArg*
+cmdArg      = { tupleElems }     -- { in argument position is always a tuple
+            | ( expr )           -- ( in argument position is expression context
+            | cmdPrimary wordJoin?
+```
+
+Arguments are collected while `isCmdArgStart` is true. Commas between arguments
+are skipped silently.
+
+**`isCmdArgStart`** returns true for:
+
+| Token | Condition |
+|---|---|
+| TIdent, TInt, TFloat, TString, TStringStart, TAtom | always |
+| TDollar, TDollarLParen, TDollarLBrace, TDollarDLParen, TSpecialVar | always |
+| TLParen, TBackslash, TTilde, TLBracket, TRBracket, TLBrace | always |
+| TBang, TAssign | always |
+| TStar | NOSPACE only |
+| TMinus, TPlus, TPercent, TSlash, TDot, THash, TAt, TColon | NOSPACE only |
+
+**Word joining** — after parsing a `cmdPrimary`, if the previous token has
+NOSPACE and the current token is one of `TDollar TDollarLParen TDollarLBrace
+TDollarDLParen TSpecialVar TIdent TInt TString TStringStart`, the tokens are
+joined into a single `NInterpStr` node.
+
+**Compound words** — an ident (or int, dot, etc.) followed NOSPACE by any of
+`TIdent TInt TFloat TDot TSlash TMinus TPlus TPercent THash TAt TColon TStar
+TAssign TBang` is concatenated into a single literal. A compound word containing
+only digits and dots is classified as an IPv4 address; one containing `:` is
+an IPv6 address.
+
+---
+
+## Command primaries
+
+```
+cmdPrimary  = IDENT NOSPACE ( callArgs )         -- NCall
+            | IDENT NOSPACE compoundContinue+    -- compound word → NLit (IPv4/IPv6/path)
+            | IDENT                              -- NIdent
+            | INT                               -- NLit
+            | FLOAT                             -- NLit
+            | STRING                            -- NLit
+            | interpString
+            | ATOM                              -- NAtom  (:name)
+            | $ IDENT ( NOSPACE . IDENT )*      -- NVarRef with optional field access
+            | SPECIAL_VAR                       -- NVarRef ($? $$ $! $@ $* $# $0-$9)
+            | $( block )                        -- NCmdSub
+            | ${ paramBody }                    -- NParamExpand
+            | $(( expr ))                       -- arithmetic substitution
+            | ( block )                         -- grouped block; single child unwrapped
+            | [ SPACE testArgs ]                -- POSIX test command [ ... ]
+            | [ NOSPACE listElems ]             -- list literal
+            | ]                                 -- literal ] token (for test arguments)
+            | { block }                         -- NBlock (brace group)
+            | - NOSPACE - NOSPACE IDENT         -- NFlag  --flag
+            | - NOSPACE -                       -- NFlag  --
+            | - NOSPACE IDENT                   -- NFlag  -flag
+            | ~ path | / path                   -- NPath
+            | << IDENT heredocBody              -- heredoc
+            | %{ mapPairs }                     -- NMap
+            | \ params -> expr                  -- NLambda
+            | . # @ = * : + % !                 -- single-char literal (NOSPACE compound)
+```
+
+**`[` disambiguation**: `[` with SpaceAfter → POSIX test command `[ ... ]`;
+`[` without SpaceAfter → list literal.
+
+---
+
+## Paths
+
+```
+path        = ( ~ | / ) ( NOSPACE pathToken )*
+pathToken   = / | IDENT | . | INT | * | -
+```
+
+Tilde is expanded at eval time.
+
+---
+
+## Expression context
+
+`parseExpr` is the entry point. After parsing `exprPipe`, if the result is
+callable (NIdent, NCall, or NAccess) and the next token is an argument-start
+token, additional arguments are collected by juxtaposition:
+
+```
+expr        = exprPipe arg*         -- juxtaposition; commas skipped between args
+arg         = exprPipe
+
+exprPipe    = exprLogicOr ( |> exprLogicOr )*
+exprLogicOr = exprLogicAnd ( || exprLogicAnd )*
+exprLogicAnd= exprCompare ( && exprCompare )*
+exprCompare = exprAdd ( cmpOp exprAdd )*   -- chained: a<b<c → (a<b)&&(b<c)
+exprAdd     = exprMul ( ( + | - ) exprMul )*
+exprMul     = exprUnary ( ( * | / | % ) exprUnary )*
+exprUnary   = ( ! | - ) exprUnary | exprPostfix
+exprPostfix = exprPrimary ( . IDENT | NOSPACE ( callArgs ) )*
+
+cmpOp       = == | != | > | < | >= | <=
+```
+
+**Operator precedence** (lowest to highest):
+
+| Level | Operators |
+|---|---|
+| 1 | `\|>` |
+| 2 | `\|\|` |
+| 3 | `&&` |
+| 4 | `== != > < >= <=` |
+| 5 | `+ -` |
+| 6 | `* / %` |
+| 7 | `! -` (unary, right-associative) |
+| 8 | `.field`   `NOSPACE(args)` (postfix, left-associative) |
+| 9 | juxtaposition application (tightest, left-associative) |
+
+**Comparison chaining**: `a < b < c` desugars to `(a < b) && (b < c)`. Each
+additional comparison operator at the same level introduces a new `&&` node
+sharing the middle operand.
+
+**`isExprArgStart`** (controls juxtaposition collection):
+`TIdent TInt TFloat TString TStringStart TAtom TDollar TDollarLParen
+TDollarLBrace TSpecialVar TLParen TLBracket TLBrace TBackslash TAmpersand
+TPercent`
+
+---
+
+## Expression primaries
+
+```
+exprPrimary = nil | true | false               -- NLit
+            | fn fnDef(exprCtx=true)           -- anonymous fn
+            | match matchExpr
+            | if ifExpr
+            | try tryExpr
+            | receive receiveExpr
+            | spawn | send                     -- NIdent (callable for juxtaposition)
+            | IDENT NOSPACE ( callArgs )       -- NCall
+            | IDENT                            -- NIdent
+            | INT | FLOAT | STRING             -- NLit
+            | interpString
+            | ATOM                             -- NAtom
+            | $ IDENT                          -- NVarRef
+            | SPECIAL_VAR                      -- NVarRef
+            | $( block )                       -- NCmdSub
+            | ${ paramBody }                   -- NParamExpand
+            | $(( expr ))                      -- arithmetic
+            | ( expr )                         -- grouped expression
+            | [ listElems ]                    -- NList
+            | { tupleElems }                   -- NTuple
+            | \ params -> expr                 -- NLambda
+            | %{ mapPairs }                    -- NMap
+            | ~                                -- NPath
+            | & IDENT                          -- function capture (&name)
+```
+
+---
+
+## Data structures
+
+**List:**
+
+```
+list        = [ ]
+            | [ exprPipe ( , exprPipe )* ]          -- NList
+            | [ exprPipe ( , exprPipe )* | exprPipe ] -- NCons
+```
+
+**Tuple:**
+
+```
+tuple       = { }
+            | { exprPipe ( , exprPipe )* }
+```
+
+At statement head, `{` triggers `looksLikeTuple`, which scans forward for a
+comma at depth 1 before a newline, semicolon, or closing `}`. Comma found →
+tuple expression. No comma → brace group. In argument position, `{` is always a
+tuple.
+
+**Map:**
+
+```
+map         = %{ }
+            | %{ mapPair ( , mapPair )* }
+mapPair     = exprPrimary : exprPipe
+```
+
+Key is parsed with `parseExprPrimary`; value with `parseExprPipe`. Children are
+stored flat: `[key, val, key, val, ...]`.
+
+---
+
+## Calls
+
+**Paren call** — no space between callee and `(`:
+
+```
+call        = IDENT NOSPACE ( ( exprPipe ( , exprPipe )* )? )
+            | exprPostfix NOSPACE ( ( exprPipe ( , exprPipe )* )? )
+```
+
+**Juxtaposition call** — callable head (NIdent, NCall, NAccess) followed by
+argument-start tokens:
+
+```
+juxtCall    = callableHead arg arg ...
+```
+
+Both syntaxes are valid and produce the same `NCall`/`NApply` nodes.
+
+---
 
 ## Lambda
 
 ```
-lambda         = BACKSLASH ws params? ws ARROW ws lambda_body
-params         = pattern (ws COMMA ws pattern)*
-lambda_body    = statement_list ws END                                 -- multi-line (ARROW followed by NEWLINE)
-               | stmt_with_ops                                         -- single expression (stops before |>)
+lambda      = \ ( IDENT , )* IDENT -> expr
 ```
 
-Single-line lambda bodies parse as `stmt_with_ops`, which does NOT consume `|>`.
-This allows `list |> List.filter \x -> x > 1 |> length` to parse as
-`(list |> (List.filter (\x -> x > 1)) |> length)`, not
-`(list |> List.filter (\x -> x > 1 |> length))`.
+Params are zero or more comma-separated idents. The `->` is mandatory. Body is
+`parseExpr`, which includes `|>` — a `|>` in the lambda body is consumed by
+the body, not the enclosing pipeline.
 
-Lambda bodies set `exprContext = true`, so `>` and `<` are comparisons.
+---
+
+## Interpolated strings
+
+```
+interpString = STRSTART segment* STREND
+segment      = STRING_LITERAL
+             | $ IDENT
+             | SPECIAL_VAR
+             | $( block )
+             | ${ paramBody }
+             | $(( expr ))
+             | #{ expr }
+```
+
+`STRSTART` / `STREND` delimit a double-quoted string containing at least one
+interpolation. Plain strings with no interpolation are single `TString` tokens.
+
+---
+
+## Function definitions
+
+`parseFnDef` is called with an `exprCtx` flag.
+
+**Named function** (statement context, `exprCtx=false`):
+
+```
+namedFn     = fn NAME param* [ when expr ] do body end
+            | fn NAME do clauseBlock end
+```
+
+**Anonymous function** (expression context, `exprCtx=true`):
+
+```
+anonFn      = fn param* do body end
+            | fn do clauseBlock end
+            | fn do body end
+```
+
+`body` is a `block`. `clauseBlock` is selected when `looksLikeClauseBlock`
+finds a `->` before the next newline, semicolon, `end`, or EOF. A `\` before
+`->` means lambda, not a clause.
+
+**Clause block:**
+
+```
+clauseBlock = ( pattern [ when expr ] -> statement \n? )+
+```
+
+`end` and `when` are pushed as stop words before parsing each clause pattern.
+
+**Multi-definition** — multiple top-level `fn` statements with the same name
+produce independent `NFnDef` nodes; the evaluator merges their clauses:
+
+```
+fn fib 0 do 0 end
+fn fib 1 do 1 end
+fn fib n when n > 1 do fib(n-1) + fib(n-2) end
+```
+
+---
 
 ## Control flow
 
-```
--- POSIX if (exit-code semantics):
-if_stmt        = IF ws condition ws THEN ws body
-                 (ws ELIF ws condition ws THEN ws body)*
-                 (ws ELSE ws body)?
-                 ws FI
-
--- ish if (truthiness semantics):
-               | IF ws expression ws DO ws body
-                 (ws ELSE ws body)?
-                 ws END
-
--- POSIX for:
-for_stmt       = FOR ws IDENT ws IN ws word_list ws DO ws body ws (DONE | END)
-word_list      = command_arg (WS command_arg)*
-
--- While/Until:
-while_stmt     = WHILE ws condition ws DO ws body ws (DONE | END)
-until_stmt     = UNTIL ws condition ws DO ws body ws (DONE | END)
-
--- Condition in POSIX if/while/until is a command (exit code checked):
-condition      = statement_list
-
--- Case:
-case_stmt      = CASE ws compound_word ws IN ws case_clause* ws ESAC
-case_clause    = pattern_list RPAREN ws statement_list (SEMICOLON SEMICOLON)?
-pattern_list   = compound_word (PIPE compound_word)*
-
--- POSIX function:
-posix_fn_def   = IDENT LPAREN RPAREN ws LBRACE ws statement_list ws RBRACE
-
--- defmodule:
-defmodule_stmt = DEFMODULE ws IDENT ws DO ws module_body ws END
-module_body    = (fn_stmt | use_stmt | statement)*
-
--- use:
-use_stmt       = USE ws IDENT
-
--- match:
-match_stmt     = MATCH ws expr ws DO ws clause_list ws END
-
--- try/rescue:
-try_stmt       = TRY ws DO ws body ws (RESCUE ws clause_list)? ws END
-
--- spawn/send/receive/monitor/await/supervise:
-spawn_stmt      = SPAWN ws stmt_with_ops
-spawn_link_stmt = SPAWN_LINK ws stmt_with_ops
-send_stmt       = SEND ws expr ws COMMA ws expr
-monitor_stmt    = MONITOR ws expr
-await_stmt      = AWAIT ws expr
-receive_stmt    = RECEIVE ws DO ws clause_list (ws AFTER ws expr ws ARROW ws body)? ws END
-supervise_stmt  = SUPERVISE ws expr ws DO ws worker_list ws END
-worker_list     = (IDENT ws IDENT ws stmt_with_ops separator)*     -- worker :name fn_expr
-```
-
-## Interpolated string
+**if:**
 
 ```
-interp_string  = STRING_START interp_part* STRING_END
-interp_part    = STRING                                    -- literal text segment
-               | DOLLAR IDENT                              -- $var
-               | SPECIAL_VAR                               -- $?
-               | DOLLAR_LPAREN stmt_list RPAREN            -- $(cmd)
-               | DOLLAR_DLPAREN expr RPAREN RPAREN         -- $((arith))
-               | DOLLAR_LBRACE ... RBRACE                  -- ${param}
-               | HASH_LBRACE expr RBRACE                   -- #{expr}
+ifStmt      = if condition [;] do  body (elif condition [;] [then] body)* [else body] end
+            | if condition [;] then body (elif condition [;] [then] body)* [else body] fi
 ```
 
-## Pattern
+`then` selects POSIX mode (closed by `fi`); `do` selects ish mode (closed by
+`end`). `elif` is supported in both modes.
 
-Used in fn params, match clauses, and destructuring binds.
+**condition** is parsed by `parseIfCondition`:
 
 ```
-pattern        = IDENT                                      -- variable binding (or _ for wildcard)
-               | INT | FLOAT | STRING | ATOM                -- literal match
-               | NIL | TRUE | FALSE                         -- keyword literal match
-               | tuple_pattern                              -- {a, b}
-               | list_pattern                               -- [h | t]
-               | map_pattern                                -- %{key: var}
-
-tuple_pattern  = LBRACE ws (pattern (ws COMMA ws pattern)*)? ws RBRACE
-list_pattern   = LBRACKET ws (pattern (ws COMMA ws pattern)*)? (ws PIPE ws pattern)? ws RBRACKET
-map_pattern    = PERCENT LBRACE ws (IDENT ws COLON ws pattern (ws COMMA)?)* ws RBRACE
+condition   = ( expr )                      -- parenthesised: expression context
+            | condPipeline [ exprExtend ]   -- command context, stops at do/then
 ```
+
+`condPipeline` is identical to `pipeline` but with `do` and `then` as stop
+words. After resolving, if the result is a single value and the next token is
+an expression operator, `extendAsExpr` re-parses from that value.
+
+**for:**
+
+```
+forStmt     = for IDENT in wordList [;] [do] body (done | end)
+wordList    = cmdPrimary*              -- until ; do \n EOF
+```
+
+**while / until:**
+
+```
+whileStmt   = while condition [;] [do] body (done | end)
+untilStmt   = until condition [;] [do] body (done | end)
+```
+
+**case** (POSIX):
+
+```
+caseStmt    = case cmdPrimary in
+                ( patStr ) body ;;
+                ...
+              esac
+```
+
+`patStr` is raw token concatenation up to `)`. Body ends at `;;` or `esac`.
+
+**match:**
+
+```
+matchStmt   = match exprPipe do
+                ( pattern [ when expr ] -> statement \n? )+
+              end
+```
+
+`end` and `when` are stop words during pattern parsing.
+
+**receive:**
+
+```
+receiveStmt = receive [timeout] do
+                ( pattern -> statement (; statement)* \n? )+
+                [ after ( timeout -> body | body ) ]
+              end
+```
+
+Two timeout forms: timeout before `do` with `after body`, or no leading timeout
+with `after timeout -> body`. `end` and `after` are stop words.
+
+**try:**
+
+```
+tryStmt     = try do body rescue
+                ( pattern -> statement \n? )+
+              end
+```
+
+---
+
+## Modules
+
+```
+defmodule   = defmodule IDENT do block end
+useImport   = ( use | import ) IDENT
+```
+
+Module bodies are normal blocks of statements, typically `fn` definitions.
+There is no `def` keyword; all functions use `fn`.
+
+---
+
+## OTP keywords
+
+`spawn`, `spawn_link`, `send`, `await`, and `monitor` are statement-level
+keywords that collect expression arguments until newline, semicolon, or EOF:
+
+```
+otpStmt     = ( spawn | spawn_link | send | await | monitor ) ( exprPipe , )* exprPipe?
+```
+
+Each argument is parsed with `parseExprPipe`. The result is `NApply`.
+
+---
+
+## Subshell and brace group
+
+```
+subshell    = ( block )    -- NSubshell, isolated scope
+braceGroup  = { block }    -- NBlock, current scope
+```
+
+At statement head, `{` is a brace group unless `looksLikeTuple` finds a comma
+at depth 1. In argument position, `{` is always a tuple.
+
+---
+
+## Stop words
+
+Several constructs push stop words before parsing sub-expressions.
+`parseStatement` and `parseExpr` halt on any active stop word.
+
+| Construct | Stop words pushed |
+|---|---|
+| `fn` clause block | `end`, `when` |
+| `match` | `end`, `when` |
+| `receive` | `end`, `after` |
+| if/while/until condition | `do`, `then` |
+| `parseBlockUntil(words...)` | the words passed as arguments |
+
+---
+
+## Adjacency disambiguation summary
+
+The `SpaceAfter` flag on the *preceding* token determines how the next token is
+interpreted:
+
+| Pattern | Interpretation |
+|---|---|
+| `name(args)` — NOSPACE `(` | paren call |
+| `name (expr)` — SPACE `(` | command with grouped-expression argument |
+| `-flag` — NOSPACE after `-` | flag token |
+| `a-b` — NOSPACE on both sides | compound word, not subtraction |
+| `*` — NOSPACE | glob / compound-word part |
+| `*` — SPACE | multiplication operator (expression context) |
+| `[items]` — NOSPACE `[` | list literal |
+| `[ items ]` — SPACE `[` | POSIX test command |

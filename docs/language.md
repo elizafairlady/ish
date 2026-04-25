@@ -2,7 +2,7 @@
 
 ## What is ish
 
-ish is a POSIX-compatible shell combined with a functional programming language inspired by Elixir. Written in Go, it supports standard shell features (pipelines, redirections, control flow, job control) alongside algebraic data types, pattern matching, first-class functions with multi-clause dispatch and guards, lightweight processes with message passing, and OTP-style supervision trees. POSIX and ish syntax coexist in the same session without ambiguity.
+ish is a POSIX-compatible shell combined with a functional programming language inspired by Elixir. Written in Go, it supports standard shell features (pipelines, redirections, control flow, job control) alongside algebraic data types, pattern matching, first-class functions with multi-clause dispatch and guards, lightweight processes with message passing, and OTP-style supervision. POSIX and ish syntax coexist in the same session without ambiguity.
 
 ## Running ish
 
@@ -11,8 +11,6 @@ ish is a POSIX-compatible shell combined with a functional programming language 
 - **One-liner:** `ish -c 'command'`
 - **Login shell:** `ish -l` or `ish --login`, or when `argv[0]` starts with `-`
 - **`--version`:** prints `ish X.Y.Z` and exits
-- **`-D` / `--debugger`:** enables the debugger (stack traces on errors)
-- **`--dump-ast`:** parses source and prints the AST tree, then exits
 
 **Startup files:**
 
@@ -54,7 +52,7 @@ FOO=bar cmd args...    # FOO is set for the duration of cmd
 ### Quoting
 
 - **Single quotes:** literal text, no expansion whatsoever. `'$HOME'` stays `$HOME`.
-- **Double quotes:** `$var`, `${var}`, and `#{expr}` are expanded. Backslash escapes `"`, `\`, `$`, `` ` ``, and newline. Other backslash sequences pass through literally (e.g. `\n` stays `\n`). Note: `$(cmd)` and `$((expr))` inside double-quoted strings do not currently substitute correctly; use `#{expr}` interpolation or unquoted `$(cmd)` instead.
+- **Double quotes:** `$var`, `${var}`, and `#{expr}` are expanded. Backslash escapes `"`, `\`, `$`, `` ` ``, and newline. Other backslash sequences pass through literally (e.g. `\n` stays `\n`). Note: `$(cmd)` inside double-quoted strings does not currently substitute correctly; use `#{expr}` interpolation instead.
 - **Backtick substitution:** `` `cmd` `` is equivalent to `$(cmd)`. Inside backticks, `\` before `$`, `` ` ``, `\`, or `"` strips the backslash (POSIX).
 - **Backslash:** outside quotes, escapes the next character.
 - **Line continuation:** `\` immediately before a newline joins the next line to the current one (the backslash and newline are both removed). This works outside quotes and in unquoted heredocs.
@@ -144,7 +142,7 @@ cmd1 ; cmd2          # run sequentially
 cmd &                # run cmd in background
 ```
 
-`&&` and `||` work with both POSIX exit codes and ish expression truthiness. Before evaluating the right side, ish syncs the exit code based on the left value's truthiness.
+`&&` and `||` work with both POSIX exit codes and ish expression truthiness. The left side produces a value; `&&` continues if that value is truthy, `||` continues if it is falsy.
 
 ### Redirections
 
@@ -161,6 +159,8 @@ cmd &>> file         # stdout + stderr to file (append)
 ```
 
 File descriptor numbers can prefix redirect operators (e.g., `2>`, `0<`). The `>&N` syntax duplicates a file descriptor.
+
+**Context matters:** `>` and `<` are redirect operators only in command (statement) context. In expression context — after `=`, inside `()`, `[]`, `{}`, and on the right side of `|>` — they are comparison operators. See [Two-Context Parsing](#two-context-parsing).
 
 ### Heredocs and Herestrings
 
@@ -258,7 +258,7 @@ Patterns support glob matching (`*`, `?`, `[...]`) and alternation with `|`. An 
 { cmd1; cmd2; }      # group: runs in the current environment
 ```
 
-Subshells save and restore the process working directory and umask. The subshell's exit code is propagated to the parent.
+Subshells save and restore the process working directory. The subshell's exit code is propagated to the parent.
 
 ### Functions (POSIX)
 
@@ -279,7 +279,7 @@ echo $(date)
 
 Captures stdout, strips trailing newlines. The result of ish expressions is also captured (non-nil, non-string values are converted via `.String()`).
 
-**Note:** Use the ish binding form `result = $(command)` (spaces around `=`) to capture command output into a variable. Command substitution works in argument position (`echo $(date)`) and in ish binding right-hand sides, but not currently inside double-quoted strings (`"$(cmd)"` does not substitute correctly -- use `#{expr}` interpolation or unquoted `$(cmd)` instead).
+**Note:** Use the ish binding form `result = $(command)` (spaces around `=`) to capture command output into a variable. Command substitution works in argument position (`echo $(date)`) and in ish binding right-hand sides, but not currently inside double-quoted strings (`"$(cmd)"` does not substitute correctly — use `#{expr}` interpolation instead).
 
 ### Arithmetic Expansion
 
@@ -377,7 +377,7 @@ A bare string operand is true if non-empty. Returns exit code 0 for true, 1 for 
 | `logout [code]` | Exit a login shell with the given code (default 0). Errors if the current shell is not a login shell. |
 | `export [NAME=value] [NAME]...` | With `NAME=value`, set and export a variable to child processes. With bare `NAME`, export an existing variable without changing its value. |
 | `unset [-f] [-v] name...` | Remove variables (`-v`, default) or functions (`-f`) from the environment. |
-| `set [flags] [-- args...]` | No arguments: print all variables in the current scope. `set -- a b c` sets positional parameters. Flags: `-e` (exit on error), `-u` (error on unset variables), `-x` (print commands before execution), `-o pipefail`, `-X` (Elixir-style tracing: prints each executed node with source location, implies `-x`, lazily enables the debugger). Prefix with `+` to disable (e.g. `+e`, `+X`). |
+| `set [flags] [-- args...]` | No arguments: print all variables in the current scope. `set -- a b c` sets positional parameters. Flags: `-e` (exit on error), `-u` (error on unset variables), `-x` (print commands before execution), `-o pipefail`. Prefix with `+` to disable (e.g. `+e`). |
 | `shift [n]` | Shift positional parameters left by n (default 1). |
 | `return [code]` | Return from a function with exit code (default 0). |
 | `break` | Break out of a `for`, `while`, or `until` loop. |
@@ -422,7 +422,7 @@ A bare string operand is true if non-empty. Returns exit code 0 for true, 1 for 
 | List | Brackets with commas | `[1, 2, 3]`, `[]` |
 | Map | Percent-brace | `%{name: "alice", age: 30}` |
 | Pid | Process identifier | returned by `spawn`, displayed as `#PID<n>` |
-| Function | First-class value | returned by `fn` or `\`, displayed as `#Function<name/clauses>` |
+| Function | First-class value | returned by `fn` or `\`, displayed as `#Function<name>` |
 | `nil` | Null value | `nil` |
 | `true` | Boolean true | `:true` atom |
 | `false` | Boolean false | `:false` atom |
@@ -434,11 +434,46 @@ A bare string operand is true if non-empty. Returns exit code 0 for true, 1 for 
 - Empty string `""` is falsy
 - Integer `0` is falsy
 - Float `0.0` is falsy
-- Everything else is truthy (including empty tuples, lists, and maps)
+- `{:error, _}` tuples are falsy
+- Everything else is truthy (including empty lists and maps)
 
 **Structural equality:** Values are compared by kind and content. Tuples, lists, and maps compare element-by-element. Maps compare by key set and values (order-independent for equality). Cross-kind int/float comparison is supported: `5 == 5.0` is true (the integer is promoted to float). In pattern matching, cross-kind int/string coercion applies: the string `"3"` matches the integer `3`. Other cross-kind comparisons return false.
 
 **Display:** `.String()` converts values to their display form. `.Inspect()` is like `.String()` but quotes strings. `.ToStr()` converts any value to a plain string (strings return their raw content, other types return their `.String()` form).
+
+### Command Return Values
+
+Every command — external programs, builtins, user-defined functions, and ish expressions — returns an ish value. The return value determines the exit code used by `&&`, `||`, `$?`, and `set -e`.
+
+External commands and builtins that succeed return `{:ok, nil}`. Those that fail return `{:error, code}` where `code` is the numeric exit code. `{:ok, nil}` is truthy; `{:error, _}` is falsy.
+
+```
+ls /tmp           # succeeds -> {:ok, nil}
+ls /no-such-path  # fails -> {:error, 2}
+
+if ls /tmp do
+  echo "exists"
+end
+
+result = ls /tmp
+match $result do
+  {:ok, _}     -> echo "ok"
+  {:error, n}  -> echo "failed with #{n}"
+end
+```
+
+`$?` expands to the numeric exit code: `0` for `{:ok, _}`, and the embedded integer for `{:error, code}`. For other falsy values, `$?` is `1`.
+
+### Environment Variables
+
+When ish runs an external command, the child process inherits the full OS environment automatically. Variables explicitly exported with `export` are overlaid on top of the inherited environment (later entries win). If no variables have been exported, the child sees the OS environment unchanged.
+
+```
+export MYVAR=hello
+env | grep MYVAR    # MYVAR=hello
+```
+
+Unexported ish bindings (`x = 42`) are not visible to child processes.
 
 ### Bindings and Pattern Matching
 
@@ -498,13 +533,18 @@ echo "2 + 2 = #{2 + 2}"    # 2 + 2 = 4
 echo "home is $HOME"        # home is /home/user
 ```
 
-`#{expr}` first checks if `expr` is a variable name; if so, it expands to the variable's value. Otherwise it evaluates `expr` as ish source code (via the command substitution callback) and uses the result.
+`#{expr}` first checks if `expr` is a variable name; if so, it expands to the variable's value. Otherwise it evaluates `expr` as ish source code and uses the result.
 
 Single-quoted strings have no interpolation.
 
 ### Functions
 
-**Named function with explicit parameters:**
+All function definitions use `fn`. The meaning of `fn` depends on context:
+
+- **Statement context** (command position): `fn name params do body end` creates a named function in the current scope.
+- **Expression context** (right-hand side of `=`, argument to `spawn`, inside a list, etc.): `fn params do body end` creates an anonymous function value. The words after `fn` are parameters, not a name.
+
+**Named function:**
 
 ```
 fn name param1, param2 do
@@ -527,8 +567,8 @@ The function returns the value of the last expression in its body.
 ```
 fn fib 0 do 0 end
 fn fib 1 do 1 end
-fn fib n when n > 1 do
-  fib (n - 1) + fib (n - 2)
+fn fib n do
+  fib(n - 1) + fib(n - 2)
 end
 ```
 
@@ -546,7 +586,7 @@ Guards appear after `when` and before `do`. They must evaluate to a truthy value
 
 **Multi-clause dispatch in a single block:**
 
-All clauses can be written in one `fn name do ... end` block. Each clause is a pattern, an optional guard, an arrow, and a body:
+All clauses can be written in one `fn name do ... end` block using arrow form. Each clause is a pattern, an optional guard, an arrow, and a body:
 
 ```
 fn classify do
@@ -556,21 +596,31 @@ fn classify do
 end
 ```
 
-**Anonymous functions (fn as expression):**
-
-In expression context (RHS of `=`, argument to `spawn`/`map`/etc.), `fn` produces a function value without requiring a name:
+Arrow-form guards work in clause blocks:
 
 ```
+fn describe do
+  n when n > 0 -> "positive"
+  n when n < 0 -> "negative"
+  _ -> "zero"
+end
+```
+
+**Anonymous functions:**
+
+In expression context, `fn` does not take a name. The parameters come directly after `fn`:
+
+```
+doubled = fn x do x * 2 end
+doubled 5                    # 10
+
 add = fn a, b do
   a + b
 end
 add 3, 4                     # 7
-
-doubled = fn x do x * 2 end
-doubled 5                    # 10
 ```
 
-Anonymous multi-clause dispatch uses `fn do ... end` with arrow clauses:
+Anonymous multi-clause dispatch uses `fn do ... end` with arrow clauses (no name, no params before `do`):
 
 ```
 f = fn do
@@ -580,7 +630,7 @@ f = fn do
 end
 ```
 
-Anonymous functions can be passed directly as arguments:
+Anonymous functions can be passed as arguments:
 
 ```
 spawn fn do
@@ -589,8 +639,6 @@ end
 
 List.map [1, 2, 3], fn x do x * 2 end
 ```
-
-The parser distinguishes named vs anonymous by context: at statement level (command position), `fn` expects a name. In expression position, `fn` is anonymous and parameters come directly.
 
 ### Lambdas
 
@@ -605,10 +653,10 @@ The `\` (backslash) syntax creates anonymous function values:
 Lambdas are single-expression: the body is everything after `->` up to a statement terminator. The body does NOT consume `|>`, so lambdas compose naturally in pipe chains:
 
 ```
-[1, 2, 3] |> List.filter \x -> x > 1 |> List.map \x -> x * 2   # [4, 6]
+[1, 2, 3] |> List.filter \x -> x > 1 |> List.map \x -> x * 2
 ```
 
-This parses as `[1,2,3] |> (List.filter \x -> x > 1) |> (List.map \x -> x * 2)`, not as `List.filter (\x -> x > 1 |> ...)`.
+This parses as `[1,2,3] |> (List.filter \x -> x > 1) |> (List.map \x -> x * 2)`.
 
 Lambdas are the idiomatic way to pass callbacks:
 
@@ -624,8 +672,8 @@ Lambdas are the idiomatic way to pass callbacks:
 |--------|----------|
 | `fn name params do body end` | Named functions (statement level) |
 | `fn name do clauses end` | Named multi-clause dispatch (statement level) |
-| `name = fn params do body end` | Function value bound to a variable |
-| `name = fn do clauses end` | Multi-clause dispatch bound to a variable |
+| `name = fn params do body end` | Function value bound to a variable (expression context) |
+| `name = fn do clauses end` | Multi-clause dispatch bound to a variable (expression context) |
 | `fn do clauses end` | Anonymous multi-clause (inline in spawn, map, etc.) |
 | `\params -> expr` | Short anonymous functions (callbacks, transforms) |
 
@@ -633,7 +681,7 @@ Lambdas are the idiomatic way to pass callbacks:
 
 There are three calling syntaxes:
 
-**Statement level (NCmd):** space-separated args with optional commas. Works everywhere — top level, bindings, pipe chains:
+**Statement level:** space-separated args with optional commas. Works everywhere — top level, bindings, pipe chains:
 
 ```
 greet "world"                    # one arg
@@ -648,16 +696,7 @@ r = List.map [1, 2, 3], \x -> x * 2   # qualified call with commas
 max(lo, min(val, hi))                          # nested multi-arg calls
 ```
 
-**Single-value juxtaposition:** `func value` — in expression context, function application binds tighter than operators. Each call takes one value:
-
-```
-fn fib n when n > 1 do
-  fib (n - 1) + fib (n - 2)     # (fib (n-1)) + (fib (n-2))
-end
-Stats.sum $list / length $list   # (Stats.sum $list) / (length $list)
-```
-
-**Pipe arrow:** `value |> func` — passes value as first argument. The idiomatic way to chain:
+**Pipe arrow:** `value |> func` — passes value as first argument:
 
 ```
 [1, 2, 3] |> List.map \x -> x * 2           # [2, 4, 6]
@@ -667,7 +706,7 @@ Stats.sum $list / length $list   # (Stats.sum $list) / (length $list)
 
 **Calling function values stored in variables:**
 
-Functions stored in variables (from lambdas, `fn params do...end`, or `fn do...end`) can be called the same way as named functions:
+Functions stored in variables can be called the same way as named functions:
 
 ```
 doubled = fn x do x * 2 end
@@ -680,7 +719,7 @@ end
 classify 0               # :zero
 ```
 
-In command position, if a variable holds a function value, it is called with the provided arguments. In expression position (e.g., `x = f`), the function value is returned without calling it, allowing functions to be passed as values.
+In command position, if a variable holds a function value, it is called with the provided arguments. In expression position (e.g., `x = f`), the function value itself is returned, allowing functions to be passed as values.
 
 **All functions are first-class values.** Named functions defined with `fn name do...end` can be passed as values in expression position, just like lambdas and fn expressions:
 
@@ -691,7 +730,7 @@ f = double                      # store named function in a variable
 f 5                              # 10
 ```
 
-**POSIX vs ish function argument evaluation:**
+**Argument evaluation:**
 
 - User functions (ish `fn` or POSIX `name(){}`): arguments are evaluated as ish expressions. `add x y` passes the *values* of variables `x` and `y`.
 - Builtins and external commands: arguments are literal strings with `$var` expansion but no variable lookup. `echo hello` passes the literal string `"hello"`.
@@ -710,24 +749,24 @@ Module names are PascalCase. The dot is part of the function name token — no s
 
 #### defmodule
 
-Define your own modules with `defmodule Name do ... end`. Function definitions inside use `def` (or `fn`):
+Define your own modules with `defmodule Name do ... end`. Function definitions inside use `fn`, the same as at the top level:
 
 ```
 defmodule Math do
-  def abs do
+  fn abs do
     n when n >= 0 -> n
     n -> 0 - n
   end
 
-  def max a, b when a >= b do a end
-  def max _, b do b end
+  fn max a, b when a >= b do a end
+  fn max _, b do b end
 end
 
 Math.abs (0 - 5)    # 5
 Math.max 3, 7       # 7
 ```
 
-`def` supports the same syntax as `fn` — single-clause with guards, or multi-clause arrow dispatch. The difference is that `def` always expects a name (it is never anonymous) and registers the function in the module's scope rather than the enclosing scope.
+`fn` inside a module supports all the same syntax as at the top level — single-clause with guards, multi-clause with arrow dispatch, anonymous functions. There is no separate `def` keyword.
 
 Functions inside a module can call each other directly by name:
 
@@ -735,7 +774,7 @@ Functions inside a module can call each other directly by name:
 defmodule Greeting do
   fn _helper name do "Hello, #{name}" end
 
-  def greet name do
+  fn greet name do
     String.upcase (_helper $name)
   end
 end
@@ -777,7 +816,6 @@ List.each $items, \x -> echo $x         # side-effecting call
 ```
 [1, 2, 3] |> List.map \x -> x * 2               # single extra arg
 [1, 2, 3] |> List.reduce(0, \a, x -> a + x)     # multiple extra args in parens
-enum |> Enum.to_list |> List.filter pred |> length
 ```
 
 **Inside data structures** (tuples, lists, maps), commas are structural separators. Multi-arg calls use adjacent parens `func(args)`:
@@ -786,8 +824,6 @@ enum |> Enum.to_list |> List.filter pred |> length
 {hd $sorted, hd (List.reverse $sorted)}         # single-arg: no parens needed
 {List.map([1,2,3], \x -> x * 2), 99}            # multi-arg: adjacent parens
 ```
-
-Single-value juxtaposition works bare inside data structures because function application binds tighter than operators and commas terminate the call.
 
 ### Match Expression
 
@@ -806,6 +842,16 @@ result = match status do
   {:ok, val} -> val
   {:error, reason} -> echo "error: #{reason}"
   _ -> :unknown
+end
+```
+
+Guards work in match clauses too:
+
+```
+match n do
+  x when x > 0 -> :positive
+  0 -> :zero
+  _ -> :negative
 end
 ```
 
@@ -830,16 +876,13 @@ result = 3 |> inc |> double    # double(inc(3)) = 8
 ```
 [1, 2, 3] |> List.map \x -> x * 2           # List.map([1,2,3], \x -> x * 2)
 [1, 2, 3] |> List.reduce(0, \a, x -> a + x) # List.reduce([1,2,3], 0, fn)
-enum |> Enum.to_list |> List.filter pred     # chaining with single-arg
 ```
-
-When the right side has one extra arg, juxtaposition works: `list |> List.map \x -> x`. When it has two or more extra args, use adjacent parens: `list |> List.reduce(0, fn)`.
 
 **Auto-coercion:** if the left side of `|>` is a command that produces bytes (an external command or builtin), its stdout is captured and automatically split into a list of lines (`IO.lines`). This means you can pipe command output directly into value functions:
 
 ```
-ls |> List.map \f -> String.upcase f         # list of uppercased filenames
-ls |> List.filter \f -> String.ends_with f, ".go" |> length  # count .go files
+ls |> List.map \f -> String.upcase f
+ls |> List.filter \f -> String.ends_with f, ".go" |> length
 ```
 
 **Explicit bridge override:** if the right side of `|>` is a bridge function (`JSON.parse`, `CSV.parse`, `CSV.parse_tsv`, `IO.lines`), the raw string is passed instead of auto-coercing to lines:
@@ -867,6 +910,19 @@ Evaluates `expr` as an ish expression and checks its truthiness. This coexists w
 
 The parser distinguishes the two forms: `then` after the condition selects POSIX mode, `do` selects ish mode.
 
+**Comparison operators in if conditions:** Inside the condition of an ish `if`, `>` and `<` are comparisons, not redirects. They are always comparisons in expression context:
+
+```
+x = 5
+if x > 0 do
+  echo "positive"
+end
+
+if x > 0 && x < 10 do
+  echo "single digit"
+end
+```
+
 ### while / for with end
 
 `while`, `until`, and `for` loops accept `end` as an alternative block terminator to `done`:
@@ -889,7 +945,16 @@ m = %{x: 10, y: 20}
 r = m.x                  # 10
 ```
 
-The dot syntax accesses map fields. In expression context it is parsed as an access node. In string/word expansion, `$m.x` style does not work directly (the dot is part of the variable name resolution), but dot access on variables works via the evaluator: if `varname` contains a dot, it splits on `.` and resolves `obj.field`.
+The dot syntax accesses map fields in expression context. `$m.x` style does not work directly in string/word expansion (the dot is part of the variable name resolution), but dot access on variables works via the evaluator.
+
+**Map literal syntax:** Map literals use `%{}` with keys followed by `:` and values, separated by commas:
+
+```
+m = %{name: "alice", age: 30}
+coords = %{x: 0, y: 0, z: 100}
+```
+
+Keys can be any expression; if a key is an identifier, its string value is used (not its binding). Values are evaluated as expressions.
 
 ### Arithmetic
 
@@ -897,10 +962,9 @@ Operators (in order of increasing precedence):
 
 | Precedence | Operators | Description |
 |------------|-----------|-------------|
-| 1 | `==` `!=` | Equality / inequality |
-| 2 | `<` `>` `<=` `>=` | Comparison |
-| 3 | `+` `-` | Addition / subtraction |
-| 4 | `*` `/` `%` | Multiplication / division / modulo |
+| 1 | `==` `!=` `<` `>` `<=` `>=` | Comparison (expression context only) |
+| 2 | `+` `-` | Addition / subtraction |
+| 3 | `*` `/` `%` | Multiplication / division / modulo |
 
 Parentheses override precedence:
 
@@ -930,7 +994,7 @@ r = 7.0 / 2.0        # 3.5
 r = 7.5 % 2.0        # 1.5
 ```
 
-If either operand is a float, the other is promoted to float and the result is a float: `3 + 1.5` evaluates to `4.5`. Float division returns a float (not integer division). Negation (`-3.14`) works on floats.
+If either operand is a float, the other is promoted to float and the result is a float: `3 + 1.5` evaluates to `4.5`. Float division returns a float.
 
 **Modulo operator:**
 
@@ -950,24 +1014,24 @@ Arithmetic operations on integers detect overflow instead of silently wrapping. 
 ```
 r = 5 == 5          # :true
 r = 5 != 6          # :true
-r = 3 < 5           # :true
+r = 3 < 5           # :true  (RHS of = is expression context)
 r = 5 > 3           # :true
 r = 3 <= 3          # :true
 r = 5 >= 5          # :true
 ```
+
+Comparison operators (`>`, `<`, `>=`, `<=`, `==`, `!=`) are **only available in expression context**: inside `()`, `[]`, `{}`, on the right side of `=` or `|>`, and in `if` conditions after `do`. In statement context (where there is no preceding `=`), bare `>` and `<` are redirects.
+
+**Chained comparisons:** `a < b < c` in expression context parses as `(a < b) && (b < c)`.
 
 **String comparisons** use lexicographic ordering:
 
 ```
 r = "apple" < "banana"    # :true
 r = "zebra" > "ant"       # :true
-r = "abc" <= "abd"        # :true
-r = "hello" >= "hello"    # :true
 ```
 
-**Cross-kind comparisons:** `==` and `!=` support int/float cross-comparison (`5 == 5.0` is `:true`). For `<`, `>`, `<=`, `>=`, both operands must be the same kind (both integers, both floats, or both strings).
-
-**General equality** works on all value types (not just integers). Structural comparison for tuples, lists, and maps.
+**Cross-kind comparisons:** `==` and `!=` support int/float cross-comparison (`5 == 5.0` is `:true`). For `<`, `>`, `<=`, `>=`, both operands must be the same kind.
 
 **String concatenation** with `+`:
 
@@ -976,7 +1040,7 @@ r = "hello" + " " + "world"    # "hello world"
 r = 42 + " things"             # "42 things"
 ```
 
-If either operand is a string, `+` performs concatenation.
+If either operand is a string, `+` always performs concatenation — no numeric coercion is attempted. This is a fast path: `+` with any string operand is guaranteed to concatenate.
 
 **Unary operators:**
 
@@ -993,26 +1057,24 @@ r = !false          # :true
 When a function call is the last expression in a function body (tail position), ish reuses the current call frame instead of creating a new one. Recursive functions in tail position do not grow the stack, enabling unbounded recursion:
 
 ```
-fn counter state do
+fn loop state do
   receive do
     {:inc, sender} ->
-      send sender, state + 1
-      counter (state + 1)          # tail call -- no stack growth
+      send sender, state + 1; loop(state + 1)
     {:get, sender} ->
-      send sender, state
-      counter state                # tail call -- no stack growth
+      send sender, state; loop state
   end
 end
 ```
 
-Without TCO, the `counter` pattern would overflow the stack after enough messages. With TCO, it runs indefinitely.
+Without TCO, the `loop` pattern would overflow the stack after enough messages. With TCO, it runs indefinitely.
 
 Tail position is recognized in the last expression of function bodies, each branch of `if`/`else`, each clause of `match` and `receive`, and the body of `try`. Both self-recursion and mutual recursion are optimized.
 
 ### try / rescue / end
 
 ```
-try
+try do
   body
 rescue
   pattern1 -> handler1
@@ -1020,17 +1082,70 @@ rescue
 end
 ```
 
-Evaluates `body`. If it completes without error, returns the result. If it raises an error (but not `return`, `break`, `continue`, or `set -e` signals), the error is wrapped as a tuple `{:error, "message"}` and matched against the rescue clauses:
+Evaluates `body`. If it completes without error, returns the result. If it raises an error (but not `return`, `break`, or `continue`), the error is wrapped as a tuple `{:error, "message"}` and matched against the rescue clauses:
 
 ```
-result = try
+result = try do
   x = 1 / 0
 rescue
   {:error, msg} -> echo "caught: #{msg}"
 end
 ```
 
-If no rescue clause matches, the error is re-raised. The `do` keyword after `try` is optional.
+If no rescue clause matches, the error is re-raised.
+
+## Two-Context Parsing
+
+ish uses a deterministic, two-context parser. There is no tentative parsing or backtracking. Context is determined by position, not by lookahead beyond the current token.
+
+**Statement context** (the default): the entire content of a pipeline or command, except where noted below. In this context:
+- `>` and `<` are I/O redirect operators
+- `[` is the `test` builtin
+- `{` at the head of a statement is a brace group; in argument position it is a tuple
+- `(` at the head of a statement is a subshell; in argument position it is a parenthesized expression
+- Bare identifier arguments to builtins and external commands are literal strings (no variable lookup)
+
+**Expression context**: the right-hand side of `=`, inside `()`, `[]`, `{}`, the right-hand side of `|>`, `fn`/`if`/`match`/`receive` bodies, and similar delimited positions. In this context:
+- `>` and `<` are comparison operators
+- `[` is a list literal
+- `{` is a tuple literal
+- `\` at a token boundary is lambda syntax
+- Identifiers trigger variable lookup
+
+**Expression extension:** At statement level, if the parser has consumed a single value (a bare identifier, literal, or a single-argument apply) and the next token is an arithmetic or comparison operator, it extends into expression context. This is what makes `x = 5 + 3` and `if x > 0 do` work — the `5 + 3` and `x > 0` are recognized and parsed as expressions.
+
+**`=` disambiguation:**
+- `VAR=value` (no spaces) — POSIX assignment. The token is a single word containing `=` where the left side is a valid identifier.
+- `pattern = expr` (spaces around `=`) — ish pattern match/bind.
+
+**`|` vs `|>`:**
+- `|` — Unix pipe. Connects stdout to stdin. If the left side produces a value instead of bytes, it is auto-converted to lines.
+- `|>` — Functional pipe. Passes the left value as the first argument to the right function.
+
+**`fn` disambiguation:**
+- `fn do ... end` — anonymous multi-clause dispatch (value).
+- At statement level: `fn name ... do ... end` — named function definition. The word after `fn` is the function name.
+- In expression context (RHS of `=`, argument to `spawn`/etc.): `fn params do ... end` — anonymous function. The words after `fn` are parameters, not a name.
+- Lambdas (`\params -> expr`) are the preferred syntax for simple anonymous functions.
+
+**`then` vs `do` after `if`:**
+- `then` — POSIX if: uses `elif`/`else`/`fi` block terminators.
+- `do` — ish if: uses `else`/`end` block terminators.
+
+**`\` at token start:**
+- At the start of a token (after whitespace or an operator): lambda syntax. `\x -> x * 2` creates an anonymous function.
+- Inside a word or string: escape character (POSIX behavior). `echo hello\ world` escapes the space.
+
+**Commas:**
+- At statement level: commas separate command arguments. `List.map [1,2,3], \x -> x * 2` passes two arguments.
+- Inside `{...}` (tuples) and `[...]` (lists): commas are structural separators. Use adjacent parens for multi-arg calls: `{List.map([1,2,3], \x -> x), 99}`.
+
+**Module-qualified names (`Name.func`):**
+- `List.map` produces three tokens: `List`, `.`, `map`. The parser builds a dot access chain.
+- In expression context, dot access builds NAccess nodes. The evaluator checks modules first, then map field access.
+
+**Function application precedence:**
+- In expression context, `func value` (juxtaposition) binds tighter than all binary operators. `f x + g y` parses as `(f x) + (g y)`.
 
 ## Processes and OTP
 
@@ -1079,6 +1194,17 @@ end
 
 Variables in the matching pattern are bound in a new scope for the clause body.
 
+**Multi-statement receive bodies:** Within a receive clause, use `;` to separate multiple statements in the clause body:
+
+```
+receive do
+  {:put, k, v, sender} -> send sender, :ok; loop(state)
+  {:get, k, sender}    -> send sender, Map.get(state, k); loop(state)
+end
+```
+
+The newline after `->` ends the clause body. To continue with more statements, append them with `;`.
+
 **Receive with timeout:**
 
 ```
@@ -1089,7 +1215,17 @@ after 5000 ->
 end
 ```
 
-The `after N ->` clause specifies a timeout in milliseconds. If no matching message arrives within the timeout, the after body is executed. The timeout also uses selective receive -- non-matching messages are saved, not discarded.
+The `after N ->` clause specifies a timeout in milliseconds. If no matching message arrives within the timeout, the after body is executed. Non-matching messages are saved, not discarded.
+
+Alternatively, the timeout can come before `do`:
+
+```
+receive 5000 do
+  msg -> handle msg
+after
+  echo "timed out"
+end
+```
 
 ### self
 
@@ -1102,18 +1238,18 @@ Returns the current process's pid. Every environment (including the top-level RE
 ### monitor
 
 ```
-ref = monitor pid
+monitor pid
 ```
 
 Sets up a **one-way** monitor. When the monitored process exits, the monitoring process receives a message in its mailbox:
 
 ```
-{:DOWN, ref, pid, reason}
+{:DOWN, pid, reason}
 ```
 
-Where `reason` is `:normal` for normal exits, or `{:error, message}` for abnormal exits. The ref is a unique integer identifying this monitor.
+Where `reason` is `:normal` for normal exits, or `{:error, message}` for abnormal exits.
 
-Monitors are one-directional -- the monitored process is not affected. Multiple monitors can be set on the same process.
+Monitors are one-directional — the monitored process is not affected. Multiple monitors can be set on the same process.
 
 ### await
 
@@ -1121,44 +1257,7 @@ Monitors are one-directional -- the monitored process is not affected. Multiple 
 result = await pid
 ```
 
-Blocks until the process finishes and returns its result value (the value of the last expression evaluated by the process). This is simpler than receive -- it does not involve the mailbox.
-
-### supervise
-
-```
-sup = supervise :one_for_one do
-  worker :name1 fn do body1 end
-  worker :name2 fn do body2 end
-end
-```
-
-Creates a supervisor process that manages child worker processes. Returns the supervisor's pid.
-
-**Strategies:**
-
-| Strategy | Behavior on crash |
-|----------|-------------------|
-| `:one_for_one` | Restart only the crashed child |
-| `:one_for_all` | Stop and restart all children |
-| `:rest_for_one` | Restart the crashed child and all children defined after it |
-
-**Restart backoff:** The supervisor enforces a maximum restart rate of 3 restarts within 5 seconds. If this rate is exceeded, the supervisor shuts down with reason `{:shutdown, :too_many_restarts}` and stops all children.
-
-Normal exits (`:normal` reason) do not trigger restarts -- the child is marked as dead. When all children have exited normally, the supervisor itself exits normally.
-
-Workers are defined with `worker :name fn_expr` where `:name` is an atom and `fn_expr` is a function value (typically an inline `fn do ... end`). Each worker function is called with no arguments.
-
-```
-sup = supervise :one_for_one do
-  worker :counter fn do
-    # ... long-running process
-  end
-  worker :logger fn do
-    # ... long-running process
-  end
-end
-await sup    # blocks until all workers exit normally
-```
+Blocks until the process finishes and returns its result value (the value of the last expression evaluated by the process). This is simpler than receive — it does not involve the mailbox.
 
 ## Standard Library
 
@@ -1280,7 +1379,7 @@ Enum works on both lists and maps. Maps are converted to `{key, value}` pair lis
 | `Enum.all enum, fn` | `:true` if all elements match. |
 | `Enum.find enum, fn` | First matching element, or `nil`. |
 | `Enum.count enum` | Number of elements. |
-| `Enum.sort_by enum, fn` | Sort by key function (decorate-sort-undecorate). |
+| `Enum.sort_by enum, fn` | Sort by key function. |
 | `Enum.group_by enum, fn` | Group elements by key function. |
 | `Enum.flat_map enum, fn` | Map then flatten. |
 | `Enum.with_index enum` | List of `{index, value}` tuples. |
@@ -1359,73 +1458,6 @@ JSON.encode data | jq .
 | `Process.sleep ms` | Pause for `ms` milliseconds. Returns `nil`. |
 | `Process.send_after delay, pid, msg` | Send `msg` to `pid` after `delay` milliseconds. Returns `:ok`. |
 
-## How Disambiguation Works
-
-The parser uses position and context to decide between POSIX shell syntax and ish expression syntax:
-
-**`=` with and without spaces:**
-- `VAR=value` (no spaces) -- POSIX assignment. The token is a single word containing `=` where the left side is a valid identifier.
-- `pattern = expr` (spaces around `=`) -- ish pattern match/bind. Parsed when `=` is a separate token following a word.
-
-**`|` vs `|>`:**
-- `|` -- Unix pipe. Connects stdout to stdin. If the left side produces a value instead of bytes, it is auto-converted to lines.
-- `|>` -- Functional pipe. Passes the left value as the first argument to the right function. If the left side is a command that produces bytes, its stdout is auto-converted to a list of lines (unless the right side is an explicit bridge function like `JSON.parse`).
-
-**Command position vs argument position:**
-- In **command position** (first word of a statement): keywords (`if`, `for`, `while`, `fn`, `match`, `spawn`, etc.) trigger their respective parsers. A word followed by `()` is a POSIX function definition. A word followed by `=` (as a separate token) is an ish binding.
-- In **argument position**: bare words are **literal strings** for builtins and external commands (no variable lookup -- `echo hello` passes `"hello"`). For user-defined functions and native functions, arguments are evaluated as **ish expressions** (variable lookup applies -- `add x y` passes the values of `x` and `y`).
-- Parenthesized expressions in argument position `(expr)` are always evaluated as expressions, regardless of whether the command is a builtin or function.
-
-**`/` disambiguation:**
-- After integer literals, `)`, or `]`: treated as the division operator.
-- After a word followed by whitespace: treated as division.
-- Otherwise: treated as part of a path (word character).
-
-**`%` disambiguation:**
-- In expression context: modulo operator.
-- `%{` is the map literal opener -- the lexer emits it as a single token, so there is no ambiguity.
-
-**`[` disambiguation:**
-- At command position: the `[` test builtin.
-- At expression position: if the content contains `,`, `|`, or is immediately `]` (empty list), it is a list literal. Otherwise falls back to the `[` builtin.
-
-**`{` disambiguation:**
-- If followed by an atom or immediate `}`: tuple expression.
-- Otherwise: group command `{ cmd; cmd; }`.
-
-**`then` vs `do` after `if`:**
-- `then` -- POSIX if: uses `elif`/`else`/`fi` block terminators.
-- `do` -- ish if: uses `else`/`end` block terminators.
-
-**`done` vs `end` for loops:**
-- Both `done` (POSIX) and `end` (ish) are accepted as block terminators for `for`, `while`, and `until`.
-
-**`\` (backslash) at token start:**
-- At the start of a token (after whitespace or an operator): lambda syntax. `\x -> x * 2` creates an anonymous function.
-- Inside a word or string: escape character (existing POSIX behavior). `echo hello\ world` escapes the space.
-- The lexer distinguishes these by position: `\` at a token boundary emits a `TBackslash` token; `\` mid-word is consumed by `lexWord` as an escape.
-
-**`fn` disambiguation:**
-- `fn do ... end` -- anonymous multi-clause dispatch (value). The `do` immediately after `fn` signals anonymous.
-- `fn name ... do ... end` -- named function definition (statement). The word after `fn` is always the function name.
-- Lambdas (`\params -> expr`) are the preferred syntax for simple anonymous functions.
-
-**Module-qualified names (`Name.func`):**
-- The lexer tokenizes `.` separately. `List.map` produces three tokens: `TIdent("List")`, `TDot`, `TIdent("map")`.
-- At statement start, the parser builds a dot access chain (NAccess), then tries expression first (for `Fib.calc (n-1) + Fib.calc (n-2)` style). If uncommitted, falls back to NCmd which handles commas (`List.map [1,2,3], \x -> x * 2`).
-- In expression context, dot access builds NAccess nodes. The evaluator checks modules first, then map field access.
-
-**Commas in function arguments vs data structure elements:**
-- At statement level (including binding RHS and `$()` command substitutions): commas always separate command arguments. `List.map [1,2,3], \x -> x * 2` passes two arguments.
-- Inside `{...}` (tuples) and `[...]` (lists): commas are structural separators. Use adjacent parens for multi-arg calls: `{List.map([1,2,3], \x -> x), 99}`.
-- Single-arg calls work bare inside data structures: `{hd $list, tl $list}` — function application takes one value and the comma goes to the tuple.
-
-**Function application precedence:**
-- In expression context, `func value` (juxtaposition) binds tighter than all binary operators. `f x + g y` parses as `(f x) + (g y)`.
-- Spaced `+` and `*` etc. are binary operators. Adjacent `-m` is a command flag. Spaced `- value` after a call is a binary minus.
-
-**General rule:** ish extensions never use tokens that are valid in POSIX shell at the same position. Atoms (`:word`), tuples (`{a, b}`), maps (`%{}`), pipe arrows (`|>`), lambdas (`\x -> expr`), and the `fn`/`match`/`spawn`/`receive`/`supervise`/`defmodule`/`use` keywords occupy syntactic positions that are unambiguous.
-
 ## Prompt (PS1)
 
 The prompt is controlled by the `PS1` variable. It supports Bash-compatible backslash escapes:
@@ -1449,7 +1481,7 @@ The prompt is controlled by the `PS1` variable. It supports Bash-compatible back
 | `\]` | End non-printing character sequence |
 | `\\` | Literal backslash |
 
-After backslash escapes are processed, `$var` and `#{expr}` are expanded via `env.Expand`.
+After backslash escapes are processed, `$var` and `#{expr}` are expanded.
 
 Default prompt (when PS1 is not set): `~/current/dir $ `
 
@@ -1467,6 +1499,7 @@ Default prompt (when PS1 is not set): `~/current/dir $ `
 | Ctrl-L | Clear screen |
 | Ctrl-C | Cancel current line |
 | Ctrl-D | Exit shell (on empty line) / delete character at cursor |
+| Ctrl-Z | Suspend foreground process (sends SIGTSTP, records as stopped job) |
 | Backspace | Delete character before cursor |
 | Delete | Delete character at cursor |
 | Tab | Tab completion (see below) |
@@ -1484,30 +1517,7 @@ Command history is saved to `~/.ish_history` (up to 1000 entries). Consecutive d
 
 ## Debugging
 
-### CLI Flags
-
-| Flag | Description |
-|------|-------------|
-| `-D` / `--debugger` | Enable the debugger at startup. Errors include full stack traces showing function name, arity, and source location. |
-| `--dump-ast` | Parse source (from `-c 'code'` or a filename) and print the AST as an indented tree, then exit. Useful for understanding how ish parses ambiguous syntax. |
-
-### Runtime Flags
-
-| Flag | Description |
-|------|-------------|
-| `set -X` | Enable Elixir-style tracing. Implies `set -x`. Each executed AST node is printed to stderr with source location. If no debugger exists yet, one is created automatically. Disable with `set +X`. |
-
-### Stack Traces
-
-When the debugger is enabled (`ish -D` or implicitly via `set -X`), errors include a stack trace:
-
-```
-ish: division by zero
-    inner/1      script.ish:5:3
-    outer/1      script.ish:8:3
-```
-
-Each frame shows `function_name/arity` and `file:line:col`. Frames are printed from innermost (top) to outermost (bottom).
+Debugging facilities are planned but not implemented in the current release.
 
 ## Multi-line Input
 

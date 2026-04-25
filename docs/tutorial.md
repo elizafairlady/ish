@@ -292,7 +292,7 @@ The fox doesn't care about holding onto results. The fox puts math in a sentence
 echo "there are #{7 * 52} weeks in seven years"
 ```
 
-The AI wants to compare things:
+The AI wants to compare things. Comparisons live on the right side of `=`, inside `if ... do`, or anywhere else you're already in an expression:
 
 ```
 r = 5 == 5
@@ -311,6 +311,8 @@ echo $r
 ```
 
 Comparisons return atoms. `:true` and `:false`, not `0` and `1`.
+
+One important thing: at statement level, `>` and `<` are redirects — the fox's tools. When you need a comparison standing alone, use a binding (`r = expr`) or put it inside `if ... do`. The context tells ish which one you mean.
 
 Strings stick together with `+`:
 
@@ -527,7 +529,7 @@ classify 0
 :zero
 ```
 
-`fn` in expression context — on the right side of `=`, as an argument to `spawn` or `map` — produces a value you can hold onto:
+`fn` in expression context — on the right side of `=`, as an argument to `spawn` or `map` — produces a value you can hold onto. The first identifier after `fn` is a parameter, not a name:
 
 ```
 add = fn a, b do a + b end
@@ -537,7 +539,7 @@ add 3, 4
 7
 ```
 
-Multi-clause dispatch works the same way with `fn do ... end`:
+Multi-clause dispatch works the same way with `fn do ... end`. Guards work here too:
 
 ```
 f = fn do
@@ -749,11 +751,11 @@ c
 ```
 
 ```
-n = 3
-while n > 0 do
+n=3
+while [ $n -gt 0 ]; do
   echo $n
-  n = n - 1
-end
+  n=$(( n - 1 ))
+done
 ```
 ```
 3
@@ -794,7 +796,7 @@ end
 
 The AI only has one way to close a block: `end`.
 
-The AI's `if` takes expressions directly:
+The AI's `if` takes expressions directly. After `do` you're in expression territory, so comparisons work:
 
 ```
 x = 5
@@ -982,12 +984,8 @@ Here's the most important concurrency pattern in ish — a process that carries 
 ```
 fn counter state do
   receive do
-    {:inc, sender} ->
-      send sender, state + 1
-      counter (state + 1)
-    {:get, sender} ->
-      send sender, state
-      counter state
+    {:inc, sender} -> send sender, state + 1; counter (state + 1)
+    {:get, sender} -> send sender, state; counter state
   end
 end
 
@@ -999,9 +997,11 @@ receive do n -> echo $n end
 1
 ```
 
-The function calls itself with the new state after each message. No mutable variables, no locks. Every receive ends with a recursive call that becomes the next receive. This is how you build stateful services — a key-value store, a rate limiter, a session manager. The function *is* the loop.
+The function calls itself with the new state after each message. No mutable variables, no locks. Every receive clause ends with a recursive call that becomes the next receive. This is how you build stateful services — a key-value store, a rate limiter, a session manager. The function *is* the loop.
 
-One thing worth knowing: that recursive call at the end of each branch — `counter (state + 1)` and `counter state` — doesn't grow the stack. ish recognizes when a function call is the last thing a function does (the "tail position") and reuses the current frame instead of piling on a new one. This means the counter can handle millions of messages without running out of memory. It's the same trick Erlang uses, and it's why this pattern works for long-running services instead of being a polite way to crash.
+Each clause body is a single statement. When you need multiple steps in one clause, `;` chains them on the same line — `send sender, state + 1; counter (state + 1)` sends the reply and then recurses. Both happen before the clause exits.
+
+One thing worth knowing: that recursive call at the end of each clause — `counter (state + 1)` and `counter state` — doesn't grow the stack. ish recognizes when a function call is the last thing a function does (the "tail position") and reuses the current frame instead of piling on a new one. This means the counter can handle millions of messages without running out of memory. It's the same trick Erlang uses, and it's why this pattern works for long-running services instead of being a polite way to crash.
 
 *The fox had been quiet for a while.*
 
@@ -1223,28 +1223,30 @@ Module-qualified names avoid shadowing Unix commands. `List.sort` instead of `so
 
 **Defining your own modules:**
 
+Inside a `defmodule` block, `fn` defines named functions. Guards, pattern matching, and multi-clause dispatch all work the same way they do at the top level:
+
 ```
 defmodule Math do
-  def abs do
+  fn abs do
     n when n >= 0 -> n
     n -> 0 - n
   end
 
-  def clamp val, lo, hi do
+  fn clamp val, lo, hi do
     Math.max lo, (Math.min val, hi)
   end
 
-  def max a, b when a >= b do a end
-  def max _, b do b end
-  def min a, b when a <= b do a end
-  def min _, b do b end
+  fn max a, b when a >= b do a end
+  fn max _, b do b end
+  fn min a, b when a <= b do a end
+  fn min _, b do b end
 end
 
 Math.abs (0 - 5)            # 5
 Math.clamp 10, 0, 5         # 5
 ```
 
-`def` works like `fn` inside a module — guards, pattern matching, multi-clause dispatch all work. Functions inside a module can call each other by name. Prefix a name with `_` to make it private.
+Functions inside a module can call each other by name. Prefix a name with `_` to make it private.
 
 **Importing with `use`:**
 
@@ -1312,13 +1314,12 @@ fn read_services file do
   lines = $(cat $file)
   lines
     |> String.split "\n"
-    |> List.filter \line -> List.length line >= 1
-    |> List.map fn do line ->
+    |> List.filter \line -> String.length line > 0
+    |> List.map \line ->
       parts = String.split line, " "
       [name | rest] = parts
       url = String.join rest, " "
       %{name: name, url: url}
-    end
 end
 
 services = read_services "services.conf"
@@ -1376,7 +1377,7 @@ echo ""
 printf "%d ok, %d failed\n" (List.length ok) (List.length failed)
 ```
 
-`cat` reads the file, `|>` transforms it. `curl` checks the URLs, `try/rescue` catches failures. `spawn` fires them all at once. `receive` with `after 5000` collects results without hanging. `List.filter` separates the good from the bad. `printf` prints the report.
+`cat` reads the file, `|>` transforms it. The lambda passed to `List.map` spans multiple lines — an arrow followed by a newline opens a multi-line lambda body, closed when the indentation unwinds. `curl` checks the URLs, `try/rescue` catches failures. `spawn` fires them all at once. `receive` with `after 5000` collects results without hanging. `List.filter` separates the good from the bad. `printf` prints the report.
 
 The fox's tools and the AI's tools, in the same script, doing what each one does best.
 
