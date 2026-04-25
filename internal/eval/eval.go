@@ -1056,12 +1056,49 @@ func execExternal(name string, args []string, scope Scope, redirs []ast.Redirect
 		}
 	}
 
-	err := cmd.Run()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return value.ErrorVal(exitErr.ExitCode()), nil
-		}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
 		return value.ErrorVal(127), nil
+	}
+
+	pid := cmd.Process.Pid
+	ttyFd := int(os.Stdin.Fd())
+
+	// Give child the terminal for foreground execution
+	GiveTerm(ttyFd, pid)
+	ResetJobSignals()
+
+	// Wait with WUNTRACED so we detect Ctrl-Z (SIGTSTP)
+	ws, werr := WaitFg(pid)
+
+	// Reclaim terminal for the shell
+	RenotifyJobSignals()
+	ReclaimTerm(ttyFd)
+
+	if werr != nil {
+		return value.ErrorVal(1), nil
+	}
+	if ws.Stopped() {
+		// Child was suspended — record as a job
+		cmdStr := name
+		if len(args) > 0 {
+			cmdStr += " " + strings.Join(args, " ")
+		}
+		j := scope.GetCtx().Jobs.Add(pid, cmdStr, cmd.Process)
+		j.SetStatus("Stopped")
+		j.Pgid = pid
+		fmt.Fprintf(os.Stderr, "\n[%d]+  Stopped                 %s\n", j.ID, cmdStr)
+		return value.ErrorVal(148), nil // 128 + SIGTSTP(20) = 148
+	}
+	if ws.Exited() {
+		code := ws.ExitStatus()
+		if code == 0 {
+			return value.OkVal(value.Nil), nil
+		}
+		return value.ErrorVal(code), nil
+	}
+	if ws.Signaled() {
+		return value.ErrorVal(128 + int(ws.Signal())), nil
 	}
 	return value.OkVal(value.Nil), nil
 }
