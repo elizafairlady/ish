@@ -1,8 +1,0 @@
-# String extensions written in ish.
-
-defmodule String do
-  def repeat _, 0 do "" end
-  def repeat s, n do
-    List.range(0, n) |> List.map \_ -> s |> String.join ""
-  end
-end

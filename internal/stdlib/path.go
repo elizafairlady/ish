@@ -1,60 +1,34 @@
 package stdlib
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
-	"ish/internal/core"
+	"ish/internal/value"
 )
 
-func pathBasename(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("basename: expected 1 argument, got %d", len(args))
-	}
-	return core.StringVal(filepath.Base(args[0].ToStr())), nil
-}
-
-func pathDirname(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("dirname: expected 1 argument, got %d", len(args))
-	}
-	return core.StringVal(filepath.Dir(args[0].ToStr())), nil
-}
-
-func pathExtname(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("extname: expected 1 argument, got %d", len(args))
-	}
-	return core.StringVal(filepath.Ext(args[0].ToStr())), nil
-}
-
-func pathJoin(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) == 0 {
-		return core.StringVal(""), nil
-	}
-	parts := make([]string, len(args))
-	for i, a := range args {
-		parts[i] = a.ToStr()
-	}
-	return core.StringVal(filepath.Join(parts...)), nil
-}
-
-func pathAbs(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("abs: expected 1 argument, got %d", len(args))
-	}
-	abs, err := filepath.Abs(args[0].ToStr())
-	if err != nil {
-		return core.Nil, fmt.Errorf("abs: %v", err)
-	}
-	return core.StringVal(abs), nil
-}
-
-func pathExists(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("exists: expected 1 argument, got %d", len(args))
-	}
-	_, err := os.Stat(args[0].ToStr())
-	return boolAtom(err == nil), nil
+func pathModule() *value.OrdMap {
+	return makeModule(map[string]func([]value.Value) (value.Value, error){
+		"basename": func(args []value.Value) (value.Value, error) { return value.StringVal(filepath.Base(arg(args, 0).ToStr())), nil },
+		"dirname":  func(args []value.Value) (value.Value, error) { return value.StringVal(filepath.Dir(arg(args, 0).ToStr())), nil },
+		"extname":  func(args []value.Value) (value.Value, error) { return value.StringVal(filepath.Ext(arg(args, 0).ToStr())), nil },
+		"join": func(args []value.Value) (value.Value, error) {
+			var parts []string
+			for _, a := range args {
+				parts = append(parts, a.ToStr())
+			}
+			return value.StringVal(filepath.Join(parts...)), nil
+		},
+		"exists": func(args []value.Value) (value.Value, error) {
+			_, err := os.Stat(arg(args, 0).ToStr())
+			return value.BoolVal(err == nil), nil
+		},
+		"abs": func(args []value.Value) (value.Value, error) {
+			p, err := filepath.Abs(arg(args, 0).ToStr())
+			if err != nil {
+				return value.Nil, err
+			}
+			return value.StringVal(p), nil
+		},
+	})
 }

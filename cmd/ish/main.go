@@ -13,43 +13,18 @@ import (
 
 	"golang.org/x/term"
 
-	"ish/internal/builtin"
-	"ish/internal/core"
-	"ish/internal/debug"
 	"ish/internal/eval"
-	"ish/internal/jobs"
 	"ish/internal/lexer"
 	"ish/internal/parser"
-	"ish/internal/process"
 	"ish/internal/readline"
-	"ish/internal/stdlib"
+	"ish/internal/value"
 )
 
-var Version = "0.6.10"
+var Version = "0.7.0"
 
 func main() {
-	// Wire up eval <-> builtin cycle via Init
-	builtin.Init(builtin.EvalContext{
-		RunSource: eval.RunSource,
-	})
-
-	env := core.TopEnv()
+	env := eval.NewEnv()
 	env.Ctx.ShellName = os.Args[0]
-	env.Ctx.CmdSub = eval.RunCmdSub
-
-	// Create main process
-	env.Ctx.Proc = process.NewProcess()
-
-	// Register stdlib
-	stdlib.Register(env)
-
-	// Set CallFn on env so stdlib/process can call user functions
-	env.Ctx.CallFn = eval.CallFn
-
-	// Load embedded ish prelude (List/Map/Enum/Math/String extensions written in ish)
-	stdlib.LoadPrelude(env, func(src string, e *core.Env) {
-		eval.RunSource(src, e) //nolint: errcheck
-	})
 
 	// Set $SHELL
 	if exe, err := os.Executable(); err == nil {
@@ -58,8 +33,6 @@ func main() {
 
 	// Detect login shell: argv[0] starts with '-' or -l/--login flag
 	loginShell := strings.HasPrefix(os.Args[0], "-")
-	debugMode := false
-	dumpAST := false
 	args := os.Args[1:]
 	var filteredArgs []string
 	for _, a := range args {
@@ -69,10 +42,6 @@ func main() {
 		case "--version":
 			fmt.Printf("ish %s\n", Version)
 			os.Exit(0)
-		case "-D", "--debugger":
-			debugMode = true
-		case "--dump-ast":
-			dumpAST = true
 		default:
 			filteredArgs = append(filteredArgs, a)
 		}
@@ -80,52 +49,13 @@ func main() {
 	args = filteredArgs
 	env.Ctx.IsLoginShell = loginShell
 
-	// Set up debugger if requested
-	if debugMode {
-		d := debug.New()
-		env.Ctx.Debugger = d
-	}
-
-	// --dump-ast mode: parse and print AST, then exit
-	if dumpAST {
-		var src, name string
-		if len(args) > 0 && args[0] == "-c" && len(args) > 1 {
-			src = args[1]
-			name = "<stdin>"
-		} else if len(args) > 0 {
-			data, err := os.ReadFile(args[0])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "ish: %s\n", err)
-				os.Exit(1)
-			}
-			src = string(data)
-			name = args[0]
-		} else {
-			fmt.Fprintf(os.Stderr, "ish: --dump-ast requires a source (-c 'code' or filename)\n")
-			os.Exit(1)
-		}
-		l := lexer.New(src)
-		node, err := parser.Parse(l)
-		if l.Error() != "" {
-			fmt.Fprintf(os.Stderr, "ish: %s\n", l.Error())
-			os.Exit(2)
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "ish: parse error: %s\n", err)
-			os.Exit(2)
-		}
-		sm := debug.NewSourceMap(name, src)
-		debug.DumpAST(node, sm, os.Stdout)
-		os.Exit(0)
-	}
-
 	// Non-interactive modes: -c command or script file
 	if len(args) > 0 {
 		if args[0] == "-c" && len(args) > 1 {
 			env.Ctx.SourceName = "<stdin>"
-			eval.RunSource(args[1], env) //nolint: errcheck
+			eval.Run(args[1], env)
 			shellExit(env)
-			os.Exit(env.Ctx.LastExit)
+			os.Exit(env.Ctx.ExitCode())
 		}
 		data, err := os.ReadFile(args[0])
 		if err != nil {
@@ -135,9 +65,9 @@ func main() {
 		env.Ctx.ShellName = args[0]
 		env.Ctx.SourceName = args[0]
 		env.Ctx.Args = args[1:]
-		eval.RunSource(string(data), env) //nolint: errcheck
+		eval.Run(string(data), env)
 		shellExit(env)
-		os.Exit(env.Ctx.LastExit)
+		os.Exit(env.Ctx.ExitCode())
 	}
 
 	// Piped stdin: read and execute as a script
@@ -148,9 +78,9 @@ func main() {
 			os.Exit(1)
 		}
 		env.Ctx.SourceName = "<stdin>"
-		eval.RunSource(string(data), env) //nolint: errcheck
+		eval.Run(string(data), env)
 		shellExit(env)
-		os.Exit(env.Ctx.LastExit)
+		os.Exit(env.Ctx.ExitCode())
 	}
 
 	// Interactive mode — source startup files
@@ -170,7 +100,7 @@ func main() {
 	syscall.Setpgid(0, shellPid)
 	ttyFd := int(os.Stdin.Fd())
 	if term.IsTerminal(ttyFd) {
-		jobs.GiveTerm(ttyFd, shellPid)
+		eval.GiveTerm(ttyFd, shellPid)
 	}
 
 	// Signal handling
@@ -198,11 +128,15 @@ func main() {
 	signal.Notify(sigHup, syscall.SIGHUP)
 	go func() {
 		<-sigHup
-		for _, j := range jobs.ListJobs() {
-			syscall.Kill(-j.Pgid, syscall.SIGHUP)
+		if env.Ctx.Jobs != nil {
+			for _, j := range env.Ctx.Jobs.All() {
+				if j.Process != nil {
+					syscall.Kill(-j.Pid, syscall.SIGHUP)
+				}
+			}
 		}
 		shellExit(env)
-		os.Exit(129) // 128 + SIGHUP(1)
+		os.Exit(129)
 	}()
 
 	env.Ctx.SourceName = "<repl>"
@@ -210,28 +144,29 @@ func main() {
 	shellExit(env)
 }
 
-// shellExit runs cleanup for shell exit: exit traps, logout file, HUP to jobs.
-func shellExit(env *core.Env) {
-	builtin.RunExitTraps(env)
+func shellExit(env *eval.Env) {
+	eval.RunExitTraps(env)
 	if env.Ctx.IsLoginShell {
 		home := homeDir(env)
 		sourceIfExists(home+"/.ish_logout", env)
-		// Send SIGHUP to remaining background jobs
-		for _, j := range jobs.ListJobs() {
-			syscall.Kill(-j.Pgid, syscall.SIGHUP)
+		if env.Ctx.Jobs != nil {
+			for _, j := range env.Ctx.Jobs.All() {
+				if j.Process != nil {
+					syscall.Kill(-j.Pid, syscall.SIGHUP)
+				}
+			}
 		}
 	}
 }
 
-func homeDir(env *core.Env) string {
+func homeDir(env *eval.Env) string {
 	if v, ok := env.Get("HOME"); ok {
 		return v.ToStr()
 	}
 	return ""
 }
 
-// sourceIfExists sources a file if it exists. Returns true if found.
-func sourceIfExists(path string, env *core.Env) bool {
+func sourceIfExists(path string, env *eval.Env) bool {
 	if path == "" {
 		return false
 	}
@@ -239,11 +174,11 @@ func sourceIfExists(path string, env *core.Env) bool {
 	if err != nil {
 		return false
 	}
-	eval.RunSource(string(data), env) //nolint: errcheck
+	eval.Run(string(data), env)
 	return true
 }
 
-func repl(env *core.Env) {
+func repl(env *eval.Env) {
 	rl := readline.NewReadline()
 	rl.Complete = makeCompleter(env)
 	exitWarned := false
@@ -252,8 +187,7 @@ func repl(env *core.Env) {
 		prompt := getPrompt(env)
 		line, ok := rl.ReadLine(prompt)
 		if !ok {
-			// EOF (ctrl-d)
-			if !exitWarned && hasStoppedJobs() {
+			if !exitWarned && hasStoppedJobs(env) {
 				fmt.Fprintln(os.Stderr, "There are stopped jobs.")
 				exitWarned = true
 				continue
@@ -265,38 +199,32 @@ func repl(env *core.Env) {
 		}
 		exitWarned = false
 
-		line = readMultilineRL(line, rl, env)
+		line = readMultilineRL(line, rl)
 		rl.AddHistory(line)
 
-		val, err := eval.RunSource(line, env)
-		if err == core.ErrExit {
-			if !exitWarned && hasStoppedJobs() {
-				fmt.Fprintln(os.Stderr, "There are stopped jobs.")
-				exitWarned = true
-				continue
-			}
-			break
-		}
-		if val.Kind != core.VNil {
+		val := eval.Run(line, env)
+		if val.Kind != value.VNil {
 			fmt.Fprintln(env.Ctx.Stdout, val.String())
 		}
 	}
 }
 
-func hasStoppedJobs() bool {
-	for _, j := range jobs.ListJobs() {
-		j.Mu.Lock()
-		stopped := j.Status == "Stopped"
-		j.Mu.Unlock()
-		if stopped {
+func hasStoppedJobs(env *eval.Env) bool {
+	if env.Ctx.Jobs == nil {
+		return false
+	}
+	for _, j := range env.Ctx.Jobs.All() {
+		if j.Status() == "Stopped" {
 			return true
 		}
 	}
 	return false
 }
 
-func needsMore(input string, env *core.Env) bool {
-	_, err := parser.Parse(lexer.New(input))
+func needsMore(input string) bool {
+	tokens := lexer.Lex(input)
+	p := parser.New(tokens)
+	_, err := p.Parse()
 	if err == nil {
 		return false
 	}
@@ -309,12 +237,11 @@ func needsMore(input string, env *core.Env) bool {
 		strings.Contains(msg, "expected ')'") ||
 		strings.Contains(msg, "expected 'do'") ||
 		strings.Contains(msg, "expected 'then'") ||
-		strings.Contains(msg, "expected '{' in function definition") ||
 		strings.Contains(msg, "unexpected end of input")
 }
 
-func readMultilineRL(line string, rl *readline.Readline, env *core.Env) string {
-	for needsMore(line, env) {
+func readMultilineRL(line string, rl *readline.Readline) string {
+	for needsMore(line) {
 		next, ok := rl.ReadLine("... ")
 		if !ok {
 			break
@@ -324,12 +251,9 @@ func readMultilineRL(line string, rl *readline.Readline, env *core.Env) string {
 	return line
 }
 
-func getPrompt(env *core.Env) string {
+func getPrompt(env *eval.Env) string {
 	if v, ok := env.Get("PS1"); ok {
-		s := v.ToStr()
-		s = expandPromptEscapes(s, env)
-		s = env.Expand(s)
-		return s
+		return expandPromptEscapes(v.ToStr(), env)
 	}
 	cwd, _ := os.Getwd()
 	home := ""
@@ -342,7 +266,7 @@ func getPrompt(env *core.Env) string {
 	return cwd + " $ "
 }
 
-func expandPromptEscapes(s string, env *core.Env) string {
+func expandPromptEscapes(s string, env *eval.Env) string {
 	var buf strings.Builder
 	i := 0
 	for i < len(s) {
@@ -426,7 +350,7 @@ func expandPromptEscapes(s string, env *core.Env) string {
 	return buf.String()
 }
 
-func makeCompleter(env *core.Env) readline.CompleteFn {
+func makeCompleter(env *eval.Env) readline.CompleteFn {
 	var pathCommands []string
 	var pathCached bool
 
@@ -463,20 +387,13 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 
 		if strings.HasPrefix(prefix, "$") {
 			varPrefix := prefix[1:]
-			for s := core.Scope(env); s != nil; s = s.GetParent() {
-				switch sc := s.(type) {
-				case *core.Env:
+			for s := eval.Scope(env); s != nil; s = s.GetParent() {
+				if sc, ok := s.(*eval.Env); ok {
 					for k := range sc.Bindings {
 						if strings.HasPrefix(k, varPrefix) {
 							candidates = append(candidates, "$"+k)
 						}
 					}
-				case *core.Frame:
-					sc.EachBinding(func(k string, _ core.Value) {
-						if strings.HasPrefix(k, varPrefix) {
-							candidates = append(candidates, "$"+k)
-						}
-					})
 				}
 			}
 			sort.Strings(candidates)
@@ -488,16 +405,9 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 			modName := prefix[:dotIdx]
 			fnPrefix := prefix[dotIdx+1:]
 			if mod, ok := env.GetModule(modName); ok {
-				for name := range mod.Fns {
+				for _, name := range mod.Keys {
 					if strings.HasPrefix(name, fnPrefix) {
 						candidates = append(candidates, modName+"."+name)
-					}
-				}
-				if mod.Fns != nil {
-					for name := range mod.Fns {
-						if strings.HasPrefix(name, fnPrefix) {
-							candidates = append(candidates, modName+"."+name)
-						}
 					}
 				}
 				sort.Strings(candidates)
@@ -508,20 +418,19 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 		if strings.ContainsAny(prefix, "/~.") {
 			expanded := prefix
 			if strings.HasPrefix(expanded, "~") {
-				expanded = env.ExpandTilde(expanded)
+				home := homeDir(env)
+				if home != "" && strings.HasPrefix(expanded, "~/") {
+					expanded = home + expanded[1:]
+				}
 			}
 			matches, _ := filepath.Glob(expanded + "*")
 			for _, m := range matches {
-				// filepath.Glob strips "./" prefix; restore it to match the typed prefix
 				if strings.HasPrefix(prefix, "./") && !strings.HasPrefix(m, "./") {
 					m = "./" + m
 				}
 				display := m
 				if strings.HasPrefix(prefix, "~") {
-					home := ""
-					if v, ok := env.Get("HOME"); ok {
-						home = v.ToStr()
-					}
+					home := homeDir(env)
 					if home != "" && strings.HasPrefix(m, home) {
 						display = "~" + m[len(home):]
 					}
@@ -536,13 +445,8 @@ func makeCompleter(env *core.Env) readline.CompleteFn {
 		}
 
 		if isFirst {
-			for name := range builtin.Builtins {
-				if strings.HasPrefix(name, prefix) {
-					candidates = append(candidates, name)
-				}
-			}
-			for s := core.Scope(env); s != nil; s = s.GetParent() {
-				if c, ok := s.(*core.Env); ok {
+			for s := eval.Scope(env); s != nil; s = s.GetParent() {
+				if c, ok := s.(*eval.Env); ok {
 					for name := range c.Fns {
 						if strings.HasPrefix(name, prefix) {
 							candidates = append(candidates, name)

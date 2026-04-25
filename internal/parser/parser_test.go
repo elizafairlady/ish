@@ -1,1620 +1,1894 @@
 package parser
 
 import (
-	"strings"
 	"testing"
 
 	"ish/internal/ast"
 	"ish/internal/lexer"
 )
 
-// parseStr is a helper that lexes and parses a string in one step.
-func parseStr(input string) (*ast.Node, error) {
-	return Parse(lexer.New(input))
+func parse(input string) (*ast.Node, error) {
+	tokens := lexer.Lex(input)
+	p := New(tokens)
+	return p.Parse()
 }
 
-// ---------------------------------------------------------------------------
-// Simple commands
-// ---------------------------------------------------------------------------
-
-func TestParseSimpleCommand(t *testing.T) {
-	node, err := parseStr("echo hello world")
-	if err != nil {
-		t.Fatal(err)
+func truncName(s string) string {
+	if len(s) > 40 {
+		return s[:40]
 	}
-	if node.Kind != ast.NCmd {
-		t.Fatalf("expected NCmd, got %d", node.Kind)
-	}
-	if len(node.Children) != 3 {
-		t.Fatalf("expected 3 children, got %d", len(node.Children))
-	}
-	if node.Children[0].Tok.Val != "echo" {
-		t.Errorf("child[0] = %q, want %q", node.Children[0].Tok.Val, "echo")
-	}
-	if node.Children[1].Tok.Val != "hello" {
-		t.Errorf("child[1] = %q, want %q", node.Children[1].Tok.Val, "hello")
-	}
-	if node.Children[2].Tok.Val != "world" {
-		t.Errorf("child[2] = %q, want %q", node.Children[2].Tok.Val, "world")
-	}
+	return s
 }
 
-func TestParseCommandWithFlags(t *testing.T) {
-	node, err := parseStr("ls -la /tmp")
+func mustParse(t *testing.T, input string) *ast.Node {
+	t.Helper()
+	node, err := parse(input)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse(%q): %v", input, err)
 	}
-	if node.Kind != ast.NCmd {
-		t.Fatalf("expected NCmd, got %d", node.Kind)
+	return node
+}
+
+func firstChild(t *testing.T, input string) *ast.Node {
+	t.Helper()
+	block := mustParse(t, input)
+	if len(block.Children) == 0 {
+		t.Fatalf("parse(%q): empty block", input)
 	}
-	if len(node.Children) != 3 {
-		t.Fatalf("expected 3 children, got %d", len(node.Children))
+	return block.Children[0]
+}
+
+// =====================================================================
+// TIER 1: The 7 ambiguous tokens — structural resolution
+// =====================================================================
+
+func TestToken_Gt_RedirectInCommand(t *testing.T) {
+	cmd := firstChild(t, "echo hello > file")
+	if cmd.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", cmd.Kind)
 	}
-	// child[0] = NIdent("ls")
-	if node.Children[0].Kind != ast.NIdent || node.Children[0].Tok.Val != "ls" {
-		t.Errorf("child[0]: got kind=%d val=%q, want NIdent 'ls'", node.Children[0].Kind, node.Children[0].Tok.Val)
+	if len(cmd.Children) != 2 {
+		t.Fatalf("expected 2 children (echo, hello), got %d", len(cmd.Children))
 	}
-	// child[1] = compound word for "-la" (TMinus + TIdent adjacent)
-	arg1 := nodeToString(node.Children[1])
-	if arg1 != "-la" {
-		t.Errorf("child[1] assembled = %q, want %q", arg1, "-la")
+	if cmd.Children[0].Tok.Val != "echo" || cmd.Children[1].Tok.Val != "hello" {
+		t.Errorf("expected [echo, hello], got [%s, %s]", cmd.Children[0].Tok.Val, cmd.Children[1].Tok.Val)
 	}
-	// child[2] = compound word for "/tmp" (TDiv + TIdent adjacent)
-	arg2 := nodeToString(node.Children[2])
-	if arg2 != "/tmp" {
-		t.Errorf("child[2] assembled = %q, want %q", arg2, "/tmp")
+	if len(cmd.Redirs) != 1 || cmd.Redirs[0].Op != ast.TGt || cmd.Redirs[0].Fd != 1 {
+		t.Errorf("expected stdout > redirect, got %d redirs", len(cmd.Redirs))
+	}
+	if cmd.Redirs[0].Target.Tok.Val != "file" {
+		t.Errorf("expected redirect target 'file', got %q", cmd.Redirs[0].Target.Tok.Val)
 	}
 }
 
-func TestParseCommandWithDoubleDash(t *testing.T) {
-	node, err := parseStr("cmd --flag")
-	if err != nil {
-		t.Fatal(err)
+func TestToken_Gt_ComparisonInBinding(t *testing.T) {
+	bind := firstChild(t, "x = y > 5")
+	if bind.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", bind.Kind)
 	}
-	if node.Kind != ast.NCmd {
-		t.Fatalf("expected NCmd, got %d", node.Kind)
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NBinOp || rhs.Tok.Type != ast.TGt {
+		t.Fatalf("expected > comparison, got kind=%v", rhs.Kind)
 	}
-	if len(node.Children) != 2 {
-		t.Fatalf("expected 2 children, got %d", len(node.Children))
+	if rhs.Children[0].Tok.Val != "y" {
+		t.Errorf("expected left operand 'y', got %q", rhs.Children[0].Tok.Val)
 	}
-	arg := nodeToString(node.Children[1])
-	if arg != "--flag" {
-		t.Errorf("child[1] assembled = %q, want %q", arg, "--flag")
+	if rhs.Children[1].Tok.Val != "5" {
+		t.Errorf("expected right operand '5', got %q", rhs.Children[1].Tok.Val)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Assignments and bindings
-// ---------------------------------------------------------------------------
+func TestToken_Gt_ComparisonInParens(t *testing.T) {
+	// In binding RHS, parens are expression context
+	bind := firstChild(t, "r = (x > 5)")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NBinOp || rhs.Tok.Type != ast.TGt {
+		t.Fatalf("expected > comparison in binding parens, got kind=%v", rhs.Kind)
+	}
+}
 
-func TestParsePosixAssignment(t *testing.T) {
-	node, err := parseStr("X=42")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NAssign {
-		t.Fatalf("expected NAssign, got %d", node.Kind)
-	}
-	// New: Tok.Val = variable name, Children[0] = value node
-	if node.Tok.Val != "X" {
-		t.Errorf("Tok.Val = %q, want %q", node.Tok.Val, "X")
+func TestToken_Gt_SubshellRedirectInParens(t *testing.T) {
+	node := firstChild(t, "(x > 5)")
+	if node.Kind != ast.NSubshell {
+		t.Fatalf("expected NSubshell, got %v", node.Kind)
 	}
 	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child (value), got %d", len(node.Children))
+		t.Fatalf("expected 1 child in subshell, got %d", len(node.Children))
 	}
-	if node.Children[0].Tok.Val != "42" {
-		t.Errorf("value = %q, want %q", node.Children[0].Tok.Val, "42")
-	}
-}
-
-func TestParseIshBind(t *testing.T) {
-	node, err := parseStr("x = 42")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NMatch {
-		t.Fatalf("expected NMatch, got %d", node.Kind)
-	}
-	if len(node.Children) != 2 {
-		t.Fatalf("expected 2 children, got %d", len(node.Children))
-	}
-	if node.Children[0].Kind != ast.NIdent {
-		t.Errorf("lhs kind = %d, want NWord (%d)", node.Children[0].Kind, ast.NIdent)
-	}
-	if node.Children[0].Tok.Val != "x" {
-		t.Errorf("lhs val = %q, want %q", node.Children[0].Tok.Val, "x")
-	}
-	if node.Children[1].Kind != ast.NLit {
-		t.Errorf("rhs kind = %d, want NLit (%d)", node.Children[1].Kind, ast.NLit)
-	}
-	if node.Children[1].Tok.Val != "42" {
-		t.Errorf("rhs val = %q, want %q", node.Children[1].Tok.Val, "42")
+	inner := node.Children[0]
+	if len(inner.Redirs) != 1 || inner.Redirs[0].Op != ast.TGt {
+		t.Fatalf("expected > redirect inside subshell")
 	}
 }
 
-func TestParseTupleBind(t *testing.T) {
-	node, err := parseStr("{:ok, :err} = {:ok, :err}")
-	if err != nil {
-		t.Fatal(err)
+func TestToken_Lt_RedirectInCommand(t *testing.T) {
+	cmd := firstChild(t, "sort < input.txt")
+	if len(cmd.Redirs) != 1 || cmd.Redirs[0].Op != ast.TLt || cmd.Redirs[0].Fd != 0 {
+		t.Fatalf("expected stdin < redirect")
 	}
-	if node.Kind != ast.NMatch {
-		t.Fatalf("expected NMatch, got %d", node.Kind)
+}
+
+func TestToken_Lt_ComparisonInBinding(t *testing.T) {
+	bind := firstChild(t, "x = a < b")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NBinOp || rhs.Tok.Type != ast.TLt {
+		t.Fatalf("expected < comparison, got kind=%v tok=%v", rhs.Kind, rhs.Tok.Type)
 	}
-	if len(node.Children) != 2 {
-		t.Fatalf("expected 2 children, got %d", len(node.Children))
+}
+
+func TestToken_Bracket_ListInExpr(t *testing.T) {
+	bind := firstChild(t, "x = [1, 2, 3]")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NList {
+		t.Fatalf("expected NList, got %v", rhs.Kind)
 	}
-	lhs := node.Children[0]
-	rhs := node.Children[1]
-	if lhs.Kind != ast.NTuple {
-		t.Errorf("lhs kind = %d, want NTuple (%d)", lhs.Kind, ast.NTuple)
+	if len(rhs.Children) != 3 {
+		t.Fatalf("expected 3 elements, got %d", len(rhs.Children))
 	}
-	if len(lhs.Children) != 2 {
-		t.Errorf("lhs children = %d, want 2", len(lhs.Children))
+	for i, want := range []string{"1", "2", "3"} {
+		if rhs.Children[i].Tok.Val != want {
+			t.Errorf("element %d: expected %q, got %q", i, want, rhs.Children[i].Tok.Val)
+		}
 	}
+}
+
+func TestToken_Bracket_TestInCommand(t *testing.T) {
+	cmd := firstChild(t, "[ -f foo ]")
+	if cmd.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", cmd.Kind)
+	}
+	if len(cmd.Children) != 4 {
+		t.Fatalf("expected 4 children ([, -f, foo, ]), got %d", len(cmd.Children))
+	}
+	if cmd.Children[0].Tok.Val != "[" {
+		t.Errorf("expected [ as head, got %q", cmd.Children[0].Tok.Val)
+	}
+	if cmd.Children[1].Tok.Val != "-f" {
+		t.Errorf("expected -f flag, got %q", cmd.Children[1].Tok.Val)
+	}
+	if cmd.Children[3].Tok.Val != "]" {
+		t.Errorf("expected ] as last arg, got %q", cmd.Children[3].Tok.Val)
+	}
+}
+
+func TestToken_Brace_TupleInExpr(t *testing.T) {
+	bind := firstChild(t, "x = {:ok, nil}")
+	rhs := bind.Children[1]
 	if rhs.Kind != ast.NTuple {
-		t.Errorf("rhs kind = %d, want NTuple (%d)", rhs.Kind, ast.NTuple)
+		t.Fatalf("expected NTuple, got %v", rhs.Kind)
 	}
 	if len(rhs.Children) != 2 {
-		t.Errorf("rhs children = %d, want 2", len(rhs.Children))
+		t.Fatalf("expected 2 elements, got %d", len(rhs.Children))
+	}
+	if rhs.Children[0].Kind != ast.NAtom || rhs.Children[0].Tok.Val != "ok" {
+		t.Errorf("expected :ok, got kind=%v val=%q", rhs.Children[0].Kind, rhs.Children[0].Tok.Val)
+	}
+	if rhs.Children[1].Kind != ast.NLit || rhs.Children[1].Tok.Val != "nil" {
+		t.Errorf("expected nil, got kind=%v val=%q", rhs.Children[1].Kind, rhs.Children[1].Tok.Val)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Pipelines
-// ---------------------------------------------------------------------------
-
-func TestParsePipeline(t *testing.T) {
-	node, err := parseStr("a | b | c")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NPipe {
-		t.Fatalf("expected NPipe, got %d", node.Kind)
+func TestToken_Brace_GroupInCommand(t *testing.T) {
+	node := firstChild(t, "{ echo hello; echo world; }")
+	if node.Kind != ast.NBlock {
+		t.Fatalf("expected NBlock (group), got %v", node.Kind)
 	}
 	if len(node.Children) != 2 {
-		t.Fatalf("expected 2 children at top level, got %d", len(node.Children))
-	}
-	inner := node.Children[0]
-	if inner.Kind != ast.NPipe {
-		t.Fatalf("expected inner NPipe, got %d", inner.Kind)
-	}
-	if inner.Children[0].Kind != ast.NCmd {
-		t.Errorf("inner left should be NCmd, got %d", inner.Children[0].Kind)
+		t.Fatalf("expected 2 statements in group, got %d", len(node.Children))
 	}
 }
 
-func TestParseFunctionalPipe(t *testing.T) {
-	node, err := parseStr("a |> b |> c")
-	if err != nil {
-		t.Fatal(err)
+func TestToken_Backslash_Lambda(t *testing.T) {
+	bind := firstChild(t, `x = \a b -> a + b`)
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NLambda {
+		t.Fatalf("expected lambda, got %v", rhs.Kind)
 	}
-	if node.Kind != ast.NPipeFn {
-		t.Fatalf("expected NPipeFn, got %d", node.Kind)
+	// 2 params + body = 3 children
+	if len(rhs.Children) != 3 {
+		t.Fatalf("expected 3 children (2 params + body), got %d", len(rhs.Children))
 	}
-	inner := node.Children[0]
-	if inner.Kind != ast.NPipeFn {
-		t.Fatalf("expected inner NPipeFn, got %d", inner.Kind)
+	if rhs.Children[0].Tok.Val != "a" || rhs.Children[1].Tok.Val != "b" {
+		t.Errorf("expected params a, b; got %q, %q", rhs.Children[0].Tok.Val, rhs.Children[1].Tok.Val)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// And/Or lists, background
-// ---------------------------------------------------------------------------
-
-func TestParseAndOr(t *testing.T) {
-	node, err := parseStr("a && b || c")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NOrList {
-		t.Fatalf("expected NOrList, got %d", node.Kind)
-	}
-	inner := node.Children[0]
-	if inner.Kind != ast.NAndList {
-		t.Fatalf("expected inner NAndList, got %d", inner.Kind)
+	body := rhs.Children[2]
+	if body.Kind != ast.NBinOp || body.Tok.Type != ast.TPlus {
+		t.Errorf("expected + body, got kind=%v", body.Kind)
 	}
 }
 
-func TestParseBackground(t *testing.T) {
-	node, err := parseStr("cmd &")
-	if err != nil {
-		t.Fatal(err)
+func TestToken_Minus_FlagInCommand(t *testing.T) {
+	cmd := firstChild(t, "ls -la")
+	if cmd.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", cmd.Kind)
 	}
-	if node.Kind != ast.NBg {
-		t.Fatalf("expected NBg, got %d", node.Kind)
+	if len(cmd.Children) != 2 {
+		t.Fatalf("expected 2 children, got %d", len(cmd.Children))
 	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child, got %d", len(node.Children))
-	}
-	if node.Children[0].Kind != ast.NCmd {
-		t.Errorf("child should be NCmd, got %d", node.Children[0].Kind)
+	if cmd.Children[1].Kind != ast.NFlag || cmd.Children[1].Tok.Val != "-la" {
+		t.Errorf("expected flag -la, got kind=%v val=%q", cmd.Children[1].Kind, cmd.Children[1].Tok.Val)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Subshell
-// ---------------------------------------------------------------------------
-
-func TestParseSubshell(t *testing.T) {
-	node, err := parseStr("(echo hi)")
-	if err != nil {
-		t.Fatal(err)
+func TestToken_Minus_OperatorInExpr(t *testing.T) {
+	bind := firstChild(t, "x = 10 - 3")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NBinOp || rhs.Tok.Type != ast.TMinus {
+		t.Fatalf("expected - binop, got %v", rhs.Kind)
 	}
-	if node.Kind != ast.NSubshell {
-		t.Fatalf("expected NSubshell, got %d", node.Kind)
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child, got %d", len(node.Children))
-	}
-	body := node.Children[0]
-	if body.Kind != ast.NCmd {
-		t.Errorf("body should be NCmd, got %d", body.Kind)
+	if rhs.Children[0].Tok.Val != "10" || rhs.Children[1].Tok.Val != "3" {
+		t.Errorf("expected 10 - 3, got %s - %s", rhs.Children[0].Tok.Val, rhs.Children[1].Tok.Val)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// POSIX if/then/fi
-// ---------------------------------------------------------------------------
+// =====================================================================
+// TIER 2: Destructuring bindings
+// =====================================================================
 
-func TestParsePosixIf(t *testing.T) {
-	node, err := parseStr("if true; then echo yes; fi")
-	if err != nil {
-		t.Fatal(err)
+func TestBind_Simple(t *testing.T) {
+	bind := firstChild(t, "x = 42")
+	if bind.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", bind.Kind)
 	}
+	if bind.Children[0].Tok.Val != "x" {
+		t.Errorf("expected LHS 'x', got %q", bind.Children[0].Tok.Val)
+	}
+	if bind.Children[1].Tok.Val != "42" {
+		t.Errorf("expected RHS '42', got %q", bind.Children[1].Tok.Val)
+	}
+}
+
+func TestBind_Expression(t *testing.T) {
+	bind := firstChild(t, "x = 1 + 2 * 3")
+	rhs := bind.Children[1]
+	// + at top (lower precedence), * as right child
+	if rhs.Kind != ast.NBinOp || rhs.Tok.Type != ast.TPlus {
+		t.Fatalf("expected + at top, got %v %v", rhs.Kind, rhs.Tok.Val)
+	}
+	right := rhs.Children[1]
+	if right.Kind != ast.NBinOp || right.Tok.Type != ast.TStar {
+		t.Fatalf("expected * as right child, got %v %v", right.Kind, right.Tok.Val)
+	}
+}
+
+func TestBind_TupleDestructure(t *testing.T) {
+	node := firstChild(t, `{status, value} = {:ok, "hello"}`)
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
+	}
+	lhs := node.Children[0]
+	if lhs.Kind != ast.NTuple {
+		t.Fatalf("expected NTuple LHS, got %v", lhs.Kind)
+	}
+	if len(lhs.Children) != 2 {
+		t.Fatalf("expected 2 elements in LHS tuple, got %d", len(lhs.Children))
+	}
+	if lhs.Children[0].Tok.Val != "status" || lhs.Children[1].Tok.Val != "value" {
+		t.Errorf("expected {status, value}, got {%s, %s}", lhs.Children[0].Tok.Val, lhs.Children[1].Tok.Val)
+	}
+	rhs := node.Children[1]
+	if rhs.Kind != ast.NTuple || len(rhs.Children) != 2 {
+		t.Fatalf("expected NTuple RHS with 2 elems, got %v with %d", rhs.Kind, len(rhs.Children))
+	}
+}
+
+func TestBind_ListDestructure(t *testing.T) {
+	node := firstChild(t, "[a, b, c] = [10, 20, 30]")
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
+	}
+	lhs := node.Children[0]
+	if lhs.Kind != ast.NList {
+		t.Fatalf("expected NList LHS, got %v", lhs.Kind)
+	}
+	if len(lhs.Children) != 3 {
+		t.Fatalf("expected 3 elements in LHS, got %d", len(lhs.Children))
+	}
+}
+
+func TestBind_HeadTail(t *testing.T) {
+	node := firstChild(t, "[first | rest] = [1, 2, 3, 4]")
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
+	}
+	lhs := node.Children[0]
+	if lhs.Kind != ast.NCons {
+		t.Fatalf("expected NCons LHS for [h|t], got %v", lhs.Kind)
+	}
+	if len(lhs.Children) != 2 {
+		t.Fatalf("expected 2 children (head, tail) in cons, got %d", len(lhs.Children))
+	}
+	if lhs.Children[0].Tok.Val != "first" {
+		t.Errorf("expected head 'first', got %q", lhs.Children[0].Tok.Val)
+	}
+	if lhs.Children[1].Tok.Val != "rest" {
+		t.Errorf("expected tail 'rest', got %q", lhs.Children[1].Tok.Val)
+	}
+}
+
+func TestBind_MultiHeadTail(t *testing.T) {
+	node := firstChild(t, "[a, b | rest] = [1, 2, 3, 4, 5]")
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
+	}
+	lhs := node.Children[0]
+	if lhs.Kind != ast.NCons {
+		t.Fatalf("expected NCons LHS, got %v", lhs.Kind)
+	}
+	// NCons children: heads... then tail as last child
+	if len(lhs.Children) != 3 {
+		t.Fatalf("expected 3 children (a, b, rest) in multi-head cons, got %d", len(lhs.Children))
+	}
+}
+
+func TestBind_Wildcard(t *testing.T) {
+	node := firstChild(t, `{_, value} = {:error, "msg"}`)
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
+	}
+	lhs := node.Children[0]
+	if lhs.Kind != ast.NTuple || len(lhs.Children) != 2 {
+		t.Fatalf("expected NTuple LHS with 2 elems, got %v with %d", lhs.Kind, len(lhs.Children))
+	}
+	// _ should be an identifier (wildcard is semantic, not syntactic)
+	if lhs.Children[0].Tok.Val != "_" {
+		t.Errorf("expected wildcard _, got %q", lhs.Children[0].Tok.Val)
+	}
+}
+
+func TestBind_NestedDestructure(t *testing.T) {
+	node := firstChild(t, "{a, {b, c}} = {1, {2, 3}}")
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
+	}
+	lhs := node.Children[0]
+	if lhs.Kind != ast.NTuple || len(lhs.Children) != 2 {
+		t.Fatalf("expected NTuple with 2 elems, got %v with %d", lhs.Kind, len(lhs.Children))
+	}
+	inner := lhs.Children[1]
+	if inner.Kind != ast.NTuple || len(inner.Children) != 2 {
+		t.Fatalf("expected nested NTuple with 2 elems, got %v with %d", inner.Kind, len(inner.Children))
+	}
+}
+
+// =====================================================================
+// TIER 3: String interpolation and nested expansions
+//
+// These test that the lexer segments interpolated strings and the
+// parser produces structured expansion nodes.
+// =====================================================================
+
+func TestInterp_DoubleQuoteVarExpand(t *testing.T) {
+	// "hello $name" — must produce NInterpStr with segments, NOT a flat string
+	node := firstChild(t, `echo "hello $name"`)
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
+	}
+	arg := node.Children[1]
+	if arg.Kind != ast.NInterpStr {
+		t.Fatalf("expected NInterpStr for interpolated string, got %v (val=%q)", arg.Kind, arg.Tok.Val)
+	}
+}
+
+func TestInterp_HashBraceExpr(t *testing.T) {
+	// "result: #{1 + 2}" — must produce NInterpStr with expression child
+	node := firstChild(t, `echo "result: #{1 + 2}"`)
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
+	}
+	arg := node.Children[1]
+	if arg.Kind != ast.NInterpStr {
+		t.Fatalf("expected NInterpStr, got %v", arg.Kind)
+	}
+}
+
+func TestInterp_NestedCmdSub(t *testing.T) {
+	// echo $(echo $(echo deep)) — nested NCmdSub
+	node := firstChild(t, "echo $(echo $(echo deep))")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
+	}
+	outer := node.Children[1]
+	if outer.Kind != ast.NCmdSub {
+		t.Fatalf("expected NCmdSub, got %v", outer.Kind)
+	}
+	// The inner $(echo deep) should be inside the outer's pipeline
+	if len(outer.Children) == 0 {
+		t.Fatal("expected children in outer NCmdSub")
+	}
+	innerApply := outer.Children[0]
+	if innerApply.Kind != ast.NApply {
+		t.Fatalf("expected NApply inside outer cmdsub, got %v", innerApply.Kind)
+	}
+	innerCmdSub := innerApply.Children[1]
+	if innerCmdSub.Kind != ast.NCmdSub {
+		t.Fatalf("expected nested NCmdSub, got %v", innerCmdSub.Kind)
+	}
+}
+
+func TestInterp_CmdSubInBinding(t *testing.T) {
+	node := firstChild(t, "x = $(echo hello)")
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
+	}
+	rhs := node.Children[1]
+	if rhs.Kind != ast.NCmdSub {
+		t.Fatalf("expected NCmdSub on RHS, got %v", rhs.Kind)
+	}
+	if len(rhs.Children) == 0 {
+		t.Fatal("expected children in NCmdSub")
+	}
+	inner := rhs.Children[0]
+	if inner.Kind != ast.NApply {
+		t.Fatalf("expected NApply inside cmdsub, got %v", inner.Kind)
+	}
+}
+
+func TestInterp_ParamExpand_Default(t *testing.T) {
+	// echo ${X:-default} — must produce NParamExpand with var, operator, default
+	node := firstChild(t, "echo ${X:-default}")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
+	}
+	pe := node.Children[1]
+	if pe.Kind != ast.NParamExpand {
+		t.Fatalf("expected NParamExpand, got %v", pe.Kind)
+	}
+	// TODO: when param expansion is structured, check var="X", op=":-", default="default"
+	// For now, verify the raw content at least contains the right text
+	if pe.Tok.Val == "" {
+		t.Error("expected non-empty param expand content")
+	}
+}
+
+func TestInterp_ParamExpand_Length(t *testing.T) {
+	node := firstChild(t, "echo ${#X}")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
+	}
+	pe := node.Children[1]
+	if pe.Kind != ast.NParamExpand {
+		t.Fatalf("expected NParamExpand, got %v", pe.Kind)
+	}
+}
+
+func TestInterp_ArithExpand(t *testing.T) {
+	node := firstChild(t, "echo $((2 + 3))")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
+	}
+	arith := node.Children[1]
+	// Should have an expression child representing 2 + 3
+	if len(arith.Children) == 0 {
+		t.Fatal("expected arithmetic expansion to have expression child")
+	}
+}
+
+func TestInterp_ExprInCmdSubInStringInBinding(t *testing.T) {
+	// x = "prefix $(echo ${name:-world}) suffix"
+	// Must parse without error; string must be NInterpStr
+	node := firstChild(t, `x = "prefix $(echo ${name:-world}) suffix"`)
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
+	}
+	// TODO: when string interpolation is implemented, verify NInterpStr with segments
+}
+
+// =====================================================================
+// TIER 4: POSIX control flow
+// =====================================================================
+
+func TestPOSIX_IfThenFi(t *testing.T) {
+	node := firstChild(t, "if true; then echo yes; fi")
 	if node.Kind != ast.NIf {
-		t.Fatalf("expected NIf, got %d", node.Kind)
+		t.Fatalf("expected NIf, got %v", node.Kind)
 	}
 	if len(node.Clauses) != 1 {
 		t.Fatalf("expected 1 clause, got %d", len(node.Clauses))
 	}
-	if node.Clauses[0].Pattern == nil {
-		t.Error("expected condition (Pattern) to be non-nil")
-	}
-	if node.Clauses[0].Body == nil {
-		t.Error("expected body to be non-nil")
+	body := node.Clauses[0].Body
+	if body.Kind != ast.NBlock || len(body.Children) != 1 {
+		t.Fatalf("expected body block with 1 stmt, got %v with %d", body.Kind, len(body.Children))
 	}
 }
 
-func TestParsePosixIfElse(t *testing.T) {
-	node, err := parseStr("if true; then echo yes; else echo no; fi")
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestPOSIX_IfElseFi(t *testing.T) {
+	node := firstChild(t, "if false; then\necho yes\nelse\necho no\nfi")
 	if node.Kind != ast.NIf {
-		t.Fatalf("expected NIf, got %d", node.Kind)
+		t.Fatalf("expected NIf, got %v", node.Kind)
+	}
+	if len(node.Clauses) != 2 {
+		t.Fatalf("expected 2 clauses (then + else), got %d", len(node.Clauses))
+	}
+	// First clause has condition, second (else) has nil pattern
+	if node.Clauses[0].Pattern == nil {
+		t.Error("first clause should have a condition")
+	}
+	if node.Clauses[1].Pattern != nil {
+		t.Error("else clause should have nil pattern")
+	}
+}
+
+func TestPOSIX_IfElifFi(t *testing.T) {
+	node := firstChild(t, "if false; then\necho a\nelif true; then\necho b\nfi")
+	if node.Kind != ast.NIf {
+		t.Fatalf("expected NIf, got %v", node.Kind)
+	}
+	if len(node.Clauses) < 2 {
+		t.Fatalf("expected at least 2 clauses (if + elif), got %d", len(node.Clauses))
+	}
+}
+
+func TestPOSIX_ForDone(t *testing.T) {
+	node := firstChild(t, "for i in a b c; do\necho $i\ndone")
+	if node.Kind != ast.NFor {
+		t.Fatalf("expected NFor, got %v", node.Kind)
+	}
+	if node.Tok.Val != "i" {
+		t.Errorf("expected loop var 'i', got %q", node.Tok.Val)
+	}
+	// Children: [var_ident, word_list, body]
+	if len(node.Children) != 3 {
+		t.Fatalf("expected 3 children, got %d", len(node.Children))
+	}
+	wordList := node.Children[1]
+	if wordList.Kind != ast.NList || len(wordList.Children) != 3 {
+		t.Fatalf("expected word list with 3 items, got %v with %d", wordList.Kind, len(wordList.Children))
+	}
+}
+
+func TestPOSIX_WhileDone(t *testing.T) {
+	node := firstChild(t, "while true; do\necho loop\ndone")
+	if node.Kind != ast.NWhile {
+		t.Fatalf("expected NWhile, got %v", node.Kind)
+	}
+	if len(node.Children) != 2 {
+		t.Fatalf("expected 2 children (cond, body), got %d", len(node.Children))
+	}
+}
+
+func TestPOSIX_CaseEsac(t *testing.T) {
+	node := firstChild(t, "case $X in\nhello)\necho matched\n;;\n*)\necho default\n;;\nesac")
+	if node.Kind != ast.NCase {
+		t.Fatalf("expected NCase, got %v", node.Kind)
 	}
 	if len(node.Clauses) != 2 {
 		t.Fatalf("expected 2 clauses, got %d", len(node.Clauses))
 	}
-	if node.Clauses[0].Pattern == nil {
-		t.Error("clause[0] should have a condition")
+	if node.Clauses[0].Pattern.Tok.Val != "hello" {
+		t.Errorf("expected first pattern 'hello', got %q", node.Clauses[0].Pattern.Tok.Val)
 	}
-	if node.Clauses[1].Pattern != nil {
-		t.Error("clause[1] (else) should have no condition")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ish if/do/end
-// ---------------------------------------------------------------------------
-
-func TestParseIshIf(t *testing.T) {
-	node, err := parseStr("if true do\necho yes\nend")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NIshIf {
-		t.Fatalf("expected NIshIf, got %d", node.Kind)
-	}
-	if len(node.Clauses) < 1 {
-		t.Fatalf("expected at least 1 clause, got %d", len(node.Clauses))
-	}
-	if node.Clauses[0].Pattern == nil {
-		t.Error("expected condition to be non-nil")
-	}
-	if node.Clauses[0].Body == nil {
-		t.Error("expected body to be non-nil")
+	if node.Clauses[1].Pattern.Tok.Val != "*" {
+		t.Errorf("expected second pattern '*', got %q", node.Clauses[1].Pattern.Tok.Val)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// For loop
-// ---------------------------------------------------------------------------
-
-func TestParseForLoop(t *testing.T) {
-	node, err := parseStr("for x in a b c; do echo $x; done")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NFor {
-		t.Fatalf("expected NFor, got %d", node.Kind)
-	}
-	if len(node.Children) < 1 {
-		t.Fatalf("expected at least 1 child (var), got %d", len(node.Children))
-	}
-	if node.Children[0].Tok.Val != "x" {
-		t.Errorf("loop var = %q, want %q", node.Children[0].Tok.Val, "x")
-	}
-	wordCount := len(node.Children) - 1
-	if wordCount != 3 {
-		t.Errorf("expected 3 words, got %d", wordCount)
-	}
-	if len(node.Clauses) != 1 {
-		t.Fatalf("expected 1 clause (body), got %d", len(node.Clauses))
-	}
-	if node.Clauses[0].Body == nil {
-		t.Error("expected body to be non-nil")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// While loop
-// ---------------------------------------------------------------------------
-
-func TestParseWhileLoop(t *testing.T) {
-	node, err := parseStr("while true; do echo loop; done")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NWhile {
-		t.Fatalf("expected NWhile, got %d", node.Kind)
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child (condition), got %d", len(node.Children))
-	}
-	if len(node.Clauses) != 1 {
-		t.Fatalf("expected 1 clause (body), got %d", len(node.Clauses))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Case
-// ---------------------------------------------------------------------------
-
-func TestParseCase(t *testing.T) {
-	node, err := parseStr("case x in\na) echo a;;\nesac")
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestPOSIX_CasePipeAlternation(t *testing.T) {
+	node := firstChild(t, "case $X in\na|b)\necho matched\n;;\nesac")
 	if node.Kind != ast.NCase {
-		t.Fatalf("expected NCase, got %d", node.Kind)
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child (subject), got %d", len(node.Children))
-	}
-	if node.Children[0].Tok.Val != "x" {
-		t.Errorf("subject = %q, want %q", node.Children[0].Tok.Val, "x")
+		t.Fatalf("expected NCase, got %v", node.Kind)
 	}
 	if len(node.Clauses) != 1 {
 		t.Fatalf("expected 1 clause, got %d", len(node.Clauses))
 	}
-	if node.Clauses[0].Pattern.Tok.Val != "a" {
-		t.Errorf("pattern = %q, want %q", node.Clauses[0].Pattern.Tok.Val, "a")
+	// Pattern should contain the alternation
+	if node.Clauses[0].Pattern.Tok.Val != "a|b" {
+		t.Errorf("expected pattern 'a|b', got %q", node.Clauses[0].Pattern.Tok.Val)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// POSIX function definition
-// ---------------------------------------------------------------------------
-
-func TestParsePosixFnDef(t *testing.T) {
-	node, err := parseStr("greet() { echo hi; }")
-	if err != nil {
-		t.Fatal(err)
+func TestPOSIX_NestedIf(t *testing.T) {
+	node := firstChild(t, "if true; then\nif false; then\necho inner\nelse\necho outer\nfi\nfi")
+	if node.Kind != ast.NIf {
+		t.Fatalf("expected NIf, got %v", node.Kind)
 	}
+	// The body of the first clause should contain another NIf
+	innerBody := node.Clauses[0].Body
+	if innerBody.Kind != ast.NBlock || len(innerBody.Children) == 0 {
+		t.Fatalf("expected body with children, got %v", innerBody.Kind)
+	}
+	innerIf := innerBody.Children[0]
+	if innerIf.Kind != ast.NIf {
+		t.Fatalf("expected nested NIf, got %v", innerIf.Kind)
+	}
+}
+
+func TestPOSIX_NestedFor(t *testing.T) {
+	node := firstChild(t, "for i in a b; do\nfor j in 1 2; do\necho $i$j\ndone\ndone")
+	if node.Kind != ast.NFor {
+		t.Fatalf("expected NFor, got %v", node.Kind)
+	}
+	body := node.Children[2]
+	if body.Kind != ast.NBlock || len(body.Children) == 0 {
+		t.Fatalf("expected body block with children")
+	}
+	innerFor := body.Children[0]
+	if innerFor.Kind != ast.NFor {
+		t.Fatalf("expected nested NFor, got %v", innerFor.Kind)
+	}
+}
+
+// =====================================================================
+// TIER 5: ish control flow
+// =====================================================================
+
+func TestIsh_IfDoEnd(t *testing.T) {
+	node := firstChild(t, "if (x > 5) do\necho big\nend")
+	if node.Kind != ast.NIf {
+		t.Fatalf("expected NIf, got %v", node.Kind)
+	}
+	cond := node.Clauses[0].Pattern
+	if cond.Kind != ast.NBinOp || cond.Tok.Type != ast.TGt {
+		t.Errorf("expected > comparison in condition, got kind=%v tok=%v", cond.Kind, cond.Tok.Type)
+	}
+}
+
+func TestIsh_IfExprCondition(t *testing.T) {
+	node := firstChild(t, "if x == 5 do\necho yes\nend")
+	if node.Kind != ast.NIf {
+		t.Fatalf("expected NIf, got %v", node.Kind)
+	}
+	cond := node.Clauses[0].Pattern
+	if cond.Kind != ast.NBinOp || cond.Tok.Type != ast.TEqEq {
+		t.Errorf("expected == comparison, got kind=%v tok=%v", cond.Kind, cond.Tok.Type)
+	}
+}
+
+func TestIsh_IfDoElseEnd(t *testing.T) {
+	node := firstChild(t, "if false do\necho yes\nelse\necho no\nend")
+	if node.Kind != ast.NIf {
+		t.Fatalf("expected NIf, got %v", node.Kind)
+	}
+	if len(node.Clauses) != 2 {
+		t.Fatalf("expected 2 clauses, got %d", len(node.Clauses))
+	}
+}
+
+func TestIsh_FnDef(t *testing.T) {
+	node := firstChild(t, "fn add a b do\na + b\nend")
 	if node.Kind != ast.NFnDef {
-		t.Fatalf("expected NFnDef, got %d", node.Kind)
-	}
-	if node.Tok.Val != "greet" {
-		t.Errorf("fn name = %q, want %q", node.Tok.Val, "greet")
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child (body), got %d", len(node.Children))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ish fn definitions
-// ---------------------------------------------------------------------------
-
-func TestParseIshFn(t *testing.T) {
-	node, err := parseStr("fn add x y do\nx + y\nend")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NIshFn {
-		t.Fatalf("expected NIshFn, got %d", node.Kind)
+		t.Fatalf("expected NFnDef, got %v", node.Kind)
 	}
 	if node.Tok.Val != "add" {
-		t.Errorf("fn name = %q, want %q", node.Tok.Val, "add")
+		t.Errorf("expected fn name 'add', got %q", node.Tok.Val)
 	}
-	if len(node.Children) != 2 {
-		t.Fatalf("expected 2 params, got %d", len(node.Children))
-	}
-	if node.Children[0].Tok.Val != "x" {
-		t.Errorf("param[0] = %q, want %q", node.Children[0].Tok.Val, "x")
-	}
-	if node.Children[1].Tok.Val != "y" {
-		t.Errorf("param[1] = %q, want %q", node.Children[1].Tok.Val, "y")
-	}
-	if len(node.Clauses) != 1 {
-		t.Fatalf("expected 1 clause, got %d", len(node.Clauses))
-	}
-	if node.Clauses[0].Body == nil {
-		t.Error("expected body to be non-nil")
+	// Children: name_ident, param_a, param_b, body
+	if len(node.Children) < 4 {
+		t.Fatalf("expected at least 4 children (name, 2 params, body), got %d", len(node.Children))
 	}
 }
 
-func TestParseIshFnAnonymous(t *testing.T) {
-	node, err := parseStr("fn do\necho hi\nend")
-	if err != nil {
-		t.Fatal(err)
+func TestIsh_FnMultiClause(t *testing.T) {
+	block := mustParse(t, "fn fib 0 do\n0\nend\nfn fib 1 do\n1\nend\nfn fib n do\nn\nend")
+	if len(block.Children) != 3 {
+		t.Fatalf("expected 3 fn definitions, got %d", len(block.Children))
 	}
-	if node.Kind != ast.NIshFn {
-		t.Fatalf("expected NIshFn, got %d", node.Kind)
-	}
-	if node.Tok.Val != "<anon>" {
-		t.Errorf("fn name = %q, want %q", node.Tok.Val, "<anon>")
+	for i, child := range block.Children {
+		if child.Kind != ast.NFnDef {
+			t.Errorf("child %d: expected NFnDef, got %v", i, child.Kind)
+		}
+		if child.Tok.Val != "fib" {
+			t.Errorf("child %d: expected fn name 'fib', got %q", i, child.Tok.Val)
+		}
 	}
 }
 
-func TestParseIshFnAnonWithParams(t *testing.T) {
-	t.Run("bound to variable", func(t *testing.T) {
-		node, err := parseStr("f = fn a, b do\na + b\nend")
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Top-level is NMatch (binding)
-		if node.Kind != ast.NMatch {
-			t.Fatalf("expected NMatch, got %d", node.Kind)
-		}
-		fn := node.Children[1]
-		if fn.Kind != ast.NIshFn {
-			t.Fatalf("expected NIshFn on RHS, got %d", fn.Kind)
-		}
-		if fn.Tok.Val != "<anon>" {
-			t.Errorf("fn name = %q, want %q", fn.Tok.Val, "<anon>")
-		}
-		if len(fn.Children) != 2 {
-			t.Fatalf("expected 2 params, got %d", len(fn.Children))
-		}
-		if fn.Children[0].Tok.Val != "a" {
-			t.Errorf("param[0] = %q, want %q", fn.Children[0].Tok.Val, "a")
-		}
-	})
-
-	t.Run("no params multi-clause", func(t *testing.T) {
-		node, err := parseStr("f = fn do\n0 -> :zero\n_ -> :other\nend")
-		if err != nil {
-			t.Fatal(err)
-		}
-		fn := node.Children[1]
-		if fn.Kind != ast.NIshFn {
-			t.Fatalf("expected NIshFn, got %d", fn.Kind)
-		}
-		if len(fn.Clauses) != 2 {
-			t.Fatalf("expected 2 clauses, got %d", len(fn.Clauses))
-		}
-	})
-}
-
-func TestParseLambda(t *testing.T) {
-	t.Run("single param", func(t *testing.T) {
-		node, err := parseStr(`\x -> x`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if node.Kind != ast.NLambda {
-			t.Fatalf("expected NLambda, got %d", node.Kind)
-		}
-		if len(node.Children) != 1 {
-			t.Fatalf("expected 1 param, got %d", len(node.Children))
-		}
-	})
-
-	t.Run("multi param", func(t *testing.T) {
-		node, err := parseStr(`\a, b -> a`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if node.Kind != ast.NLambda {
-			t.Fatalf("expected NLambda, got %d", node.Kind)
-		}
-		if len(node.Children) != 2 {
-			t.Fatalf("expected 2 params, got %d", len(node.Children))
-		}
-	})
-
-	t.Run("zero param", func(t *testing.T) {
-		node, err := parseStr(`\ -> 42`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if node.Kind != ast.NLambda {
-			t.Fatalf("expected NLambda, got %d", node.Kind)
-		}
-		if len(node.Children) != 0 {
-			t.Fatalf("expected 0 params, got %d", len(node.Children))
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Match expression
-// ---------------------------------------------------------------------------
-
-func TestParseMatchExpr(t *testing.T) {
-	node, err := parseStr("match x do\n:ok -> echo yes\nend")
-	if err != nil {
-		t.Fatal(err)
+func TestIsh_FnWithGuard(t *testing.T) {
+	node := firstChild(t, "fn abs n when n < 0 do\n0 - n\nend")
+	if node.Kind != ast.NFnDef {
+		t.Fatalf("expected NFnDef, got %v", node.Kind)
 	}
-	if node.Kind != ast.NIshMatch {
-		t.Fatalf("expected NIshMatch, got %d", node.Kind)
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child (subject), got %d", len(node.Children))
-	}
-	if len(node.Clauses) != 1 {
-		t.Fatalf("expected 1 clause, got %d", len(node.Clauses))
-	}
-	if node.Clauses[0].Pattern == nil {
-		t.Error("expected clause pattern to be non-nil")
-	}
-	if node.Clauses[0].Body == nil {
-		t.Error("expected clause body to be non-nil")
+	if node.Tok.Val != "abs" {
+		t.Errorf("expected fn name 'abs', got %q", node.Tok.Val)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// spawn / send / receive
-// ---------------------------------------------------------------------------
-
-func TestParseSpawn(t *testing.T) {
-	node, err := parseStr("spawn echo hi")
-	if err != nil {
-		t.Fatal(err)
+func TestIsh_FnMultiClauseBlock(t *testing.T) {
+	node := firstChild(t, "fn classify do\n0 -> :zero\n1 -> :one\n_ -> :other\nend")
+	if node.Kind != ast.NFnDef {
+		t.Fatalf("expected NFnDef, got %v", node.Kind)
 	}
-	if node.Kind != ast.NIshSpawn {
-		t.Fatalf("expected NIshSpawn, got %d", node.Kind)
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child, got %d", len(node.Children))
+	if len(node.Clauses) != 3 {
+		t.Fatalf("expected 3 clauses, got %d", len(node.Clauses))
 	}
 }
 
-func TestParseSend(t *testing.T) {
-	node, err := parseStr("send pid, :hello")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NIshSend {
-		t.Fatalf("expected NIshSend, got %d", node.Kind)
-	}
-	if len(node.Children) != 2 {
-		t.Fatalf("expected 2 children (target, msg), got %d", len(node.Children))
-	}
-}
-
-func TestParseReceive(t *testing.T) {
-	node, err := parseStr("receive do\n:msg -> echo got\nend")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NIshReceive {
-		t.Fatalf("expected NIshReceive, got %d", node.Kind)
-	}
-	if len(node.Clauses) != 1 {
-		t.Fatalf("expected 1 clause, got %d", len(node.Clauses))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Redirections
-// ---------------------------------------------------------------------------
-
-func TestParseRedirection(t *testing.T) {
-	node, err := parseStr("echo hi > file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NCmd {
-		t.Fatalf("expected NCmd, got %d", node.Kind)
-	}
-	if len(node.Redirs) != 1 {
-		t.Fatalf("expected 1 redir, got %d", len(node.Redirs))
-	}
-	if node.Redirs[0].Op != ast.TGt {
-		t.Errorf("redir op = %d, want TGt (%d)", node.Redirs[0].Op, ast.TGt)
-	}
-	redirTarget := ""
-	if node.Redirs[0].TargetNode != nil {
-		redirTarget = node.Redirs[0].TargetNode.Tok.Val
-	}
-	if redirTarget != "file" {
-		t.Errorf("redir target = %q, want %q", redirTarget, "file")
-	}
-	if node.Redirs[0].Fd != 1 {
-		t.Errorf("redir fd = %d, want 1", node.Redirs[0].Fd)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// [ test builtin
-// ---------------------------------------------------------------------------
-
-func TestParseTestBuiltin(t *testing.T) {
-	node, err := parseStr("[ -f file ]")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NCmd {
-		t.Fatalf("expected NCmd (not NList), got %d", node.Kind)
-	}
-	if len(node.Children) < 1 {
-		t.Fatal("expected at least 1 child")
-	}
-	if node.Children[0].Tok.Val != "[" {
-		t.Errorf("child[0] = %q, want %q", node.Children[0].Tok.Val, "[")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// List literal
-// ---------------------------------------------------------------------------
-
-func TestParseListLiteral(t *testing.T) {
-	node, err := parseStr("l = [1, 2, 3]")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NMatch {
-		t.Fatalf("expected NMatch, got %d", node.Kind)
+func TestIsh_AnonFn(t *testing.T) {
+	node := firstChild(t, "f = fn a b do\na + b\nend")
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
 	}
 	rhs := node.Children[1]
-	if rhs.Kind != ast.NList {
-		t.Fatalf("expected NList, got %d", rhs.Kind)
-	}
-	if len(rhs.Children) != 3 {
-		t.Fatalf("expected 3 children, got %d", len(rhs.Children))
+	if rhs.Kind != ast.NFnDef {
+		t.Fatalf("expected NFnDef on RHS, got %v", rhs.Kind)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Tuple literal
-// ---------------------------------------------------------------------------
-
-func TestParseTupleLiteral(t *testing.T) {
-	node, err := parseStr("{:ok, 42}")
-	if err != nil {
-		t.Fatal(err)
+func TestIsh_Match(t *testing.T) {
+	node := firstChild(t, "r = match x do\n1 -> :one\n2 -> :two\n_ -> :other\nend")
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
 	}
-	if node.Kind != ast.NTuple {
-		t.Fatalf("expected NTuple, got %d", node.Kind)
+	m := node.Children[1]
+	if m.Kind != ast.NMatch {
+		t.Fatalf("expected NMatch, got %v", m.Kind)
+	}
+	if len(m.Clauses) != 3 {
+		t.Fatalf("expected 3 match clauses, got %d", len(m.Clauses))
+	}
+}
+
+func TestIsh_MatchTuplePatterns(t *testing.T) {
+	node := firstChild(t, "match result do\n{:ok, val} -> val\n{:error, msg} -> msg\nend")
+	if node.Kind != ast.NMatch {
+		t.Fatalf("expected NMatch, got %v", node.Kind)
+	}
+	if len(node.Clauses) != 2 {
+		t.Fatalf("expected 2 clauses, got %d", len(node.Clauses))
+	}
+	p1 := node.Clauses[0].Pattern
+	if p1.Kind != ast.NTuple {
+		t.Errorf("expected NTuple pattern, got %v", p1.Kind)
+	}
+}
+
+func TestIsh_ZeroArityLambda(t *testing.T) {
+	node := firstChild(t, `f = \ -> 42`)
+	if node.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", node.Kind)
+	}
+	rhs := node.Children[1]
+	if rhs.Kind != ast.NLambda {
+		t.Fatalf("expected NLambda, got %v", rhs.Kind)
+	}
+	// Zero params + body = 1 child
+	if len(rhs.Children) != 1 {
+		t.Fatalf("expected 1 child (body only), got %d", len(rhs.Children))
+	}
+}
+
+// =====================================================================
+// TIER 6: POSIX function definitions
+// =====================================================================
+
+func TestPOSIX_FnDef(t *testing.T) {
+	node := firstChild(t, "greet() { echo hello; }")
+	if node.Kind != ast.NFnDef {
+		t.Fatalf("expected NFnDef, got %v", node.Kind)
+	}
+	if node.Tok.Val != "greet" {
+		t.Errorf("expected fn name 'greet', got %q", node.Tok.Val)
+	}
+}
+
+func TestPOSIX_FnDefMultiline(t *testing.T) {
+	node := firstChild(t, "greet()\n{ echo hello; }")
+	if node.Kind != ast.NFnDef {
+		t.Fatalf("expected NFnDef, got %v", node.Kind)
+	}
+}
+
+func TestPOSIX_FnWithArgs(t *testing.T) {
+	block := mustParse(t, "greet() { echo hello $1; }\ngreet world")
+	if len(block.Children) != 2 {
+		t.Fatalf("expected 2 statements (def + call), got %d", len(block.Children))
+	}
+	if block.Children[0].Kind != ast.NFnDef {
+		t.Errorf("first statement should be NFnDef, got %v", block.Children[0].Kind)
+	}
+}
+
+// =====================================================================
+// TIER 7: POSIX assignments
+// =====================================================================
+
+func TestPOSIX_SimpleAssign(t *testing.T) {
+	block := mustParse(t, "X=hello; echo $X")
+	if len(block.Children) != 2 {
+		t.Fatalf("expected 2 statements, got %d", len(block.Children))
+	}
+	assign := block.Children[0]
+	if assign.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", assign.Kind)
+	}
+	if assign.Tok.Val != "X" {
+		t.Errorf("expected var 'X', got %q", assign.Tok.Val)
+	}
+}
+
+func TestPOSIX_AssignEmpty(t *testing.T) {
+	block := mustParse(t, "X=; echo $X")
+	assign := block.Children[0]
+	if assign.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", assign.Kind)
+	}
+	rhs := assign.Children[1]
+	if rhs.Tok.Val != "" {
+		t.Errorf("expected empty string RHS, got %q", rhs.Tok.Val)
+	}
+}
+
+func TestPOSIX_AssignCmdSub(t *testing.T) {
+	block := mustParse(t, "X=$(echo hi); echo $X")
+	assign := block.Children[0]
+	if assign.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", assign.Kind)
+	}
+	rhs := assign.Children[1]
+	if rhs.Kind != ast.NCmdSub {
+		t.Fatalf("expected NCmdSub RHS, got %v", rhs.Kind)
+	}
+}
+
+func TestPOSIX_MultipleAssign(t *testing.T) {
+	block := mustParse(t, "A=1; B=2; C=3; echo $A $B $C")
+	if len(block.Children) != 4 {
+		t.Fatalf("expected 4 statements, got %d", len(block.Children))
+	}
+}
+
+// =====================================================================
+// TIER 8: Pipelines, and-or lists, background
+// =====================================================================
+
+func TestPipeline_Simple(t *testing.T) {
+	node := firstChild(t, "echo hello | cat")
+	if node.Kind != ast.NPipe {
+		t.Fatalf("expected NPipe, got %v", node.Kind)
 	}
 	if len(node.Children) != 2 {
 		t.Fatalf("expected 2 children, got %d", len(node.Children))
 	}
-	if node.Children[0].Kind != ast.NLit {
-		t.Errorf("child[0] kind = %d, want NLit (%d)", node.Children[0].Kind, ast.NLit)
+}
+
+func TestPipeline_ThreeStage(t *testing.T) {
+	node := firstChild(t, "echo abc | cat | cat")
+	if node.Kind != ast.NPipe {
+		t.Fatalf("expected NPipe, got %v", node.Kind)
 	}
-	if node.Children[0].Tok.Val != "ok" {
-		t.Errorf("child[0] val = %q, want %q", node.Children[0].Tok.Val, "ok")
+	// Left-associative: (echo|cat)|cat
+	if node.Children[0].Kind != ast.NPipe {
+		t.Fatalf("expected nested NPipe on left, got %v", node.Children[0].Kind)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Map literal
-// ---------------------------------------------------------------------------
-
-func TestParseMapLiteral(t *testing.T) {
-	node, err := parseStr("%{x: 1}")
-	if err != nil {
-		t.Fatal(err)
+func TestPipeline_Arrow(t *testing.T) {
+	node := firstChild(t, "data |> double |> inc")
+	if node.Kind != ast.NPipeFn {
+		t.Fatalf("expected NPipeFn, got %v", node.Kind)
 	}
-	if node.Kind != ast.NMap {
-		t.Fatalf("expected NMap, got %d", node.Kind)
+}
+
+func TestPipeline_ArrowLambda(t *testing.T) {
+	bind := firstChild(t, `r = 42 |> \x -> x + 1`)
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NPipeFn {
+		t.Fatalf("expected NPipeFn, got %v", rhs.Kind)
+	}
+}
+
+func TestAndList(t *testing.T) {
+	node := firstChild(t, "true && echo yes")
+	if node.Kind != ast.NAndList {
+		t.Fatalf("expected NAndList, got %v", node.Kind)
 	}
 	if len(node.Children) != 2 {
-		t.Fatalf("expected 2 children (key + val), got %d", len(node.Children))
+		t.Fatalf("expected 2 children, got %d", len(node.Children))
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Expression precedence
-// ---------------------------------------------------------------------------
-
-func TestParseExprPrecedence(t *testing.T) {
-	node, err := parseStr("1 + 2 * 3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NBinOp {
-		t.Fatalf("expected NBinOp, got %d", node.Kind)
-	}
-	if node.Tok.Val != "+" {
-		t.Errorf("top op = %q, want %q", node.Tok.Val, "+")
-	}
-	right := node.Children[1]
-	if right.Kind != ast.NBinOp {
-		t.Fatalf("right should be NBinOp, got %d", right.Kind)
-	}
-	if right.Tok.Val != "*" {
-		t.Errorf("right op = %q, want %q", right.Tok.Val, "*")
+func TestOrList(t *testing.T) {
+	node := firstChild(t, "false || echo fallback")
+	if node.Kind != ast.NOrList {
+		t.Fatalf("expected NOrList, got %v", node.Kind)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Arithmetic in command context
-// ---------------------------------------------------------------------------
-
-func TestParseArithmeticInCommand(t *testing.T) {
-	// fib (n - 1) + fib (n - 2) in expression context (binding RHS)
-	// fib followed by ( should be a function call (NCall) in expression context
-	node, err := parseStr("r = fib (n - 1) + fib (n - 2)")
-	if err != nil {
-		t.Fatal(err)
+func TestAndOrMixed(t *testing.T) {
+	node := firstChild(t, "false && echo no || echo fallback")
+	// Should be: (false && echo no) || echo fallback
+	if node.Kind != ast.NOrList {
+		t.Fatalf("expected NOrList at top, got %v", node.Kind)
 	}
-	if node.Kind != ast.NMatch {
-		t.Fatalf("expected NMatch (binding), got %d", node.Kind)
-	}
-	rhs := node.Children[1]
-	if rhs.Kind != ast.NBinOp {
-		t.Fatalf("expected NBinOp on RHS, got %d", rhs.Kind)
-	}
-	if rhs.Tok.Val != "+" {
-		t.Errorf("op = %q, want %q", rhs.Tok.Val, "+")
-	}
-	if rhs.Children[0].Kind != ast.NCall {
-		t.Errorf("left should be NCall (fib call), got %d", rhs.Children[0].Kind)
-	}
-	if rhs.Children[1].Kind != ast.NCall {
-		t.Errorf("right should be NCall (fib call), got %d", rhs.Children[1].Kind)
+	if node.Children[0].Kind != ast.NAndList {
+		t.Fatalf("expected NAndList as left child, got %v", node.Children[0].Kind)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Symbol table: NCall vs NCmd dispatch
-// ---------------------------------------------------------------------------
+func TestBackground(t *testing.T) {
+	node := firstChild(t, "echo bg &")
+	if node.Kind != ast.NBg {
+		t.Fatalf("expected NBg, got %v", node.Kind)
+	}
+}
 
-func TestSymbolTable_FnDeclProducesNCall(t *testing.T) {
-	cases := []struct {
-		name   string
-		src    string
-		// which child index to check (in NBlock), and expected kind
-		child  int
-		expect ast.NodeKind
+// =====================================================================
+// TIER 9: Keywords as command arguments
+// =====================================================================
+
+func TestKeywordsAsArgs(t *testing.T) {
+	tests := []struct {
+		input    string
+		argCount int
 	}{
-		{"fn then call", "fn foo do 42 end\nfoo", 1, ast.NCall},
-		{"fn then call with arg", "fn add a b do a + b end\nadd 1 2", 1, ast.NCall},
-		{"lambda bind then call", "f = \\x -> x * 2\nf 10", 1, ast.NCall},
-		{"zero-arity lambda standalone", "f = \\ -> 42\nf", 1, ast.NCall},
-		{"posix fn stays NCmd", "f() { echo hello; }\nf", 1, ast.NCmd},
-		{"unknown stays NCmd", "foo bar", 0, ast.NCmd},
-		{"builtin stays NCmd", "echo hello", 0, ast.NCmd},
-		{"known module produces NCall", "String.upcase \"hello\"", 0, ast.NCall},
-		{"Enum.map with comma args", "Enum.map [1, 2], \\x -> x * 2", 0, ast.NCall},
+		{"echo if then else fi", 5},
+		{"echo for in do done", 5},
+		{"echo while do done", 4},
+		{"echo case in esac", 4},
+		{"echo fn end match", 4},
+		{"echo true false nil", 4},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			node, err := parseStr(tc.src)
-			if err != nil {
-				t.Fatalf("parse error: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			node := firstChild(t, tt.input)
+			if node.Kind != ast.NApply {
+				t.Fatalf("expected NApply, got %v", node.Kind)
 			}
-			var target *ast.Node
-			if node.Kind == ast.NBlock {
-				if tc.child >= len(node.Children) {
-					t.Fatalf("NBlock has %d children, want index %d", len(node.Children), tc.child)
-				}
-				target = node.Children[tc.child]
-			} else {
-				target = node
-			}
-			if target.Kind != tc.expect {
-				t.Errorf("got node kind %d, want %d", target.Kind, tc.expect)
+			if len(node.Children) != tt.argCount {
+				t.Errorf("expected %d children, got %d", tt.argCount, len(node.Children))
 			}
 		})
 	}
 }
 
-func TestSymbolTable_DeclareTracking(t *testing.T) {
-	// Verify the parser's symbol table is populated during parsing
-	p := newParser(lexer.New("fn greet name do echo $name end\ngreet world"))
-	_, err := p.parseProgram()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sym, ok := p.symbols["greet"]
-	if !ok {
-		t.Fatal("greet not in symbol table after fn declaration")
-	}
-	if sym.Kind != SymFn {
-		t.Errorf("greet sym kind = %d, want SymFn (%d)", sym.Kind, SymFn)
-	}
-}
+// =====================================================================
+// TIER 10: Filenames, paths, dotted names
+// =====================================================================
 
-func TestSymbolTable_PosixFnTracking(t *testing.T) {
-	p := newParser(lexer.New("f() { echo hello; }\nf arg"))
-	_, err := p.parseProgram()
-	if err != nil {
-		t.Fatal(err)
+func TestFilenames(t *testing.T) {
+	tests := []struct {
+		input string
+		arg   string
+	}{
+		{"echo file.txt", "file.txt"},
+		{"echo archive.tar.gz", "archive.tar.gz"},
 	}
-	sym, ok := p.symbols["f"]
-	if !ok {
-		t.Fatal("f not in symbol table after POSIX fn def")
-	}
-	if sym.Kind != SymPOSIXFn {
-		t.Errorf("f sym kind = %d, want SymPOSIXFn (%d)", sym.Kind, SymPOSIXFn)
-	}
-}
-
-func TestSymbolTable_LambdaBindTracking(t *testing.T) {
-	p := newParser(lexer.New("f = \\x -> x * 2\nf 10"))
-	_, err := p.parseProgram()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sym, ok := p.symbols["f"]
-	if !ok {
-		t.Fatal("f not in symbol table after lambda bind")
-	}
-	if sym.Kind != SymFn {
-		t.Errorf("f sym kind = %d, want SymFn (%d)", sym.Kind, SymFn)
-	}
-}
-
-func TestSymbolTable_FnDeclStandaloneDispatch(t *testing.T) {
-	// Instrument dispatchIdent by observing what it does
-	// Parse step-by-step to see when the symbol appears
-	p := newParser(lexer.New("fn foo do 42 end\nfoo"))
-
-	// Parse the fn definition first
-	p.skipNewlines()
-	stmt1, err := p.parseList()
-	if err != nil {
-		t.Fatalf("parse stmt1: %v", err)
-	}
-	t.Logf("stmt1 kind=%d tok=%q", stmt1.Kind, stmt1.Tok.Val)
-
-	// Now check symbol table AFTER fn def, BEFORE second stmt
-	sym, hasFoo := p.symbols["foo"]
-	t.Logf("after fn def: foo in symbols = %v, sym = %+v", hasFoo, sym)
-
-	// Check what the parser sees next
-	p.skipSeparators()
-	cur := p.cur()
-	t.Logf("next token: type=%d val=%q", cur.Type, cur.Val)
-	nextSym := p.symbols[cur.Val]
-	t.Logf("symbol for %q: %+v", cur.Val, nextSym)
-
-	// Parse the second statement
-	stmt2, err := p.parseList()
-	if err != nil {
-		t.Fatalf("parse stmt2: %v", err)
-	}
-	node := ast.BlockNode([]*ast.Node{stmt1, stmt2})
-
-	_ = node
-	// Check symbol table
-	sym, ok := p.symbols["foo"]
-	if !ok {
-		t.Fatal("foo not in symbol table")
-	}
-	t.Logf("foo sym kind = %d (SymFn=%d, SymBuiltin=%d)", sym.Kind, SymFn, SymBuiltin)
-
-	// Check AST
-	if node.Kind != ast.NBlock {
-		t.Fatalf("expected NBlock, got %d", node.Kind)
-	}
-	t.Logf("children: %d", len(node.Children))
-	for i, c := range node.Children {
-		t.Logf("  child[%d] kind=%d tok=%q", i, c.Kind, c.Tok.Val)
-	}
-	if len(node.Children) >= 2 {
-		second := node.Children[1]
-		t.Logf("second child kind=%d (NCall=%d, NCmd=%d)", second.Kind, ast.NCall, ast.NCmd)
-		if second.Kind == ast.NCmd && len(second.Children) > 0 {
-			nameChild := second.Children[0]
-			t.Logf("  NCmd name child kind=%d tok=%q toktype=%d", nameChild.Kind, nameChild.Tok.Val, nameChild.Tok.Type)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// isBlockEnd
-// ---------------------------------------------------------------------------
-
-func TestIsBlockEnd(t *testing.T) {
-	t.Run("keyword block-enders are always block-end", func(t *testing.T) {
-		for _, tt := range []ast.TokenType{ast.TEnd, ast.TDone, ast.TFi, ast.TEsac} {
-			if !isBlockEnd(tt) {
-				t.Errorf("isBlockEnd(%v) = false, want true", tt)
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			node := firstChild(t, tt.input)
+			if node.Kind != ast.NApply || len(node.Children) != 2 {
+				t.Fatalf("expected NApply with 2 children, got %v with %d", node.Kind, len(node.Children))
 			}
-		}
-		if isBlockEnd(ast.TIdent) {
-			t.Error("isBlockEnd(TIdent) should be false")
-		}
-	})
-
-	t.Run("pushTerminators accumulates", func(t *testing.T) {
-		p := &Parser{lex: lexer.New("")}
-		old := p.pushTerminators(ast.TDone)
-		// TDone is always a block end (keyword), plus it's in terminators
-		p.fillTo(0) // ensure token buffer
-		old2 := p.pushTerminators(ast.TFi)
-		p.restoreTerminators(old2)
-		p.restoreTerminators(old)
-		_ = old // suppress unused
-	})
-}
-
-// ---------------------------------------------------------------------------
-// isExprOperator
-// ---------------------------------------------------------------------------
-
-func TestIsExprBinOp(t *testing.T) {
-	// These are unambiguous binary ops at statement level
-	ops := []ast.TokenType{ast.TMul, ast.TDiv, ast.TEq, ast.TNe, ast.TLe, ast.TGe}
-	for _, op := range ops {
-		if !isExprBinOp(op) {
-			t.Errorf("isExprBinOp(%v) = false, want true", op)
-		}
-	}
-
-	// These are NOT unambiguous at statement level:
-	// TMinus/TPlus: could be flags. TGt/TLt: could be redirects. TDot: field access (separate check).
-	nonOps := []ast.TokenType{ast.TPipe, ast.TAnd, ast.TOr, ast.TSemicolon, ast.TNewline, ast.TEOF,
-		ast.TIdent, ast.TInt, ast.TMinus, ast.TPlus, ast.TGt, ast.TLt, ast.TDot}
-	for _, op := range nonOps {
-		if isExprBinOp(op) {
-			t.Errorf("isExprBinOp(%v) = true, want false", op)
-		}
+			arg := node.Children[1]
+			if arg.Tok.Val != tt.arg {
+				t.Errorf("expected arg %q, got %q", tt.arg, arg.Tok.Val)
+			}
+		})
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Error cases
-// ---------------------------------------------------------------------------
-
-func TestParseErrorUnterminatedIf(t *testing.T) {
-	_, err := parseStr("if true; then echo hello")
-	if err == nil {
-		t.Error("expected parse error for unterminated if, got nil")
+func TestFilenames_IPAddress(t *testing.T) {
+	node := firstChild(t, "echo 192.168.1.120")
+	if node.Kind != ast.NApply || len(node.Children) != 2 {
+		t.Fatalf("expected NApply with 2 children, got %v with %d", node.Kind, len(node.Children))
+	}
+	arg := node.Children[1]
+	if arg.Kind != ast.NIPv4 {
+		t.Fatalf("expected NIPv4, got %v", arg.Kind)
+	}
+	if arg.Tok.Val != "192.168.1.120" {
+		t.Errorf("expected '192.168.1.120', got %q", arg.Tok.Val)
 	}
 }
 
-func TestParseErrorMissingDo(t *testing.T) {
-	_, err := parseStr("if true\necho hi\nend")
-	if err == nil {
-		t.Error("expected parse error for missing do/then, got nil")
+func TestFilenames_Dotfile(t *testing.T) {
+	node := firstChild(t, "echo .gitignore")
+	if node.Kind != ast.NApply || len(node.Children) != 2 {
+		t.Fatalf("expected NApply with 2 children, got %v with %d", node.Kind, len(node.Children))
+	}
+	arg := node.Children[1]
+	if arg.Tok.Val != ".gitignore" {
+		t.Errorf("expected '.gitignore', got %q", arg.Tok.Val)
 	}
 }
 
-func TestParseErrorMissingEnd(t *testing.T) {
-	_, err := parseStr("fn add x y do\nx + y")
-	if err == nil {
-		t.Error("expected parse error for missing end, got nil")
+func TestFilenames_IPv6(t *testing.T) {
+	tests := []struct {
+		input string
+		addr  string
+	}{
+		{"echo ::1", "::1"},
+		{"echo fe80::1", "fe80::1"},
+		{"echo 2001:db8::1", "2001:db8::1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			node := firstChild(t, tt.input)
+			if node.Kind != ast.NApply || len(node.Children) != 2 {
+				t.Fatalf("expected NApply with 2 children, got %v with %d", node.Kind, len(node.Children))
+			}
+			arg := node.Children[1]
+			if arg.Kind != ast.NIPv6 {
+				t.Fatalf("expected NIPv6, got %v", arg.Kind)
+			}
+			if arg.Tok.Val != tt.addr {
+				t.Errorf("expected %q, got %q", tt.addr, arg.Tok.Val)
+			}
+		})
 	}
 }
 
-func TestParseErrorMissingDone(t *testing.T) {
-	_, err := parseStr("for x in a b c; do echo $x")
-	if err == nil {
-		t.Error("expected parse error for missing done, got nil")
+func TestFilenames_AbsolutePath(t *testing.T) {
+	node := firstChild(t, "echo /usr/local/bin")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
 	}
 }
 
-func TestParseErrorMissingFi(t *testing.T) {
-	_, err := parseStr("if true; then echo hello; else echo world")
-	if err == nil {
-		t.Error("expected parse error for missing fi, got nil")
+// =====================================================================
+// TIER 11: Redirections
+// =====================================================================
+
+func TestRedirect_Stdout(t *testing.T) {
+	cmd := firstChild(t, "echo hello > /dev/null")
+	if len(cmd.Redirs) != 1 || cmd.Redirs[0].Op != ast.TGt || cmd.Redirs[0].Fd != 1 {
+		t.Fatalf("expected stdout redirect")
 	}
 }
 
-func TestParseErrorMissingDoInFn(t *testing.T) {
-	_, err := parseStr("fn add x y\nx + y\nend")
-	if err == nil {
-		t.Error("expected parse error for missing do in fn, got nil")
+func TestRedirect_Stdin(t *testing.T) {
+	cmd := firstChild(t, "sort < input.txt")
+	if len(cmd.Redirs) != 1 || cmd.Redirs[0].Op != ast.TLt || cmd.Redirs[0].Fd != 0 {
+		t.Fatalf("expected stdin redirect")
 	}
 }
 
-func TestParseErrorMissingDoInWhile(t *testing.T) {
-	_, err := parseStr("while true echo loop done")
-	if err == nil {
-		t.Error("expected parse error for missing do in while, got nil")
+func TestRedirect_Append(t *testing.T) {
+	cmd := firstChild(t, "echo hello >> log")
+	if len(cmd.Redirs) != 1 || cmd.Redirs[0].Op != ast.TAppend {
+		t.Fatalf("expected append redirect")
 	}
 }
 
-func TestParseErrorMissingDoAfterReceive(t *testing.T) {
-	_, err := parseStr("receive\n:msg -> echo got\nend")
-	if err == nil {
-		t.Error("expected parse error for missing do after receive, got nil")
+func TestRedirect_StderrToDevNull(t *testing.T) {
+	cmd := firstChild(t, "echo visible 2>/dev/null")
+	if len(cmd.Redirs) != 1 || cmd.Redirs[0].Fd != 2 {
+		t.Fatalf("expected fd 2 redirect, got %d redirs", len(cmd.Redirs))
 	}
 }
 
-func TestParseErrorMissingDoAfterMatch(t *testing.T) {
-	_, err := parseStr("match x\n:ok -> echo yes\nend")
-	if err == nil {
-		t.Error("expected parse error for missing do after match, got nil")
+// =====================================================================
+// TIER 12: Subshell and negation
+// =====================================================================
+
+func TestSubshell(t *testing.T) {
+	node := firstChild(t, "(echo hello)")
+	if node.Kind != ast.NSubshell {
+		t.Fatalf("expected NSubshell, got %v", node.Kind)
 	}
 }
 
-func TestParseErrorRedirMissingTarget(t *testing.T) {
-	_, err := parseStr("echo hi >")
-	if err == nil {
-		t.Error("expected parse error for missing redirection target, got nil")
+func TestSubshellVarIsolation(t *testing.T) {
+	block := mustParse(t, "X=before\n(X=after)\necho $X")
+	if len(block.Children) != 3 {
+		t.Fatalf("expected 3 statements, got %d", len(block.Children))
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Edge cases
-// ---------------------------------------------------------------------------
-
-func TestParseEmptyInput(t *testing.T) {
-	node, err := parseStr("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node == nil {
-		return // also acceptable
-	}
-	if node.Kind != ast.NBlock || len(node.Children) != 0 {
-		t.Errorf("expected empty NBlock for empty input, got kind %d with %d children", node.Kind, len(node.Children))
+func TestNegation(t *testing.T) {
+	node := firstChild(t, "! false")
+	if node.Kind != ast.NUnary || node.Tok.Type != ast.TBang {
+		t.Fatalf("expected ! unary, got %v", node.Kind)
 	}
 }
 
-func TestParseMultipleStatements(t *testing.T) {
-	node, err := parseStr("echo a\necho b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NBlock {
-		t.Fatalf("expected NBlock, got %d", node.Kind)
-	}
-	if len(node.Children) != 2 {
-		t.Fatalf("expected 2 children, got %d", len(node.Children))
-	}
-}
-
-func TestParseSemicolonSeparated(t *testing.T) {
-	node, err := parseStr("echo a; echo b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NBlock {
-		t.Fatalf("expected NBlock, got %d", node.Kind)
-	}
-	if len(node.Children) != 2 {
-		t.Fatalf("expected 2 children, got %d", len(node.Children))
-	}
-}
-
-func TestParseSingleStatement(t *testing.T) {
-	node, err := parseStr("echo hello")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NCmd {
-		t.Fatalf("expected NCmd (not NBlock), got %d", node.Kind)
-	}
-}
-
-func TestParseCaseMultipleClauses(t *testing.T) {
-	node, err := parseStr("case x in\na) echo a;;\nb) echo b;;\nesac")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NCase {
-		t.Fatalf("expected NCase, got %d", node.Kind)
-	}
-	if len(node.Clauses) != 2 {
-		t.Fatalf("expected 2 clauses, got %d", len(node.Clauses))
-	}
-}
-
-func TestParseIshMatchMultipleClauses(t *testing.T) {
-	node, err := parseStr("match x do\n:ok -> echo yes\n:err -> echo no\nend")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NIshMatch {
-		t.Fatalf("expected NIshMatch, got %d", node.Kind)
-	}
-	if len(node.Clauses) != 2 {
-		t.Fatalf("expected 2 clauses, got %d", len(node.Clauses))
-	}
-}
-
-func TestParseRedirAppend(t *testing.T) {
-	node, err := parseStr("echo hi >> file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NCmd {
-		t.Fatalf("expected NCmd, got %d", node.Kind)
-	}
-	if len(node.Redirs) != 1 {
-		t.Fatalf("expected 1 redir, got %d", len(node.Redirs))
-	}
-	if node.Redirs[0].Op != ast.TRedirAppend {
-		t.Errorf("redir op = %d, want TRedirAppend (%d)", node.Redirs[0].Op, ast.TRedirAppend)
-	}
-}
-
-func TestParseRedirInput(t *testing.T) {
-	node, err := parseStr("cat < input.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NCmd {
-		t.Fatalf("expected NCmd, got %d", node.Kind)
-	}
-	if len(node.Redirs) != 1 {
-		t.Fatalf("expected 1 redir, got %d", len(node.Redirs))
-	}
-	if node.Redirs[0].Op != ast.TLt {
-		t.Errorf("redir op = %d, want TRedirIn (%d)", node.Redirs[0].Op, ast.TLt)
-	}
-	if node.Redirs[0].Fd != 0 {
-		t.Errorf("redir fd = %d, want 0", node.Redirs[0].Fd)
-	}
-}
-
-func TestParsePosixIfElif(t *testing.T) {
-	node, err := parseStr("if false; then echo a; elif true; then echo b; fi")
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestNegationInIf(t *testing.T) {
+	node := firstChild(t, "if ! false; then echo yes; fi")
 	if node.Kind != ast.NIf {
-		t.Fatalf("expected NIf, got %d", node.Kind)
+		t.Fatalf("expected NIf, got %v", node.Kind)
 	}
-	if len(node.Clauses) != 2 {
-		t.Fatalf("expected 2 clauses (if + elif), got %d", len(node.Clauses))
-	}
-	if node.Clauses[0].Pattern == nil {
-		t.Error("clause[0] should have a condition")
-	}
-	if node.Clauses[1].Pattern == nil {
-		t.Error("clause[1] (elif) should have a condition")
+	cond := node.Clauses[0].Pattern
+	if cond.Kind != ast.NUnary || cond.Tok.Type != ast.TBang {
+		t.Fatalf("expected ! in condition, got %v", cond.Kind)
 	}
 }
 
-func TestParseIshIfDoElseEnd(t *testing.T) {
-	node, err := parseStr("if false do\necho yes\nelse\necho no\nend")
-	if err != nil {
-		t.Fatal(err)
+// =====================================================================
+// TIER 13: Heredocs and herestrings
+// =====================================================================
+
+func TestHeredoc_Basic(t *testing.T) {
+	node := firstChild(t, "cat <<EOF\nhello world\nEOF")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
 	}
-	if node.Kind != ast.NIshIf {
-		t.Fatalf("expected NIshIf, got %d", node.Kind)
+	// TODO: verify heredoc content is "hello world\n" when properly implemented
+}
+
+func TestHeredoc_QuotedDelimiter(t *testing.T) {
+	// Quoted delimiter means no expansion
+	node := firstChild(t, "cat <<'EOF'\n$X should not expand\nEOF")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
 	}
-	if len(node.Clauses) != 2 {
-		t.Fatalf("expected 2 clauses, got %d", len(node.Clauses))
+	// TODO: verify quoted flag is set on heredoc node
+}
+
+func TestHerestring(t *testing.T) {
+	node := firstChild(t, "cat <<<hello")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
+	}
+	if len(node.Children) != 1 {
+		t.Fatalf("expected 1 child (cat), got %d", len(node.Children))
+	}
+	if len(node.Redirs) != 1 {
+		t.Fatalf("expected 1 redirect (herestring), got %d", len(node.Redirs))
 	}
 }
 
-func TestParseFnWithGuard(t *testing.T) {
-	node, err := parseStr("fn fib n when n > 1 do\nn\nend")
-	if err != nil {
-		t.Fatal(err)
+func TestHerestring_Var(t *testing.T) {
+	block := mustParse(t, "X=hi; cat <<<$X")
+	if len(block.Children) != 2 {
+		t.Fatalf("expected 2 statements, got %d", len(block.Children))
 	}
-	if node.Kind != ast.NIshFn {
-		t.Fatalf("expected NIshFn, got %d", node.Kind)
+}
+
+// =====================================================================
+// TIER 14: Data structures
+// =====================================================================
+
+func TestList_Empty(t *testing.T) {
+	bind := firstChild(t, "x = []")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NList {
+		t.Fatalf("expected NList, got %v", rhs.Kind)
+	}
+	if len(rhs.Children) != 0 {
+		t.Errorf("expected empty list, got %d elements", len(rhs.Children))
+	}
+}
+
+func TestList_Nested(t *testing.T) {
+	bind := firstChild(t, "x = [[1, 2], [3, 4]]")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NList || len(rhs.Children) != 2 {
+		t.Fatalf("expected NList with 2 children, got %v with %d", rhs.Kind, len(rhs.Children))
+	}
+	for i, child := range rhs.Children {
+		if child.Kind != ast.NList {
+			t.Errorf("child %d: expected NList, got %v", i, child.Kind)
+		}
+	}
+}
+
+func TestList_ConsConstruction(t *testing.T) {
+	bind := firstChild(t, "x = [1 | [2, 3]]")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NCons {
+		t.Fatalf("expected NCons for [h|t] construction, got %v", rhs.Kind)
+	}
+	if len(rhs.Children) != 2 {
+		t.Fatalf("expected 2 children (head, tail), got %d", len(rhs.Children))
+	}
+}
+
+func TestTuple_OkNil(t *testing.T) {
+	bind := firstChild(t, "x = {:ok, nil}")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NTuple || len(rhs.Children) != 2 {
+		t.Fatalf("expected NTuple with 2 elems, got %v with %d", rhs.Kind, len(rhs.Children))
+	}
+}
+
+func TestTuple_ErrorCode(t *testing.T) {
+	bind := firstChild(t, "x = {:error, 42}")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NTuple || len(rhs.Children) != 2 {
+		t.Fatalf("expected NTuple with 2 elems, got %v with %d", rhs.Kind, len(rhs.Children))
+	}
+	if rhs.Children[0].Kind != ast.NAtom || rhs.Children[0].Tok.Val != "error" {
+		t.Errorf("expected :error, got %v %q", rhs.Children[0].Kind, rhs.Children[0].Tok.Val)
+	}
+}
+
+func TestTuple_MixedTypes(t *testing.T) {
+	bind := firstChild(t, `x = {:ok, 42, "hello"}`)
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NTuple || len(rhs.Children) != 3 {
+		t.Fatalf("expected NTuple with 3 elems, got %v with %d", rhs.Kind, len(rhs.Children))
+	}
+}
+
+func TestMap_Basic(t *testing.T) {
+	bind := firstChild(t, `x = %{name: "alice", age: 30}`)
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NMap {
+		t.Fatalf("expected NMap, got %v", rhs.Kind)
+	}
+	if len(rhs.Children) != 4 {
+		t.Fatalf("expected 4 children (2 key-value pairs interleaved), got %d", len(rhs.Children))
+	}
+}
+
+func TestMap_Access(t *testing.T) {
+	bind := firstChild(t, "x = config.host")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NAccess {
+		t.Fatalf("expected NAccess, got %v", rhs.Kind)
+	}
+	if rhs.Tok.Val != "host" {
+		t.Errorf("expected field 'host', got %q", rhs.Tok.Val)
+	}
+}
+
+// =====================================================================
+// TIER 15: Arithmetic and operator precedence
+// =====================================================================
+
+func TestArith_Precedence(t *testing.T) {
+	bind := firstChild(t, "r = 2 + 3 * 4")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NBinOp || rhs.Tok.Type != ast.TPlus {
+		t.Fatalf("expected + at top, got %v %v", rhs.Kind, rhs.Tok.Val)
+	}
+	right := rhs.Children[1]
+	if right.Kind != ast.NBinOp || right.Tok.Type != ast.TStar {
+		t.Fatalf("expected * as right child of +, got %v %v", right.Kind, right.Tok.Val)
+	}
+}
+
+func TestArith_ParenGrouping(t *testing.T) {
+	bind := firstChild(t, "r = (2 + 3) * 4")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NBinOp || rhs.Tok.Type != ast.TStar {
+		t.Fatalf("expected * at top (parens override precedence), got %v %v", rhs.Kind, rhs.Tok.Val)
+	}
+}
+
+func TestArith_UnaryNeg(t *testing.T) {
+	bind := firstChild(t, "r = -42")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NUnary || rhs.Tok.Type != ast.TMinus {
+		t.Fatalf("expected unary -, got %v", rhs.Kind)
+	}
+}
+
+func TestArith_BooleanNot(t *testing.T) {
+	bind := firstChild(t, "r = (!true)")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NUnary || rhs.Tok.Type != ast.TBang {
+		t.Fatalf("expected unary !, got %v", rhs.Kind)
+	}
+}
+
+func TestArith_Float(t *testing.T) {
+	bind := firstChild(t, "r = 3.14 * 2")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NBinOp || rhs.Tok.Type != ast.TStar {
+		t.Fatalf("expected * binop, got %v", rhs.Kind)
+	}
+	if rhs.Children[0].Tok.Val != "3.14" {
+		t.Errorf("expected left operand 3.14, got %q", rhs.Children[0].Tok.Val)
+	}
+}
+
+func TestArith_StringConcat(t *testing.T) {
+	bind := firstChild(t, `r = "hello" + " " + "world"`)
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NBinOp || rhs.Tok.Type != ast.TPlus {
+		t.Fatalf("expected + binop, got %v", rhs.Kind)
+	}
+}
+
+// =====================================================================
+// TIER 16: Function calls
+// =====================================================================
+
+func TestCall_ParenDelimited(t *testing.T) {
+	bind := firstChild(t, "r = add(3, 4)")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NCall {
+		t.Fatalf("expected NCall, got %v", rhs.Kind)
+	}
+	// callee + 2 args = 3 children
+	if len(rhs.Children) != 3 {
+		t.Fatalf("expected 3 children, got %d", len(rhs.Children))
+	}
+	if rhs.Children[0].Tok.Val != "add" {
+		t.Errorf("expected callee 'add', got %q", rhs.Children[0].Tok.Val)
+	}
+}
+
+func TestCall_BareArgs(t *testing.T) {
+	bind := firstChild(t, "r = double 5")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NApply {
+		t.Fatalf("expected NApply for bare call, got %v", rhs.Kind)
+	}
+	if len(rhs.Children) != 2 {
+		t.Fatalf("expected 2 children (fn, arg), got %d", len(rhs.Children))
+	}
+}
+
+func TestCall_ModuleQualified(t *testing.T) {
+	bind := firstChild(t, "r = List.map [1, 2, 3], f")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", rhs.Kind)
+	}
+	head := rhs.Children[0]
+	if head.Kind != ast.NAccess || head.Tok.Val != "map" {
+		t.Errorf("expected NAccess 'map', got kind=%v val=%q", head.Kind, head.Tok.Val)
+	}
+}
+
+func TestCall_LambdaInPipeArrow(t *testing.T) {
+	bind := firstChild(t, `r = [1, 2, 3] |> List.map \x -> x * 2`)
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NPipeFn {
+		t.Fatalf("expected NPipeFn, got %v", rhs.Kind)
+	}
+}
+
+func TestCall_FnCapture(t *testing.T) {
+	bind := firstChild(t, "f = &greet")
+	rhs := bind.Children[1]
+	// &greet should be an identifier with & prefix
+	if rhs.Kind != ast.NIdent {
+		t.Fatalf("expected NIdent for capture, got %v", rhs.Kind)
+	}
+	if rhs.Tok.Val != "&greet" {
+		t.Errorf("expected '&greet', got %q", rhs.Tok.Val)
+	}
+}
+
+// =====================================================================
+// TIER 17: OTP primitives
+// =====================================================================
+
+func TestOTP_Spawn(t *testing.T) {
+	bind := firstChild(t, "pid = spawn fn do :ok end")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NApply {
+		t.Fatalf("expected NApply for spawn, got %v", rhs.Kind)
+	}
+	if rhs.Children[0].Tok.Val != "spawn" {
+		t.Errorf("expected head 'spawn', got %q", rhs.Children[0].Tok.Val)
+	}
+}
+
+func TestOTP_SpawnAndSend(t *testing.T) {
+	node := firstChild(t, "send pid, {:ping, self}")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
+	}
+	if node.Children[0].Tok.Val != "send" {
+		t.Errorf("expected head 'send', got %q", node.Children[0].Tok.Val)
+	}
+	if len(node.Children) != 3 {
+		t.Fatalf("expected 3 children (send, pid, tuple), got %d", len(node.Children))
+	}
+}
+
+func TestOTP_Receive(t *testing.T) {
+	node := firstChild(t, "receive do\n{:ping, sender} -> send sender, :pong\nend")
+	if node.Kind != ast.NReceive {
+		t.Fatalf("expected NReceive, got %v", node.Kind)
 	}
 	if len(node.Clauses) != 1 {
 		t.Fatalf("expected 1 clause, got %d", len(node.Clauses))
 	}
-	if node.Clauses[0].Guard == nil {
-		t.Error("expected guard to be non-nil")
+	pat := node.Clauses[0].Pattern
+	if pat.Kind != ast.NTuple {
+		t.Errorf("expected tuple pattern, got %v", pat.Kind)
 	}
 }
 
-func TestParseUnaryNegation(t *testing.T) {
-	node, err := parseStr("-42")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NUnary {
-		t.Fatalf("expected NUnary, got %d", node.Kind)
-	}
-	if node.Tok.Val != "-" {
-		t.Errorf("op = %q, want %q", node.Tok.Val, "-")
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child, got %d", len(node.Children))
-	}
-}
-
-func TestParseUnaryBang(t *testing.T) {
-	node, err := parseStr("x = (!true)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NMatch {
-		t.Fatalf("expected NMatch, got %d", node.Kind)
-	}
-	rhs := node.Children[1]
-	if rhs.Kind != ast.NUnary {
-		t.Fatalf("expected NUnary, got %d", rhs.Kind)
-	}
-	if rhs.Tok.Val != "!" {
-		t.Errorf("op = %q, want %q", rhs.Tok.Val, "!")
-	}
-}
-
-func TestParseEmptyListLiteral(t *testing.T) {
-	node, err := parseStr("[]")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NList {
-		t.Fatalf("expected NList, got %d", node.Kind)
-	}
-	if len(node.Children) != 0 {
-		t.Errorf("expected 0 children for empty list, got %d", len(node.Children))
-	}
-}
-
-func TestParseEmptyTuple(t *testing.T) {
-	node, err := parseStr("{:ok}")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NTuple {
-		t.Fatalf("expected NTuple, got %d", node.Kind)
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child, got %d", len(node.Children))
-	}
-}
-
-func TestParseStringLiteral(t *testing.T) {
-	node, err := parseStr(`"hello world"`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NLit {
-		t.Fatalf("expected NLit, got %d", node.Kind)
-	}
-	if node.Tok.Type != ast.TString {
-		t.Errorf("tok type = %d, want TString (%d)", node.Tok.Type, ast.TString)
-	}
-	if node.Tok.Val != "hello world" {
-		t.Errorf("tok val = %q, want %q", node.Tok.Val, "hello world")
-	}
-}
-
-func TestParseIntLiteral(t *testing.T) {
-	node, err := parseStr("42")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NLit {
-		t.Fatalf("expected NLit, got %d", node.Kind)
-	}
-	if node.Tok.Type != ast.TInt {
-		t.Errorf("tok type = %d, want TInt (%d)", node.Tok.Type, ast.TInt)
-	}
-}
-
-func TestParseAtomLiteral(t *testing.T) {
-	node, err := parseStr(":hello")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NLit {
-		t.Fatalf("expected NLit, got %d", node.Kind)
-	}
-	if node.Tok.Type != ast.TAtom {
-		t.Errorf("tok type = %d, want TAtom (%d)", node.Tok.Type, ast.TAtom)
-	}
-	if node.Tok.Val != "hello" {
-		t.Errorf("tok val = %q, want %q", node.Tok.Val, "hello")
-	}
-}
-
-func TestParseMapMultipleEntries(t *testing.T) {
-	node, err := parseStr("%{x: 1, y: 2}")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NMap {
-		t.Fatalf("expected NMap, got %d", node.Kind)
-	}
-	if len(node.Children) != 4 {
-		t.Fatalf("expected 4 children, got %d", len(node.Children))
-	}
-}
-
-func TestParseEqualityExpr(t *testing.T) {
-	node, err := parseStr("5 == 5")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NBinOp {
-		t.Fatalf("expected NBinOp, got %d", node.Kind)
-	}
-	if node.Tok.Type != ast.TEq {
-		t.Errorf("op type = %d, want TEq (%d)", node.Tok.Type, ast.TEq)
-	}
-}
-
-func TestParseInequalityExpr(t *testing.T) {
-	node, err := parseStr("5 != 6")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NBinOp {
-		t.Fatalf("expected NBinOp, got %d", node.Kind)
-	}
-	if node.Tok.Type != ast.TNe {
-		t.Errorf("op type = %d, want TNe (%d)", node.Tok.Type, ast.TNe)
-	}
-}
-
-func TestParseComparisonLe(t *testing.T) {
-	node, err := parseStr("3 <= 5")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NBinOp {
-		t.Fatalf("expected NBinOp, got %d", node.Kind)
-	}
-	if node.Tok.Type != ast.TLe {
-		t.Errorf("op type = %d, want TLe (%d)", node.Tok.Type, ast.TLe)
-	}
-}
-
-func TestParseComparisonGe(t *testing.T) {
-	node, err := parseStr("5 >= 3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NBinOp {
-		t.Fatalf("expected NBinOp, got %d", node.Kind)
-	}
-	if node.Tok.Type != ast.TGe {
-		t.Errorf("op type = %d, want TGe (%d)", node.Tok.Type, ast.TGe)
-	}
-}
-
-func TestParseSubtraction(t *testing.T) {
-	node, err := parseStr("10 - 3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NBinOp {
-		t.Fatalf("expected NBinOp, got %d", node.Kind)
-	}
-	if node.Tok.Type != ast.TMinus {
-		t.Errorf("op type = %d, want TMinus (%d)", node.Tok.Type, ast.TMinus)
-	}
-}
-
-func TestParseDivision(t *testing.T) {
-	node, err := parseStr("20 / 4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NBinOp {
-		t.Fatalf("expected NBinOp, got %d", node.Kind)
-	}
-	if node.Tok.Type != ast.TDiv {
-		t.Errorf("op type = %d, want TDiv (%d)", node.Tok.Type, ast.TDiv)
-	}
-}
-
-func TestParseDotAccess(t *testing.T) {
-	node, err := parseStr("r = m.x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NMatch {
-		t.Fatalf("expected NMatch, got %d", node.Kind)
-	}
-	rhs := node.Children[1]
-	if rhs.Kind != ast.NAccess {
-		t.Fatalf("expected NAccess, got %d", rhs.Kind)
-	}
-	if rhs.Tok.Val != "x" {
-		t.Errorf("field = %q, want %q", rhs.Tok.Val, "x")
-	}
-}
-
-func TestParseIshBindWithExpr(t *testing.T) {
-	node, err := parseStr("x = 10 + 5")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NMatch {
-		t.Fatalf("expected NMatch, got %d", node.Kind)
-	}
-	rhs := node.Children[1]
-	if rhs.Kind != ast.NBinOp {
-		t.Fatalf("rhs should be NBinOp, got %d", rhs.Kind)
-	}
-	if rhs.Tok.Val != "+" {
-		t.Errorf("rhs op = %q, want %q", rhs.Tok.Val, "+")
-	}
-}
-
-func TestParseUntilLoop(t *testing.T) {
-	node, err := parseStr("until false; do echo loop; done")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NUntil {
-		t.Fatalf("expected NUntil, got %d", node.Kind)
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child (condition), got %d", len(node.Children))
+func TestOTP_ReceiveTimeout(t *testing.T) {
+	node := firstChild(t, "receive do\nmsg -> msg\nafter 100 ->\n:timeout\nend")
+	if node.Kind != ast.NReceive {
+		t.Fatalf("expected NReceive, got %v", node.Kind)
 	}
 	if len(node.Clauses) != 1 {
-		t.Fatalf("expected 1 clause (body), got %d", len(node.Clauses))
+		t.Fatalf("expected 1 match clause, got %d", len(node.Clauses))
+	}
+	if len(node.Children) != 2 {
+		t.Fatalf("expected 2 children (timeout, after body), got %d", len(node.Children))
 	}
 }
 
-func TestParseGroupCommand(t *testing.T) {
-	node, err := parseStr("{ echo hi; }")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node.Kind != ast.NGroup {
-		t.Fatalf("expected NGroup, got %d", node.Kind)
-	}
-	if len(node.Children) != 1 {
-		t.Fatalf("expected 1 child, got %d", len(node.Children))
+func TestOTP_Await(t *testing.T) {
+	bind := firstChild(t, "result = await task")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NApply {
+		t.Fatalf("expected NApply for await, got %v", rhs.Kind)
 	}
 }
 
-func TestParseDotPaths(t *testing.T) {
-	t.Run("cd dotdot is command", func(t *testing.T) {
-		node, err := parseStr("cd ..")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if node.Kind != ast.NCmd {
-			t.Fatalf("expected NCmd, got %d", node.Kind)
-		}
-		if len(node.Children) != 2 {
-			t.Fatalf("expected 2 children [cd, ..], got %d", len(node.Children))
-		}
-		arg := nodeToString(node.Children[1])
-		if arg != ".." {
-			t.Errorf("arg = %q, want %q", arg, "..")
-		}
-	})
-
-	t.Run("dot-slash script is command", func(t *testing.T) {
-		node, err := parseStr("./script")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if node.Kind != ast.NCmd {
-			t.Fatalf("expected NCmd, got %d", node.Kind)
-		}
-		cmd := nodeToString(node.Children[0])
-		if cmd != "./script" {
-			t.Errorf("cmd = %q, want %q", cmd, "./script")
-		}
-	})
-
-	t.Run("ls dotfile is command", func(t *testing.T) {
-		node, err := parseStr("ls .hidden")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if node.Kind != ast.NCmd {
-			t.Fatalf("expected NCmd, got %d", node.Kind)
-		}
-		if len(node.Children) != 2 {
-			t.Fatalf("expected 2 children, got %d", len(node.Children))
-		}
-		arg := nodeToString(node.Children[1])
-		if arg != ".hidden" {
-			t.Errorf("arg = %q, want %q", arg, ".hidden")
-		}
-	})
-
-	t.Run("cd ../foo is command", func(t *testing.T) {
-		node, err := parseStr("cd ../foo")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if node.Kind != ast.NCmd {
-			t.Fatalf("expected NCmd, got %d", node.Kind)
-		}
-		arg := nodeToString(node.Children[1])
-		if arg != "../foo" {
-			t.Errorf("arg = %q, want %q", arg, "../foo")
-		}
-	})
+func TestOTP_Monitor(t *testing.T) {
+	bind := firstChild(t, "ref = monitor pid")
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NApply {
+		t.Fatalf("expected NApply for monitor, got %v", rhs.Kind)
+	}
 }
 
-func TestParseExprDepthLimit(t *testing.T) {
-	t.Skip("TODO: deeply nested parens in binding RHS go through subshell path, depth limit needs rework")
-	deep := "x = " + strings.Repeat("(", 1001) + "1" + strings.Repeat(")", 1001)
-	_, err := parseStr(deep)
+func TestOTP_Supervise(t *testing.T) {
+	bind := firstChild(t, "sup = supervise :one_for_one do\nworker :greeter fn do\necho started\nend\nend")
+	if bind.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", bind.Kind)
+	}
+}
+
+// =====================================================================
+// TIER 18: try/rescue
+// =====================================================================
+
+func TestTryRescue(t *testing.T) {
+	bind := firstChild(t, "r = try do\n1 / 0\nrescue\n_ -> :caught\nend")
+	if bind.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", bind.Kind)
+	}
+	rhs := bind.Children[1]
+	if rhs.Kind != ast.NTry {
+		t.Fatalf("expected NTry, got %v", rhs.Kind)
+	}
+	if len(rhs.Clauses) != 1 {
+		t.Fatalf("expected 1 rescue clause, got %d", len(rhs.Clauses))
+	}
+}
+
+func TestTryRescuePattern(t *testing.T) {
+	bind := firstChild(t, "r = try do\n{:ok, val} = {:error, \"bad\"}\nrescue\n{:error, msg} -> msg\nend")
+	if bind.Kind != ast.NBind {
+		t.Fatalf("expected NBind, got %v", bind.Kind)
+	}
+}
+
+// =====================================================================
+// TIER 19: Modules
+// =====================================================================
+
+func TestDefmodule(t *testing.T) {
+	node := firstChild(t, "defmodule M do\nfn greet name do\necho hello\nend\nend")
+	if node.Kind != ast.NDefModule {
+		t.Fatalf("expected NDefModule, got %v", node.Kind)
+	}
+	if node.Tok.Val != "M" {
+		t.Errorf("expected module name 'M', got %q", node.Tok.Val)
+	}
+}
+
+func TestUse(t *testing.T) {
+	node := firstChild(t, "use List")
+	if node.Kind != ast.NUseImport {
+		t.Fatalf("expected NUseImport, got %v", node.Kind)
+	}
+	if node.Tok.Val != "use" {
+		t.Errorf("expected tok 'use', got %q", node.Tok.Val)
+	}
+	if node.Children[0].Tok.Val != "List" {
+		t.Errorf("expected module 'List', got %q", node.Children[0].Tok.Val)
+	}
+}
+
+func TestImport(t *testing.T) {
+	node := firstChild(t, "import List")
+	if node.Kind != ast.NUseImport {
+		t.Fatalf("expected NUseImport, got %v", node.Kind)
+	}
+	if node.Tok.Val != "import" {
+		t.Errorf("expected tok 'import', got %q", node.Tok.Val)
+	}
+}
+
+// =====================================================================
+// TIER 20: Special parameters
+// =====================================================================
+
+func TestSpecialParam_ExitStatus(t *testing.T) {
+	block := mustParse(t, "true; echo $?")
+	echo := block.Children[1]
+	if echo.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", echo.Kind)
+	}
+	varRef := echo.Children[1]
+	if varRef.Kind != ast.NVarRef || varRef.Tok.Val != "$?" {
+		t.Errorf("expected $? var ref, got kind=%v val=%q", varRef.Kind, varRef.Tok.Val)
+	}
+}
+
+func TestSpecialParam_PID(t *testing.T) {
+	node := firstChild(t, "echo $$")
+	varRef := node.Children[1]
+	if varRef.Kind != ast.NVarRef || varRef.Tok.Val != "$$" {
+		t.Errorf("expected $$ var ref, got kind=%v val=%q", varRef.Kind, varRef.Tok.Val)
+	}
+}
+
+func TestSpecialParam_Args(t *testing.T) {
+	node := firstChild(t, "echo $1 $2 $3")
+	if node.Kind != ast.NApply {
+		t.Fatalf("expected NApply, got %v", node.Kind)
+	}
+	if len(node.Children) != 4 {
+		t.Fatalf("expected 4 children (echo + 3 vars), got %d", len(node.Children))
+	}
+	for i := 1; i <= 3; i++ {
+		ref := node.Children[i]
+		if ref.Kind != ast.NVarRef {
+			t.Errorf("arg %d: expected NVarRef, got %v", i, ref.Kind)
+		}
+	}
+}
+
+func TestSpecialParam_ArgCount(t *testing.T) {
+	node := firstChild(t, "echo $#")
+	varRef := node.Children[1]
+	if varRef.Kind != ast.NVarRef || varRef.Tok.Val != "$#" {
+		t.Errorf("expected $# var ref, got kind=%v val=%q", varRef.Kind, varRef.Tok.Val)
+	}
+}
+
+func TestSpecialParam_AllArgs(t *testing.T) {
+	node := firstChild(t, "echo $@")
+	varRef := node.Children[1]
+	if varRef.Kind != ast.NVarRef || varRef.Tok.Val != "$@" {
+		t.Errorf("expected $@ var ref, got kind=%v val=%q", varRef.Kind, varRef.Tok.Val)
+	}
+}
+
+// =====================================================================
+// TIER 21: Error cases
+// =====================================================================
+
+func TestError_UntermIf(t *testing.T) {
+	_, err := parse("if true; then echo hi")
 	if err == nil {
-		t.Fatal("expected error for deeply nested expression")
-	}
-	if !strings.Contains(err.Error(), "too deeply nested") {
-		t.Errorf("expected 'too deeply nested' error, got: %s", err)
+		t.Error("expected error for unterminated if")
 	}
 }
 
-func TestTailPositionMarking(t *testing.T) {
-	t.Run("fn body last stmt", func(t *testing.T) {
-		node, err := parseStr("fn foo do\necho a\necho b\nend")
-		if err != nil {
-			t.Fatal(err)
-		}
-		body := node.Clauses[0].Body
-		if body.Kind != ast.NBlock {
-			t.Fatalf("expected NBlock, got %d", body.Kind)
-		}
-		if body.Children[0].Tail {
-			t.Error("first stmt should not be in tail position")
-		}
-		if !body.Children[1].Tail {
-			t.Error("last stmt should be in tail position")
-		}
-	})
+func TestError_UntermFor(t *testing.T) {
+	_, err := parse("for x in a b; do echo $x")
+	if err == nil {
+		t.Error("expected error for unterminated for")
+	}
+}
 
-	t.Run("fn single stmt body", func(t *testing.T) {
-		node, err := parseStr("fn foo do\necho a\nend")
-		if err != nil {
-			t.Fatal(err)
-		}
-		body := node.Clauses[0].Body
-		if !body.Tail {
-			t.Error("single-stmt fn body should be in tail position")
-		}
-	})
+func TestError_UntermFn(t *testing.T) {
+	_, err := parse("fn foo do echo hi")
+	if err == nil {
+		t.Error("expected error for unterminated fn")
+	}
+}
 
-	t.Run("if/else both branches", func(t *testing.T) {
-		node, err := parseStr("fn foo do\nif true do\necho a\nelse\necho b\nend\nend")
-		if err != nil {
-			t.Fatal(err)
-		}
-		body := node.Clauses[0].Body
-		if !body.Tail {
-			t.Error("if in tail position should be marked")
-		}
-		if body.Kind != ast.NIshIf {
-			t.Fatalf("expected NIshIf, got %d", body.Kind)
-		}
-		thenBody := body.Clauses[0].Body
-		if !thenBody.Tail {
-			t.Error("then branch body should be in tail position")
-		}
-		elseBody := body.Clauses[1].Body
-		if !elseBody.Tail {
-			t.Error("else branch body should be in tail position")
-		}
-	})
+func TestError_UntermMatch(t *testing.T) {
+	_, err := parse("match x do\n:ok -> echo yes")
+	if err == nil {
+		t.Error("expected error for unterminated match")
+	}
+}
 
-	t.Run("clause bodies in match", func(t *testing.T) {
-		node, err := parseStr("fn foo do\nmatch x do\n:a -> echo a\n:b -> echo b\nend\nend")
-		if err != nil {
-			t.Fatal(err)
-		}
-		body := node.Clauses[0].Body
-		if !body.Tail {
-			t.Error("match in tail position should be marked")
-		}
-	})
+func TestError_RedirectNoTarget(t *testing.T) {
+	_, err := parse("echo hi >")
+	if err == nil {
+		t.Error("expected error for redirect without target")
+	}
+}
 
-	t.Run("lambda body", func(t *testing.T) {
-		node, err := parseStr("f = \\x -> x + 1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		lambda := node.Children[1]
-		if lambda.Kind != ast.NLambda {
-			t.Fatalf("expected NLambda, got %d", lambda.Kind)
-		}
-		lambdaBody := lambda.Clauses[0].Body
-		if !lambdaBody.Tail {
-			t.Error("lambda body should be in tail position")
-		}
-	})
+func TestError_PipeNoRHS(t *testing.T) {
+	_, err := parse("echo hi |")
+	if err == nil {
+		t.Error("expected error for pipe without RHS")
+	}
+}
+
+func TestError_StandaloneArrow(t *testing.T) {
+	_, err := parse("->")
+	if err == nil {
+		t.Error("expected error for standalone arrow")
+	}
+}
+
+// =====================================================================
+// TIER 22: Expression extension at statement level
+// =====================================================================
+
+func TestExprExtend_Addition(t *testing.T) {
+	node := firstChild(t, "a + b")
+	if node.Kind != ast.NBinOp || node.Tok.Type != ast.TPlus {
+		t.Fatalf("expected + binop, got kind=%v tok=%v", node.Kind, node.Tok.Type)
+	}
+}
+
+func TestExprExtend_Comparison(t *testing.T) {
+	node := firstChild(t, "x == 5")
+	if node.Kind != ast.NBinOp || node.Tok.Type != ast.TEqEq {
+		t.Fatalf("expected == binop, got kind=%v tok=%v", node.Kind, node.Tok.Type)
+	}
+}
+
+func TestExprExtend_NotRedirect(t *testing.T) {
+	// x > 5 at statement level — > is redirect, NOT comparison
+	cmd := firstChild(t, "x > 5")
+	if len(cmd.Redirs) == 0 || cmd.Redirs[0].Op != ast.TGt {
+		t.Fatalf("expected > as redirect at statement level")
+	}
+}
+
+// =====================================================================
+// TIER 23: Mixed POSIX + ish
+// =====================================================================
+
+func TestMixed_POSIXIfWithIshBinding(t *testing.T) {
+	block := mustParse(t, "x = 42\nif [ $x -eq 42 ]; then\necho yes\nfi")
+	if len(block.Children) != 2 {
+		t.Fatalf("expected 2 statements, got %d", len(block.Children))
+	}
+	if block.Children[0].Kind != ast.NBind {
+		t.Errorf("first should be binding, got %v", block.Children[0].Kind)
+	}
+	if block.Children[1].Kind != ast.NIf {
+		t.Errorf("second should be if, got %v", block.Children[1].Kind)
+	}
+}
+
+func TestMixed_IshFnCalledFromPOSIXFor(t *testing.T) {
+	block := mustParse(t, "fn double x do\nx * 2\nend\nfor i in 1 2 3; do\nr = double $i\necho $r\ndone")
+	if len(block.Children) != 2 {
+		t.Fatalf("expected 2 statements (fn + for), got %d", len(block.Children))
+	}
+}
+
+func TestMixed_POSIXVarInIshExpr(t *testing.T) {
+	block := mustParse(t, "X=10\nr = $X + 5\necho $r")
+	if len(block.Children) != 3 {
+		t.Fatalf("expected 3 statements, got %d", len(block.Children))
+	}
+}
+
+func TestMixed_CmdSubInIshBinding(t *testing.T) {
+	block := mustParse(t, "x = $(echo 42)\necho $x")
+	bind := block.Children[0]
+	if bind.Children[1].Kind != ast.NCmdSub {
+		t.Fatalf("expected NCmdSub on RHS, got %v", bind.Children[1].Kind)
+	}
+}
+
+func TestMixed_WhileWithIshBinding(t *testing.T) {
+	block := mustParse(t, "n = 3\nwhile [ $n -gt 0 ]; do\necho $n\nn = (n - 1)\ndone")
+	if len(block.Children) != 2 {
+		t.Fatalf("expected 2 statements, got %d", len(block.Children))
+	}
+}
+
+// =====================================================================
+// TIER 24: Realistic POSIX commands
+// =====================================================================
+
+func TestRealistic_Curl(t *testing.T) {
+	inputs := []string{
+		"curl https://example.com",
+		"curl -s -o /dev/null -w '%{http_code}' https://example.com",
+		"curl -X POST -H 'Content-Type: application/json' -d '{\"key\":\"val\"}' https://api.example.com",
+		"curl -fsSL https://get.docker.com | sh",
+		"curl --retry 3 --retry-delay 5 https://example.com",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_Awk(t *testing.T) {
+	inputs := []string{
+		"echo hello | awk '{print $1}'",
+		"awk -F: '{print $1}' /etc/passwd",
+		"awk 'NR==1{print}' file.txt",
+		"ps aux | awk '{print $2, $11}'",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_Sed(t *testing.T) {
+	inputs := []string{
+		"sed 's/foo/bar/g' file.txt",
+		"sed -i 's/old/new/' file.txt",
+		"echo hello | sed 's/hello/world/'",
+		"sed -n '1,10p' file.txt",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_Git(t *testing.T) {
+	inputs := []string{
+		"git status",
+		"git commit -m 'initial commit'",
+		"git log --oneline --graph",
+		"git push origin main",
+		"git diff HEAD~1",
+		"git stash pop",
+		"git remote add origin https://github.com/user/repo.git",
+		"git checkout -b feature/new-thing",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_Find(t *testing.T) {
+	inputs := []string{
+		"find . -name '*.go'",
+		"find /tmp -type f -mtime +7",
+		"find . -name '*.log' -delete",
+		"find /usr -type f -executable",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_Grep(t *testing.T) {
+	inputs := []string{
+		"grep -r 'TODO' src/",
+		"grep -n 'func main' *.go",
+		"grep -v '^#' config.conf",
+		"grep -E 'foo|bar' file.txt",
+		"grep -c 'error' /var/log/syslog",
+		"ps aux | grep nginx | grep -v grep",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_Docker(t *testing.T) {
+	inputs := []string{
+		"docker run -d -p 8080:80 nginx",
+		"docker ps -a",
+		"docker exec -it container_name sh",
+		"docker build -t myapp:latest .",
+		"docker compose up -d",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_SshScp(t *testing.T) {
+	inputs := []string{
+		"ssh user@host.example.com",
+		"ssh -p 2222 user@host 'ls -la'",
+		"scp file.txt user@host:/tmp/",
+		"scp -r local/ user@host:remote/",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_Tar(t *testing.T) {
+	inputs := []string{
+		"tar czf archive.tar.gz src/",
+		"tar xzf archive.tar.gz",
+		"tar tf archive.tar.gz",
+		"tar czf - src/ | ssh host 'tar xzf -'",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_MakeGoBuild(t *testing.T) {
+	inputs := []string{
+		"make -j4",
+		"make clean && make build",
+		"go build -o myapp ./cmd/myapp",
+		"go test ./... -v -count=1",
+		"go run main.go",
+		"cargo build --release",
+		"npm install && npm run build",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_ComplexPipelines(t *testing.T) {
+	inputs := []string{
+		"ps aux | sort -k3 -rn | head -10",
+		"cat /etc/passwd | cut -d: -f1 | sort",
+		"find . -name '*.go' | xargs wc -l | sort -n | tail -10",
+		"ls -la | awk '{print $9}' | grep -v '^$'",
+		"du -sh * | sort -h | tail -5",
+		"netstat -tlnp 2>/dev/null | grep :80",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_ConditionalExecution(t *testing.T) {
+	inputs := []string{
+		"test -f /etc/hosts && echo exists",
+		"[ -d /tmp ] && echo yes || echo no",
+		"command -v git > /dev/null && echo 'git found'",
+		"which python3 > /dev/null 2>&1 || echo 'no python3'",
+		"mkdir -p /tmp/test && cd /tmp/test && touch file",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRealistic_Assignments(t *testing.T) {
+	inputs := []string{
+		"CC=gcc make",
+		"DEBIAN_FRONTEND=noninteractive apt-get install -y curl",
+		"PATH=$PATH:/usr/local/go/bin",
+		"GOPATH=$HOME/go go build",
+	}
+	for _, input := range inputs {
+		t.Run(truncName(input), func(t *testing.T) {
+			_, err := parse(input)
+			if err != nil {
+				t.Errorf("parse error: %v", err)
+			}
+		})
+	}
 }

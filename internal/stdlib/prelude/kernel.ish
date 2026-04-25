@@ -1,0 +1,20 @@
+# Kernel type checks — built on typeof/1
+fn is_integer x do typeof(x) == :integer end
+fn is_float x do typeof(x) == :float end
+fn is_string x do typeof(x) == :string end
+fn is_atom x do typeof(x) == :atom end
+fn is_list x do typeof(x) == :list end
+fn is_map x do typeof(x) == :map end
+fn is_nil x do typeof(x) == :nil end
+fn is_tuple x do typeof(x) == :tuple end
+fn is_fn x do typeof(x) == :fn end
+fn is_pid x do typeof(x) == :pid end
+
+# min/max
+fn min a, b do
+  if (a < b) do a else b end
+end
+
+fn max a, b do
+  if (a > b) do a else b end
+end

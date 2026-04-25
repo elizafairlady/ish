@@ -1,201 +1,80 @@
-# Enum: generic enumerable operations built on Enum.reduce (native dispatch).
-# Enum never inspects types — reduce dispatches to List/Map/Tuple.
-
 defmodule Enum do
-  # reduce is native Go (protocol dispatch) — already registered
-
-  def to_list enum do
-    Enum.reduce(enum, [], \acc, x -> [x | acc]) |> List.reverse
+  fn map enum, f do
+    List.reverse(List.reduce(enum, [], \acc, x -> [f(x) | acc]))
   end
 
-  # -- Collection-producing (return lists) --
-
-  def map enum, f do
-    Enum.reduce(enum, [], \acc, x -> [f(x) | acc]) |> List.reverse
+  fn filter enum, f do
+    List.reverse(List.reduce(enum, [], \acc, x -> if f(x) do [x | acc] else acc end))
   end
 
-  def filter enum, pred do
-    Enum.reduce(enum, [], \acc, x ->
-      if (pred x) do [x | acc] else acc end
-    end) |> List.reverse
+  fn any enum, f do
+    List.reduce(enum, false, \acc, x -> if acc do true else f(x) end)
   end
 
-  def reject enum, pred do
-    Enum.reduce(enum, [], \acc, x ->
-      if (pred x) do acc else [x | acc] end
-    end) |> List.reverse
+  fn all enum, f do
+    List.reduce(enum, true, \acc, x -> if acc do f(x) else false end)
   end
 
-  def flat_map enum, f do
-    Enum.reduce(enum, [], \acc, x ->
-      List.concat(acc, f(x))
-    end)
+  fn find enum, f do
+    r = List.reduce enum, {:none, nil}, \state, x ->
+      if (Tuple.at(state, 0) == :found) do state else if f(x) do {:found, x} else state end end
+    Tuple.at(r, 1)
   end
 
-  def sort_by enum, f do
-    decorated = Enum.map(enum, \x -> {f(x), x})
-    sorted = List.sort decorated
-    Enum.map(sorted, \{_, v} -> v)
+  fn each enum, f do
+    List.reduce(enum, nil, \_, x -> f(x))
   end
 
-  def with_index enum do
-    list = Enum.to_list(enum)
-    indices = List.range(0, length(list))
-    Enum.zip(indices, list)
+  fn count enum do
+    List.reduce(enum, 0, \acc, _ -> acc + 1)
   end
 
-  def zip a, b do
-    la = Enum.to_list(a)
-    lb = Enum.to_list(b)
-    _zip(la, lb)
-  end
-  def _zip [], _ do [] end
-  def _zip _, [] do [] end
-  def _zip [h1 | t1], [h2 | t2] do
-    [{h1, h2} | _zip(t1, t2)]
+  fn sum enum do
+    List.reduce(enum, 0, \acc, x -> acc + x)
   end
 
-  def uniq enum do
-    Enum.reduce(enum, [], \acc, x ->
-      if Enum.member(acc, x) do acc else List.append(acc, x) end
-    end)
+  fn min enum do
+    List.reduce(tl(enum), hd(enum), \acc, x -> if (x < acc) do x else acc end)
   end
 
-  def take enum, n do
-    {result, _} = Enum.reduce(enum, {[], n}, \state, x ->
-      {acc, remaining} = state
-      if remaining > 0 do
-        {List.append(acc, x), remaining - 1}
-      else
-        state
-      end
-    end)
-    result
+  fn max enum do
+    List.reduce(tl(enum), hd(enum), \acc, x -> if (x > acc) do x else acc end)
   end
 
-  def drop enum, n do
-    {result, _} = Enum.reduce(enum, {[], n}, \state, x ->
-      {acc, remaining} = state
-      if remaining > 0 do
-        {acc, remaining - 1}
-      else
-        {List.append(acc, x), 0}
-      end
-    end)
-    result
+  fn sort enum do
+    merge_sort(List.reduce(enum, [], \acc, x -> [x | acc]))
   end
 
-  def chunk enum, n do
-    list = Enum.to_list(enum)
-    _chunk(list, n)
-  end
-  def _chunk [], _ do [] end
-  def _chunk list, n do
-    [List.take(list, n) | _chunk(List.drop(list, n), n)]
+  fn reverse enum do
+    List.reduce(enum, [], \acc, x -> [x | acc])
   end
 
-  # -- Aggregating --
+  fn zip a, b do
+    zip_step(a, b, [])
+  end
+end
 
-  def each enum, f do
-    _each(Enum.to_list(enum), f)
-  end
-  def _each [], _ do :ok end
-  def _each [h | t], f do
-    f(h)
-    _each(t, f)
-  end
+fn merge_sort [] do [] end
+fn merge_sort [x] do [x] end
+fn merge_sort list do
+  mid = length(list) / 2
+  left = List.take(list, mid)
+  right = List.drop(list, mid)
+  merge(merge_sort(left), merge_sort(right))
+end
 
-  def sum enum do
-    Enum.reduce(enum, 0, \acc, x -> acc + x)
+fn merge [], right do right end
+fn merge left, [] do left end
+fn merge left, right do
+  if (hd(left) <= hd(right)) do
+    [hd(left) | merge(tl(left), right)]
+  else
+    [hd(right) | merge(left, tl(right))]
   end
+end
 
-  def product enum do
-    Enum.reduce(enum, 1, \acc, x -> acc * x)
-  end
-
-  def count enum do
-    Enum.reduce(enum, 0, \acc, _ -> acc + 1)
-  end
-
-  def join enum, sep do
-    Enum.to_list(enum) |> Enum.map(\x -> to_string(x)) |> String.join(sep)
-  end
-
-  # -- Search/predicate --
-
-  def find enum, pred do
-    _find(Enum.to_list(enum), pred)
-  end
-  def _find [], _ do nil end
-  def _find [h | t], pred do
-    if (pred h) do h else _find(t, pred) end
-  end
-
-  def any enum, pred do
-    _any(Enum.to_list(enum), pred)
-  end
-  def _any [], _ do :false end
-  def _any [h | t], pred do
-    if (pred h) do :true else _any(t, pred) end
-  end
-
-  def all enum, pred do
-    _all(Enum.to_list(enum), pred)
-  end
-  def _all [], _ do :true end
-  def _all [h | t], pred do
-    if (pred h) do _all(t, pred) else :false end
-  end
-
-  def member enum, val do
-    Enum.any(enum, \x -> x == val)
-  end
-
-  def empty enum do
-    Enum.count(enum) == 0
-  end
-
-  def min_by enum, f do
-    [h | t] = Enum.to_list(enum)
-    List.reduce(t, h, \acc, x ->
-      if f(x) < f(acc) do x else acc end
-    end)
-  end
-
-  def max_by enum, f do
-    [h | t] = Enum.to_list(enum)
-    List.reduce(t, h, \acc, x ->
-      if f(x) > f(acc) do x else acc end
-    end)
-  end
-
-  # -- Grouping (return maps) --
-
-  def group_by enum, f do
-    Enum.reduce(enum, %{}, \acc, x ->
-      key = to_string(f(x))
-      existing = Map.get(acc, key)
-      current = if (is_nil existing) do [] else existing end
-      Map.put(acc, key, List.append(current, x))
-    end)
-  end
-
-  def frequencies enum do
-    Enum.reduce(enum, %{}, \acc, x ->
-      key = to_string(x)
-      count = Map.get(acc, key)
-      current = if (is_nil count) do 0 else count end
-      Map.put(acc, key, current + 1)
-    end)
-  end
-
-  # -- Conversions --
-
-  def to_tuple enum do
-    Tuple.from_list(Enum.to_list(enum))
-  end
-
-  def to_map enum do
-    Map.from_pairs(Enum.to_list(enum))
-  end
+fn zip_step [], _, acc do List.reverse(acc) end
+fn zip_step _, [], acc do List.reverse(acc) end
+fn zip_step a, b, acc do
+  zip_step(tl(a), tl(b), [{hd(a), hd(b)} | acc])
 end

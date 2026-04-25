@@ -1,796 +1,96 @@
 package stdlib
 
 import (
-	"fmt"
-	"sort"
-	"strings"
-	"time"
-	"unicode/utf8"
+	"embed"
 
-	"ish/internal/core"
+	"ish/internal/value"
 )
 
-// mapKey converts a Value to a map key string.
-// Atoms use their bare name (without colon prefix) so that
-// get(m, :foo) matches the key "foo" from %{foo: 1}.
-func mapKey(v core.Value) string {
-	if v.Kind == core.VAtom {
-		return v.Str
-	}
-	return v.ToStr()
+//go:embed prelude/*.ish
+var preludeFS embed.FS
+
+type Registrar interface {
+	SetModule(name string, mod *value.OrdMap)
+	Set(name string, v value.Value) error
 }
 
-// hd list -> first element (error on empty)
-func stdlibHd(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("hd: expected 1 argument, got %d", len(args))
+// Invoke calls a function value (native or user-defined).
+// Set by eval package to bridge the import cycle.
+var Invoke func(fn *value.FnDef, args []value.Value) (value.Value, error)
+
+// RunSource evaluates ish source in the given env.
+// Set by eval package to bridge the import cycle.
+var RunSource func(src string, env interface{})
+
+func invoke(fn *value.FnDef, args []value.Value) (value.Value, error) {
+	if fn.Native != nil {
+		return fn.Native(args)
 	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("hd: expected list, got %s", list.Inspect())
+	if Invoke != nil {
+		return Invoke(fn, args)
 	}
-	if len(list.GetElems()) == 0 {
-		return core.Nil, fmt.Errorf("hd: empty list")
-	}
-	return list.GetElems()[0], nil
+	return value.Nil, nil
 }
 
-func stdlibTl(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("tl: expected 1 argument, got %d", len(args))
+func Register(env Registrar) {
+	registerMod(env, "List", listModule())
+	registerMod(env, "String", stringModule())
+	registerMod(env, "Map", mapModule())
+	registerMod(env, "Tuple", tupleModule())
+	registerMod(env, "JSON", jsonModule())
+	registerMod(env, "Enum", enumModule())
+	registerMod(env, "Math", mathModule())
+	registerMod(env, "Regex", regexModule())
+	registerMod(env, "Path", pathModule())
+	registerMod(env, "IO", ioModule())
+	registerMod(env, "CSV", csvModule())
+
+	for name, f := range kernelNatives() {
+		env.Set(name, value.FnVal(nativeFn(name, f)))
 	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("tl: expected list, got %s", list.Inspect())
-	}
-	if len(list.GetElems()) == 0 {
-		return core.Nil, fmt.Errorf("tl: empty list")
-	}
-	return core.ListVal(list.GetElems()[1:]...), nil
 }
 
-func stdlibLength(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("length: expected 1 argument, got %d", len(args))
+// LoadPrelude runs all embedded .ish files in the env.
+func LoadPrelude(env interface{}) {
+	entries, err := preludeFS.ReadDir("prelude")
+	if err != nil {
+		return
 	}
-	v := args[0]
-	switch v.Kind {
-	case core.VList:
-		return core.IntVal(int64(len(v.GetElems()))), nil
-	case core.VTuple:
-		return core.IntVal(int64(len(v.GetElems()))), nil
-	case core.VString:
-		return core.IntVal(int64(utf8.RuneCountInString(v.Str))), nil
-	case core.VMap:
-		if v.GetMap() == nil {
-			return core.IntVal(0), nil
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
 		}
-		return core.IntVal(int64(len(v.GetMap().Keys))), nil
-	default:
-		return core.Nil, fmt.Errorf("length: unsupported type %s", v.Inspect())
-	}
-}
-
-func stdlibAppend(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("append: expected 2 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("append: first argument must be a list, got %s", list.Inspect())
-	}
-	newElems := make([]core.Value, len(list.GetElems())+1)
-	copy(newElems, list.GetElems())
-	newElems[len(list.GetElems())] = args[1]
-	return core.ListVal(newElems...), nil
-}
-
-func stdlibConcat(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("concat: expected 2 arguments, got %d", len(args))
-	}
-	a, b := args[0], args[1]
-	if a.Kind != core.VList {
-		return core.Nil, fmt.Errorf("concat: first argument must be a list, got %s", a.Inspect())
-	}
-	if b.Kind != core.VList {
-		return core.Nil, fmt.Errorf("concat: second argument must be a list, got %s", b.Inspect())
-	}
-	newElems := make([]core.Value, 0, len(a.GetElems())+len(b.GetElems()))
-	newElems = append(newElems, a.GetElems()...)
-	newElems = append(newElems, b.GetElems()...)
-	return core.ListVal(newElems...), nil
-}
-
-func stdlibMap(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("map: expected 2 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("map: first argument must be a list, got %s", list.Inspect())
-	}
-	fn := args[1]
-	if fn.Kind != core.VFn || fn.GetFn() == nil {
-		return core.Nil, fmt.Errorf("map: second argument must be a function, got %s", fn.Inspect())
-	}
-	if scope.GetCtx().CallFn == nil {
-		return core.Nil, fmt.Errorf("map: CallFn not set")
-	}
-	result := make([]core.Value, len(list.GetElems()))
-	for i, elem := range list.GetElems() {
-		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
+		data, err := preludeFS.ReadFile("prelude/" + e.Name())
 		if err != nil {
-			return core.Nil, fmt.Errorf("map: %w", err)
+			continue
 		}
-		result[i] = v
-	}
-	return core.ListVal(result...), nil
-}
-
-func stdlibFilter(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("filter: expected 2 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("filter: first argument must be a list, got %s", list.Inspect())
-	}
-	fn := args[1]
-	if fn.Kind != core.VFn || fn.GetFn() == nil {
-		return core.Nil, fmt.Errorf("filter: second argument must be a function, got %s", fn.Inspect())
-	}
-	if scope.GetCtx().CallFn == nil {
-		return core.Nil, fmt.Errorf("filter: CallFn not set")
-	}
-	var result []core.Value
-	for _, elem := range list.GetElems() {
-		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
-		if err != nil {
-			return core.Nil, fmt.Errorf("filter: %w", err)
-		}
-		if v.Truthy() {
-			result = append(result, elem)
+		if RunSource != nil {
+			RunSource(string(data), env)
 		}
 	}
-	return core.ListVal(result...), nil
 }
 
-func stdlibReduce(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 3 {
-		return core.Nil, fmt.Errorf("reduce: expected 3 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("reduce: first argument must be a list, got %s", list.Inspect())
-	}
-	acc := args[1]
-	fn := args[2]
-	if fn.Kind != core.VFn || fn.GetFn() == nil {
-		return core.Nil, fmt.Errorf("reduce: third argument must be a function, got %s", fn.Inspect())
-	}
-	if scope.GetCtx().CallFn == nil {
-		return core.Nil, fmt.Errorf("reduce: CallFn not set")
-	}
-	for _, elem := range list.GetElems() {
-		var err error
-		acc, err = scope.GetCtx().CallFn(fn.GetFn(), []core.Value{acc, elem}, scope)
-		if err != nil {
-			return core.Nil, fmt.Errorf("reduce: %w", err)
-		}
-	}
-	return acc, nil
+func registerMod(env Registrar, name string, mod *value.OrdMap) {
+	env.SetModule(name, mod)
+	env.Set(name, value.MapVal(mod))
 }
 
-func stdlibRange(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("range: expected 2 arguments, got %d", len(args))
-	}
-	if args[0].Kind != core.VInt {
-		return core.Nil, fmt.Errorf("range: start must be an integer, got %s", args[0].Inspect())
-	}
-	if args[1].Kind != core.VInt {
-		return core.Nil, fmt.Errorf("range: stop must be an integer, got %s", args[1].Inspect())
-	}
-	start, stop := args[0].GetInt(), args[1].GetInt()
-	if start >= stop {
-		return core.ListVal(), nil
-	}
-	const maxRangeSize = 10_000_000
-	if stop-start > maxRangeSize {
-		return core.Nil, fmt.Errorf("range: size %d exceeds maximum %d", stop-start, maxRangeSize)
-	}
-	elems := make([]core.Value, 0, stop-start)
-	for i := start; i < stop; i++ {
-		elems = append(elems, core.IntVal(i))
-	}
-	return core.ListVal(elems...), nil
+func nativeFn(name string, f func([]value.Value) (value.Value, error)) *value.FnDef {
+	return &value.FnDef{Name: name, Native: f}
 }
 
-func stdlibAt(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("at: expected 2 arguments, got %d", len(args))
+func makeModule(fns map[string]func([]value.Value) (value.Value, error)) *value.OrdMap {
+	m := &value.OrdMap{Vals: make(map[string]value.Value)}
+	for name, f := range fns {
+		m.Keys = append(m.Keys, name)
+		m.Vals[name] = value.FnVal(nativeFn(name, f))
 	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("at: first argument must be a list, got %s", list.Inspect())
-	}
-	if args[1].Kind != core.VInt {
-		return core.Nil, fmt.Errorf("at: index must be an integer, got %s", args[1].Inspect())
-	}
-	idx := args[1].GetInt()
-	if idx < 0 || idx >= int64(len(list.GetElems())) {
-		return core.Nil, fmt.Errorf("at: index %d out of bounds (list length %d)", idx, len(list.GetElems()))
-	}
-	return list.GetElems()[idx], nil
+	return m
 }
 
-// String functions
-
-func stdlibSplit(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("split: expected 2 arguments, got %d", len(args))
-	}
-	parts := strings.Split(args[0].ToStr(), args[1].ToStr())
-	elems := make([]core.Value, len(parts))
-	for i, p := range parts {
-		elems[i] = core.StringVal(p)
-	}
-	return core.ListVal(elems...), nil
-}
-
-func stdlibJoin(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("join: expected 2 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("join: first argument must be a list, got %s", list.Inspect())
-	}
-	delim := args[1].ToStr()
-	strs := make([]string, len(list.GetElems()))
-	for i, elem := range list.GetElems() {
-		strs[i] = elem.ToStr()
-	}
-	return core.StringVal(strings.Join(strs, delim)), nil
-}
-
-func stdlibTrim(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("trim: expected 1 argument, got %d", len(args))
-	}
-	return core.StringVal(strings.TrimSpace(args[0].ToStr())), nil
-}
-
-func stdlibUpcase(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("upcase: expected 1 argument, got %d", len(args))
-	}
-	return core.StringVal(strings.ToUpper(args[0].ToStr())), nil
-}
-
-func stdlibDowncase(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("downcase: expected 1 argument, got %d", len(args))
-	}
-	return core.StringVal(strings.ToLower(args[0].ToStr())), nil
-}
-
-func stdlibReplace(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 3 {
-		return core.Nil, fmt.Errorf("replace: expected 3 arguments, got %d", len(args))
-	}
-	return core.StringVal(strings.Replace(args[0].ToStr(), args[1].ToStr(), args[2].ToStr(), 1)), nil
-}
-
-func stdlibReplaceAll(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 3 {
-		return core.Nil, fmt.Errorf("replace_all: expected 3 arguments, got %d", len(args))
-	}
-	return core.StringVal(strings.ReplaceAll(args[0].ToStr(), args[1].ToStr(), args[2].ToStr())), nil
-}
-
-func stdlibStartsWith(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("starts_with: expected 2 arguments, got %d", len(args))
-	}
-	if strings.HasPrefix(args[0].ToStr(), args[1].ToStr()) {
-		return core.AtomVal("true"), nil
-	}
-	return core.AtomVal("false"), nil
-}
-
-func stdlibEndsWith(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("ends_with: expected 2 arguments, got %d", len(args))
-	}
-	if strings.HasSuffix(args[0].ToStr(), args[1].ToStr()) {
-		return core.AtomVal("true"), nil
-	}
-	return core.AtomVal("false"), nil
-}
-
-func stdlibContains(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("contains: expected 2 arguments, got %d", len(args))
-	}
-	if strings.Contains(args[0].ToStr(), args[1].ToStr()) {
-		return core.AtomVal("true"), nil
-	}
-	return core.AtomVal("false"), nil
-}
-
-func stdlibSubstring(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 3 {
-		return core.Nil, fmt.Errorf("substring: expected 3 arguments, got %d", len(args))
-	}
-	runes := []rune(args[0].ToStr())
-	if args[1].Kind != core.VInt {
-		return core.Nil, fmt.Errorf("substring: start must be an integer, got %s", args[1].Inspect())
-	}
-	if args[2].Kind != core.VInt {
-		return core.Nil, fmt.Errorf("substring: length must be an integer, got %s", args[2].Inspect())
-	}
-	start := int(args[1].GetInt())
-	length := int(args[2].GetInt())
-	if start < 0 {
-		start = 0
-	}
-	if start >= len(runes) {
-		return core.StringVal(""), nil
-	}
-	end := start + length
-	if end > len(runes) {
-		end = len(runes)
-	}
-	return core.StringVal(string(runes[start:end])), nil
-}
-
-func stdlibIndexOf(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("index_of: expected 2 arguments, got %d", len(args))
-	}
-	s := args[0].ToStr()
-	byteIdx := strings.Index(s, args[1].ToStr())
-	if byteIdx < 0 {
-		return core.IntVal(-1), nil
-	}
-	return core.IntVal(int64(utf8.RuneCountInString(s[:byteIdx]))), nil
-}
-
-// Map operations
-
-func stdlibPut(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 3 {
-		return core.Nil, fmt.Errorf("put: expected 3 arguments, got %d", len(args))
-	}
-	if args[0].Kind != core.VMap {
-		return core.Nil, fmt.Errorf("put: first argument must be a map, got %s", args[0].Inspect())
-	}
-	m := core.NewOrdMap()
-	if args[0].GetMap() != nil {
-		for _, k := range args[0].GetMap().Keys {
-			m.Set(k, args[0].GetMap().Vals[k])
-		}
-	}
-	m.Set(mapKey(args[1]), args[2])
-	return core.MapVal(m), nil
-}
-
-func stdlibDelete(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("delete: expected 2 arguments, got %d", len(args))
-	}
-	if args[0].Kind != core.VMap {
-		return core.Nil, fmt.Errorf("delete: first argument must be a map, got %s", args[0].Inspect())
-	}
-	key := mapKey(args[1])
-	m := core.NewOrdMap()
-	if args[0].GetMap() != nil {
-		for _, k := range args[0].GetMap().Keys {
-			if k != key {
-				m.Set(k, args[0].GetMap().Vals[k])
-			}
-		}
-	}
-	return core.MapVal(m), nil
-}
-
-func stdlibMerge(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("merge: expected 2 arguments, got %d", len(args))
-	}
-	if args[0].Kind != core.VMap {
-		return core.Nil, fmt.Errorf("merge: first argument must be a map, got %s", args[0].Inspect())
-	}
-	if args[1].Kind != core.VMap {
-		return core.Nil, fmt.Errorf("merge: second argument must be a map, got %s", args[1].Inspect())
-	}
-	m := core.NewOrdMap()
-	if args[0].GetMap() != nil {
-		for _, k := range args[0].GetMap().Keys {
-			m.Set(k, args[0].GetMap().Vals[k])
-		}
-	}
-	if args[1].GetMap() != nil {
-		for _, k := range args[1].GetMap().Keys {
-			m.Set(k, args[1].GetMap().Vals[k])
-		}
-	}
-	return core.MapVal(m), nil
-}
-
-func stdlibKeys(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("keys: expected 1 argument, got %d", len(args))
-	}
-	if args[0].Kind != core.VMap {
-		return core.Nil, fmt.Errorf("keys: argument must be a map, got %s", args[0].Inspect())
-	}
-	if args[0].GetMap() == nil {
-		return core.ListVal(), nil
-	}
-	elems := make([]core.Value, len(args[0].GetMap().Keys))
-	for i, k := range args[0].GetMap().Keys {
-		elems[i] = core.StringVal(k)
-	}
-	return core.ListVal(elems...), nil
-}
-
-func stdlibValues(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("values: expected 1 argument, got %d", len(args))
-	}
-	if args[0].Kind != core.VMap {
-		return core.Nil, fmt.Errorf("values: argument must be a map, got %s", args[0].Inspect())
-	}
-	if args[0].GetMap() == nil {
-		return core.ListVal(), nil
-	}
-	elems := make([]core.Value, len(args[0].GetMap().Keys))
-	for i, k := range args[0].GetMap().Keys {
-		elems[i] = args[0].GetMap().Vals[k]
-	}
-	return core.ListVal(elems...), nil
-}
-
-func stdlibHasKey(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("has_key: expected 2 arguments, got %d", len(args))
-	}
-	if args[0].Kind != core.VMap {
-		return core.Nil, fmt.Errorf("has_key: first argument must be a map, got %s", args[0].Inspect())
-	}
-	key := mapKey(args[1])
-	if args[0].GetMap() != nil {
-		if _, ok := args[0].GetMap().Get(key); ok {
-			return core.True, nil
-		}
-	}
-	return core.False, nil
-}
-
-// get map, key -> value (dynamic map access)
-func stdlibGet(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("get: expected 2 arguments, got %d", len(args))
-	}
-	if args[0].Kind != core.VMap {
-		return core.Nil, fmt.Errorf("get: first argument must be a map, got %s", args[0].Inspect())
-	}
-	if args[0].GetMap() == nil {
-		return core.Nil, nil
-	}
-	val, ok := args[0].GetMap().Get(mapKey(args[1]))
-	if !ok {
-		return core.Nil, nil
-	}
-	return val, nil
-}
-
-// each list, fn -> nil (apply fn for side effects, discard results)
-func stdlibEach(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("each: expected 2 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("each: first argument must be a list, got %s", list.Inspect())
-	}
-	fn := args[1]
-	if fn.Kind != core.VFn || fn.GetFn() == nil {
-		return core.Nil, fmt.Errorf("each: second argument must be a function, got %s", fn.Inspect())
-	}
-	if scope.GetCtx().CallFn == nil {
-		return core.Nil, fmt.Errorf("each: CallFn not set")
-	}
-	for _, elem := range list.GetElems() {
-		_, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
-		if err != nil {
-			return core.Nil, fmt.Errorf("each: %w", err)
-		}
-	}
-	return core.AtomVal("ok"), nil
-}
-
-
-// sort list -> sorted list
-func stdlibSort(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("sort: expected 1 argument, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("sort: expected list, got %s", list.Inspect())
-	}
-	sorted := make([]core.Value, len(list.GetElems()))
-	copy(sorted, list.GetElems())
-	sort.SliceStable(sorted, func(i, j int) bool {
-		a, b := sorted[i], sorted[j]
-		if a.Kind == core.VInt && b.Kind == core.VInt {
-			return a.GetInt() < b.GetInt()
-		}
-		return a.ToStr() < b.ToStr()
-	})
-	return core.ListVal(sorted...), nil
-}
-
-// reverse list -> reversed list
-func stdlibReverse(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("reverse: expected 1 argument, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("reverse: expected list, got %s", list.Inspect())
-	}
-	reversed := make([]core.Value, len(list.GetElems()))
-	for i, v := range list.GetElems() {
-		reversed[len(list.GetElems())-1-i] = v
-	}
-	return core.ListVal(reversed...), nil
-}
-
-// any list, fn -> true if fn returns truthy for any element
-func stdlibAny(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("any: expected 2 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("any: first argument must be a list, got %s", list.Inspect())
-	}
-	fn := args[1]
-	if fn.Kind != core.VFn || fn.GetFn() == nil {
-		return core.Nil, fmt.Errorf("any: second argument must be a function, got %s", fn.Inspect())
-	}
-	if scope.GetCtx().CallFn == nil {
-		return core.Nil, fmt.Errorf("any: CallFn not set")
-	}
-	for _, elem := range list.GetElems() {
-		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
-		if err != nil {
-			return core.Nil, fmt.Errorf("any: %w", err)
-		}
-		if v.Truthy() {
-			return core.True, nil
-		}
-	}
-	return core.False, nil
-}
-
-// all list, fn -> true if fn returns truthy for all elements
-func stdlibAll(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("all: expected 2 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("all: first argument must be a list, got %s", list.Inspect())
-	}
-	fn := args[1]
-	if fn.Kind != core.VFn || fn.GetFn() == nil {
-		return core.Nil, fmt.Errorf("all: second argument must be a function, got %s", fn.Inspect())
-	}
-	if scope.GetCtx().CallFn == nil {
-		return core.Nil, fmt.Errorf("all: CallFn not set")
-	}
-	for _, elem := range list.GetElems() {
-		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
-		if err != nil {
-			return core.Nil, fmt.Errorf("all: %w", err)
-		}
-		if !v.Truthy() {
-			return core.False, nil
-		}
-	}
-	return core.True, nil
-}
-
-// find list, fn -> first element where fn is truthy, or nil
-func stdlibFind(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 2 {
-		return core.Nil, fmt.Errorf("find: expected 2 arguments, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("find: first argument must be a list, got %s", list.Inspect())
-	}
-	fn := args[1]
-	if fn.Kind != core.VFn || fn.GetFn() == nil {
-		return core.Nil, fmt.Errorf("find: second argument must be a function, got %s", fn.Inspect())
-	}
-	if scope.GetCtx().CallFn == nil {
-		return core.Nil, fmt.Errorf("find: CallFn not set")
-	}
-	for _, elem := range list.GetElems() {
-		v, err := scope.GetCtx().CallFn(fn.GetFn(), []core.Value{elem}, scope)
-		if err != nil {
-			return core.Nil, fmt.Errorf("find: %w", err)
-		}
-		if v.Truthy() {
-			return elem, nil
-		}
-	}
-	return core.Nil, nil
-}
-
-// pairs map -> list of {key, value} tuples
-func stdlibPairs(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("pairs: expected 1 argument, got %d", len(args))
-	}
-	if args[0].Kind != core.VMap {
-		return core.Nil, fmt.Errorf("pairs: expected map, got %s", args[0].Inspect())
-	}
-	if args[0].GetMap() == nil {
-		return core.ListVal(), nil
-	}
-	elems := make([]core.Value, len(args[0].GetMap().Keys))
-	for i, k := range args[0].GetMap().Keys {
-		elems[i] = core.TupleVal(core.StringVal(k), args[0].GetMap().Vals[k])
-	}
-	return core.ListVal(elems...), nil
-}
-
-// stdlibMapReduce reduces over a map's {key, value} pairs.
-func stdlibMapReduce(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 3 {
-		return core.Nil, fmt.Errorf("reduce: expected 3 arguments, got %d", len(args))
-	}
-	m := args[0]
-	if m.Kind != core.VMap {
-		return core.Nil, fmt.Errorf("reduce: expected map, got %s", m.Inspect())
-	}
-	acc := args[1]
-	fn := args[2]
-	if fn.Kind != core.VFn || fn.GetFn() == nil {
-		return core.Nil, fmt.Errorf("reduce: third argument must be a function, got %s", fn.Inspect())
-	}
-	callFn := scope.GetCtx().CallFn
-	if callFn == nil {
-		return core.Nil, fmt.Errorf("reduce: CallFn not set")
-	}
-	if m.GetMap() == nil {
-		return acc, nil
-	}
-	for _, key := range m.GetMap().Keys {
-		pair := core.TupleVal(core.StringVal(key), m.GetMap().Vals[key])
-		var err error
-		acc, err = callFn(fn.GetFn(), []core.Value{acc, pair}, scope)
-		if err != nil {
-			return core.Nil, fmt.Errorf("reduce: %w", err)
-		}
-	}
-	return acc, nil
-}
-
-// enumerate list -> list of {index, value} tuples
-func stdlibEnumerate(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("enumerate: expected 1 argument, got %d", len(args))
-	}
-	list := args[0]
-	if list.Kind != core.VList {
-		return core.Nil, fmt.Errorf("enumerate: expected list, got %s", list.Inspect())
-	}
-	elems := make([]core.Value, len(list.GetElems()))
-	for i, v := range list.GetElems() {
-		elems[i] = core.TupleVal(core.IntVal(int64(i)), v)
-	}
-	return core.ListVal(elems...), nil
-}
-
-// sleep ms -> nil (pause for milliseconds)
-func stdlibSleep(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("sleep: expected 1 argument, got %d", len(args))
-	}
-	if args[0].Kind != core.VInt {
-		return core.Nil, fmt.Errorf("sleep: expected integer (milliseconds), got %s", args[0].Inspect())
-	}
-	time.Sleep(time.Duration(args[0].GetInt()) * time.Millisecond)
-	return core.Nil, nil
-}
-
-// send_after delay_ms, pid, msg -> :ok
-func stdlibSendAfter(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 3 {
-		return core.Nil, fmt.Errorf("send_after: expected 3 arguments, got %d", len(args))
-	}
-	if args[0].Kind != core.VInt {
-		return core.Nil, fmt.Errorf("send_after: delay must be an integer (milliseconds), got %s", args[0].Inspect())
-	}
-	if args[1].Kind != core.VPid || args[1].GetPid() == nil {
-		return core.Nil, fmt.Errorf("send_after: target must be a pid, got %s", args[1].Inspect())
-	}
-	delay := time.Duration(args[0].GetInt()) * time.Millisecond
-	target := args[1].GetPid()
-	msg := args[2]
-	go func() {
-		time.Sleep(delay)
-		target.Send(msg)
-	}()
-	return core.AtomVal("ok"), nil
-}
-
-// chars string -> list of single-character strings
-func stdlibChars(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 1 {
-		return core.Nil, fmt.Errorf("chars: expected 1 argument, got %d", len(args))
-	}
-	s := args[0].ToStr()
-	elems := make([]core.Value, 0, len(s))
-	for _, r := range s {
-		elems = append(elems, core.StringVal(string(r)))
-	}
-	return core.ListVal(elems...), nil
-}
-
-// pad_left string, width, pad -> padded string
-func stdlibPadLeft(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 3 {
-		return core.Nil, fmt.Errorf("pad_left: expected 3 arguments, got %d", len(args))
-	}
-	s := args[0].ToStr()
-	if args[1].Kind != core.VInt {
-		return core.Nil, fmt.Errorf("pad_left: width must be an integer, got %s", args[1].Inspect())
-	}
-	width := int(args[1].GetInt())
-	pad := args[2].ToStr()
-	if pad == "" {
-		return core.StringVal(s), nil
-	}
-	runes := []rune(s)
-	for len(runes) < width {
-		runes = append([]rune(pad), runes...)
-	}
-	if len(runes) > utf8.RuneCountInString(s) && len(runes) > width {
-		runes = runes[len(runes)-width:]
-	}
-	return core.StringVal(string(runes)), nil
-}
-
-// pad_right string, width, pad -> padded string
-func stdlibPadRight(args []core.Value, scope core.Scope) (core.Value, error) {
-	if len(args) != 3 {
-		return core.Nil, fmt.Errorf("pad_right: expected 3 arguments, got %d", len(args))
-	}
-	s := args[0].ToStr()
-	if args[1].Kind != core.VInt {
-		return core.Nil, fmt.Errorf("pad_right: width must be an integer, got %s", args[1].Inspect())
-	}
-	width := int(args[1].GetInt())
-	pad := args[2].ToStr()
-	if pad == "" {
-		return core.StringVal(s), nil
-	}
-	runes := []rune(s)
-	for len(runes) < width {
-		runes = append(runes, []rune(pad)...)
-	}
-	if len(runes) > width {
-		runes = runes[:width]
-	}
-	return core.StringVal(string(runes)), nil
+func arg(args []value.Value, i int) value.Value {
+	if i < len(args) {
+		return args[i]
+	}
+	return value.Nil
 }
