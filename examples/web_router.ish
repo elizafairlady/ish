@@ -1,0 +1,43 @@
+# A Sinatra-style router. Routing is a dispatch function over the path (handlers
+# are code), plus a matcher that binds `:param` segments.
+
+defn filter p xs do match xs do :nil -> :nil ; (h . t) -> if (p h) do cons h (filter &p t) else do filter &p t end end end
+defn starts-with? s pre do
+  if ((str-length s) < (str-length pre)) do :false
+  else do eq? (str-slice s 0 (str-length pre)) pre end
+end
+defn segments path do filter (fn s -> not (eq? s "")) (to-list (str-split path "/")) end
+
+defn route path do
+  case path do
+    "/" -> "home page"
+    "/about" -> "about us"
+    _ -> str-concat "404 not found: " path
+  end
+end
+
+# Match a pattern path against a concrete path, binding :param segments.
+defn seg-match pat seg do
+  if (starts-with? pat ":") do {:bind seg}
+  else do if (pat == seg) do :ok else do :no end end
+end
+
+defn match-route pats segs do
+  match pats do
+    :nil -> match segs do :nil -> {:ok :nil} ; _ -> :no end
+    (ph . pt) -> match segs do
+      :nil -> :no
+      (sh . st) -> match (seg-match ph sh) do
+        :no -> :no
+        {:bind v} -> match (match-route pt st) do :no -> :no ; {:ok bs} -> {:ok (cons v bs)} end
+        _ -> match-route pt st
+      end
+    end
+  end
+end
+
+print (route "/")
+print (route "/about")
+print (route "/missing")
+print (match-route (segments "/users/:id/posts") (segments "/users/42/posts"))
+print (match-route (segments "/users/:id") (segments "/teams/9"))

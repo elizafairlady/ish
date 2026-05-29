@@ -1,0 +1,19 @@
+# A tiny expression interpreter over a tagged AST (lit / add / mul).
+# Dispatch is on the runtime tag with `tag-of`; fields read with `tagged-fields`.
+
+defn lit n do make-tagged :lit {n} end
+defn add-e a b do make-tagged :add {a b} end
+defn mul-e a b do make-tagged :mul {a b} end
+
+defn eval-expr e do
+  case (tag-of e) do
+    :lit -> match (tagged-fields e) do {n} -> n end
+    :add -> match (tagged-fields e) do {a b} -> (eval-expr a) + (eval-expr b) end
+    :mul -> match (tagged-fields e) do {a b} -> (eval-expr a) * (eval-expr b) end
+  end
+end
+
+# (2 + 3) * 4  =  20
+print (eval-expr (mul-e (add-e (lit 2) (lit 3)) (lit 4)))
+# 2 * 3 + 4 * 5  =  26
+print (eval-expr (add-e (mul-e (lit 2) (lit 3)) (mul-e (lit 4) (lit 5))))

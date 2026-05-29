@@ -1,0 +1,39 @@
+# A small list library over cons-lists, with higher-order usage.
+# Vectors `[...]` are fixed arrays; `to-list` turns one into a cons-list, which
+# is what these recursive functions consume. `:nil` is the empty list.
+
+defn map f xs do
+  match xs do
+    :nil -> :nil
+    (h . t) -> cons (f h) (map &f t)
+  end
+end
+
+defn filter p xs do
+  match xs do
+    :nil -> :nil
+    (h . t) -> if (p h) do cons h (filter &p t) else do filter &p t end
+  end
+end
+
+defn foldl f acc xs do
+  match xs do
+    :nil -> acc
+    (h . t) -> foldl &f (f acc h) t
+  end
+end
+
+defn length xs do foldl (fn a _ -> a + 1) 0 xs end
+defn reverse xs do foldl (fn a x -> cons x a) :nil xs end
+defn range a b do if (a < b) do cons a (range (a + 1) b) else do :nil end end
+defn take n xs do
+  if (n == 0) do :nil
+  else do match xs do :nil -> :nil ; (h . t) -> cons h (take (n - 1) t) end end
+end
+
+print (map (fn x -> x * x) (range 1 6))
+print (filter (fn x -> (x % 2) == 0) (range 1 10))
+print (foldl &add 0 (range 1 101))
+print (length (range 0 10))
+print (reverse (to-list [1 2 3 4]))
+print (take 3 (range 0 100))

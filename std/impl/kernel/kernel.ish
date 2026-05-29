@@ -1,0 +1,51 @@
+defmacro access-claim? stx do
+  found-value? = match (dotted-parts stx) do
+    :false -> :false
+    {base member args chain} -> match (space-of base) do
+      :nospace -> :false
+      space -> match (resolve member space) do
+        :unbound -> :false
+        :ambiguous -> :false
+        ref -> match (binding-kind ref) do
+          :value -> :true
+          _ -> :false
+        end
+      end
+    end
+  end
+  datum->syntax stx found-value?
+end
+
+defmacro access-lower stx do
+  {base member args chain} = dotted-parts stx
+  ref-syntax = ref->syntax (resolve member (space-of base))
+  match (kind chain) do
+    :nil -> match (kind args) do
+      :nil -> ref-syntax
+      _ -> %`(%,ref-syntax %,@args)
+    end
+    _ -> syntax-error stx "chained access (a.b.c) is not supported; access one member at a time"
+  end
+end
+
+defn not-eq? a b do
+  not (eq? a b)
+end
+
+export defprotocol kernel do
+  operator + %:precedence 60 %:assoc left -> add
+  operator - do
+    %:precedence 60 %:assoc left %:fixity infix -> sub
+    %:precedence 80 %:fixity prefix -> neg
+  end
+  operator * %:precedence 70 %:assoc left -> mul
+  operator / %:precedence 70 %:assoc left -> div
+  operator % %:precedence 70 %:assoc left -> mod
+  operator == %:precedence 40 %:assoc none -> eq?
+  operator != %:precedence 40 %:assoc none -> not-eq?
+  operator < %:precedence 50 %:assoc none -> lt?
+  operator <= %:precedence 50 %:assoc none -> lte?
+  operator > %:precedence 50 %:assoc none -> gt?
+  operator >= %:precedence 50 %:assoc none -> gte?
+  handler expr claims access-claim? -> access-lower
+end

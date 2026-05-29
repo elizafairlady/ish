@@ -1,0 +1,24 @@
+# Quicksort over cons-lists: partition around a pivot and concatenate.
+
+defn filter p xs do
+  match xs do
+    :nil -> :nil
+    (h . t) -> if (p h) do cons h (filter &p t) else do filter &p t end
+  end
+end
+
+defn append2 a b do
+  match a do
+    :nil -> b
+    (h . t) -> cons h (append2 t b)
+  end
+end
+
+defn qsort xs do
+  match xs do
+    :nil -> :nil
+    (p . rest) -> append2 (qsort (filter (fn x -> x < p) rest)) (cons p (qsort (filter (fn x -> not (x < p)) rest)))
+  end
+end
+
+print (qsort (to-list [3 1 4 1 5 9 2 6 5 3 5]))

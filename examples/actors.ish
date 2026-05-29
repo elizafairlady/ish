@@ -1,0 +1,33 @@
+# Concurrency with processes (the actor model: spawn / send / receive / self).
+# A stateful counter server holds its state by tail-recursing with a new value;
+# a request/response server replies to the sender. (No sockets exist yet, so
+# this is message passing between in-process actors.)
+
+defn counter-loop n do
+  receive do
+    {:inc from} -> do send from (n + 1) ; counter-loop (n + 1) end
+    {:get from} -> do send from n ; counter-loop n end
+  end
+end
+
+me = self
+counter = spawn (fn [[] (counter-loop 0)])
+send counter {:inc me}
+receive do _ -> :ok end
+send counter {:inc me}
+receive do _ -> :ok end
+send counter {:get me}
+print (receive do v -> v end)
+
+# A request/response "server" that routes a path to a reply.
+defn handle path do case path do "/" -> "home" ; _ -> "404" end end
+defn serve do
+  receive do
+    {:req from path} -> do send from (handle path) ; serve end
+  end
+end
+srv = spawn &serve
+send srv {:req me "/"}
+print (receive do x -> x end)
+send srv {:req me "/nope"}
+print (receive do x -> x end)

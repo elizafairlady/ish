@@ -1,0 +1,30 @@
+# Higher-order functions.
+# A bare function name is a zero-argument call, so functions are passed and
+# returned with the value-escape `&` (e.g. `&inc`, `(n &f)`).
+
+defn inc n do n + 1 end
+defn dbl n do n * 2 end
+
+# function composition — a lambda whose body returns a lambda
+defn compose f g do fn x -> f (g x) end
+inc-then-dbl = compose &dbl &inc
+print (inc-then-dbl 10)
+
+# currying: a curried two-argument adder
+adder = fn a -> fn b -> a + b
+print ((adder 5) 100)
+
+# a pipe operator |>, defined in-language as an infix operator
+defn |>* x f do f x end
+defprotocol pipes do
+  operator |> %:precedence 10 %:assoc left -> |>*
+end
+implements pipes
+print (5 |> &inc |> &dbl |> &inc)
+
+# Church numerals: encode the naturals as functions. `(n &f)` passes f as a
+# value rather than calling it.
+zero = fn f -> fn x -> x
+defn succ n do fn f -> fn x -> f ((n &f) x) end
+defn to-int n do (n (fn k -> k + 1)) 0 end
+print (to-int (succ (succ (succ &zero))))

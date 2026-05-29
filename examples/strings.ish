@@ -1,0 +1,19 @@
+# String utilities: reverse, palindrome test, and a greeting.
+
+defn foldl f acc xs do match xs do :nil -> acc ; (h . t) -> foldl &f (f acc h) t end end
+defn reverse xs do foldl (fn a x -> cons x a) :nil xs end
+defn join sep parts do
+  match parts do
+    :nil -> ""
+    (h . t) -> match t do :nil -> h ; _ -> str-concat h (str-concat sep (join sep t)) end
+  end
+end
+
+defn str-reverse s do join "" (reverse (to-list (str-split s ""))) end
+defn palindrome? s do eq? s (str-reverse s) end
+defn greet name do str-concat "Hello, " (str-concat name "!") end
+
+print (str-reverse "hello")
+print (palindrome? "racecar")
+print (palindrome? "ish")
+print (greet "vii")

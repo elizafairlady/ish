@@ -1,0 +1,25 @@
+# A reverse-Polish-notation calculator. Tokens are numbers and the operator
+# atoms :+ and :* ; the stack is a cons-list and `(b . (a . r))` peels the top
+# two operands.
+
+defn foldl f acc xs do
+  match xs do
+    :nil -> acc
+    (h . t) -> foldl &f (f acc h) t
+  end
+end
+
+defn step stack tok do
+  match tok do
+    :+ -> match stack do (b . (a . r)) -> cons (a + b) r end
+    :* -> match stack do (b . (a . r)) -> cons (a * b) r end
+    n -> cons n stack
+  end
+end
+
+defn rpn toks do first (foldl &step :nil toks) end
+
+# (3 + 4) * 5  =  35
+print (rpn (to-list [3 4 :+ 5 :*]))
+# 2 3 4 * +  =  2 + (3 * 4)  =  14
+print (rpn (to-list [2 3 4 :* :+]))

@@ -1,0 +1,35 @@
+# A path "type" as a tagged value: {prefix leading-slashes parts}.
+#   {"https:" 2 ["example.com" "test"]}   ->  "https://example.com/test"
+#   {""       1 []}                       ->  "/"
+#   {""       1 ["home" "vii"]}           ->  "/home/vii"
+#   {"C:"     1 ["Program Files" "Test"]} ->  "C:/Program Files/Test"
+
+defn repeat-str s n do
+  if (n == 0) do "" else do str-concat s (repeat-str s (n - 1)) end
+end
+
+defn join sep parts do
+  match parts do
+    :nil -> ""
+    (h . t) -> match t do
+      :nil -> h
+      _ -> str-concat h (str-concat sep (join sep t))
+    end
+  end
+end
+
+defn path prefix slashes parts do make-tagged :path {prefix slashes parts} end
+
+defn path-show p do
+  {prefix slashes parts} = tagged-fields p
+  str-concat prefix (str-concat (repeat-str "/" slashes) (join "/" (to-list parts)))
+end
+
+defn is-path? x do (tag-of x) == :path end
+
+print (path-show (path "https:" 2 ["example.com" "test"]))
+print (path-show (path "" 1 []))
+print (path-show (path "" 1 ["home" "vii"]))
+print (path-show (path "C:" 1 ["Program Files" "Test"]))
+print (is-path? (path "" 1 []))
+print (is-path? 42)

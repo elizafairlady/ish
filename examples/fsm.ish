@@ -1,0 +1,20 @@
+# A traffic-light finite state machine: each state maps to its successor.
+
+defn next-light s do
+  case s do
+    :red -> :green
+    :green -> :yellow
+    :yellow -> :red
+  end
+end
+
+# Print n steps starting from s. The base case returns :nil (nothing left).
+defn run-light s n do
+  if (n == 0) do :nil
+  else do
+    print s ;
+    run-light (next-light s) (n - 1)
+  end
+end
+
+run-light :red 6

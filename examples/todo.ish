@@ -1,0 +1,16 @@
+# A todo.txt-style line parser: split on spaces, then pull out the +projects
+# and @contexts by their leading marker.
+
+defn map f xs do match xs do :nil -> :nil ; (h . t) -> cons (f h) (map &f t) end end
+defn filter p xs do match xs do :nil -> :nil ; (h . t) -> if (p h) do cons h (filter &p t) else do filter &p t end end end
+defn starts-with? s pre do
+  if ((str-length s) < (str-length pre)) do :false
+  else do eq? (str-slice s 0 (str-length pre)) pre end
+end
+defn words s do filter (fn w -> not (eq? w "")) (to-list (str-split s " ")) end
+defn drop-marker w do str-slice w 1 (str-length w) end
+defn tagged-with marker ws do map &drop-marker (filter (fn w -> starts-with? w marker) ws) end
+
+line = "call mom +family +personal @phone @home"
+ws = words line
+print {:projects (tagged-with "+" ws) :contexts (tagged-with "@" ws)}

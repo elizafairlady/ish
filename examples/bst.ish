@@ -1,0 +1,38 @@
+# A binary search tree built from tagged nodes; insert and in-order traversal.
+# A node is :node {left value right}; the empty tree is the atom :leaf.
+
+defn append2 a b do
+  match a do
+    :nil -> b
+    (h . t) -> cons h (append2 t b)
+  end
+end
+
+defn foldl f acc xs do
+  match xs do
+    :nil -> acc
+    (h . t) -> foldl &f (f acc h) t
+  end
+end
+
+defn node l v r do make-tagged :node {l v r} end
+
+defn insert t x do
+  case (tag-of t) do
+    :node -> match (tagged-fields t) do
+      {l v r} -> if (x < v) do node (insert l x) v r
+                 else do node l v (insert r x) end
+    end
+    _ -> node :leaf x :leaf
+  end
+end
+
+defn inorder t do
+  case (tag-of t) do
+    :node -> match (tagged-fields t) do {l v r} -> append2 (inorder l) (cons v (inorder r)) end
+    _ -> :nil
+  end
+end
+
+tree = foldl &insert :leaf (to-list [5 3 8 1 4 7 9 2 6])
+print (inorder tree)

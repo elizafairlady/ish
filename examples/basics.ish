@@ -1,0 +1,27 @@
+# Basic recursion and the block-if conditional.
+
+defn fib n do
+  if (n < 2) do n
+  else do (fib (n - 1)) + (fib (n - 2)) end
+end
+
+defn fact n do
+  match n do
+    0 -> 1
+    _ -> n * (fact (n - 1))
+  end
+end
+
+defn fizzbuzz n do
+  if ((n % 15) == 0) do "fizzbuzz"
+  else if ((n % 3) == 0) do "fizz"
+  else if ((n % 5) == 0) do "buzz"
+  else do to-string n end
+end
+
+print (fib 10)
+print (fact 5)
+print (fizzbuzz 15)
+print (fizzbuzz 9)
+print (fizzbuzz 10)
+print (fizzbuzz 7)
