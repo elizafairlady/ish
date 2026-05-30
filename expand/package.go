@@ -115,10 +115,26 @@ func operatorTargetTransformer(target core.Word) OperatorTransformer {
 	}
 }
 
-type PackageRegistry struct{ packages map[PackageID]*Package }
+type PackageRegistry struct {
+	packages map[PackageID]*Package
+	resolver PackageResolver
+}
+
+// PackageResolver loads a package that is not already registered — the hook the
+// runtime sets to fall back to the embedded std tree. It returns (nil, nil) when
+// no package by that id exists (so the caller reports "not found"), or a non-nil
+// error when the package exists but failed to load.
+type PackageResolver func(PackageID) (*Package, error)
 
 func NewPackageRegistry() *PackageRegistry {
 	return &PackageRegistry{packages: map[PackageID]*Package{}}
+}
+
+// SetResolver installs the fallback loader used by Resolve on a registry miss.
+func (r *PackageRegistry) SetResolver(fn PackageResolver) {
+	if r != nil {
+		r.resolver = fn
+	}
 }
 
 func (r *PackageRegistry) Register(pkg *Package) {
@@ -133,6 +149,28 @@ func (r *PackageRegistry) Lookup(id PackageID) (*Package, bool) {
 	}
 	pkg, ok := r.packages[id]
 	return pkg, ok
+}
+
+// Resolve finds a package by id. Resolution order is stdlib first, then the
+// local registry — the resolver (set by the runtime) covers the embedded std
+// tree (and, later, an ISHPATH), and only when it has no such package does a
+// locally-registered package answer. The bool reports whether a package was
+// found; a load failure surfaces as err.
+func (r *PackageRegistry) Resolve(id PackageID) (*Package, bool, error) {
+	if r == nil {
+		return nil, false, nil
+	}
+	if r.resolver != nil {
+		pkg, err := r.resolver(id)
+		if err != nil {
+			return nil, false, err
+		}
+		if pkg != nil {
+			return pkg, true, nil
+		}
+	}
+	pkg, ok := r.Lookup(id)
+	return pkg, ok, nil
 }
 
 func packagePath(stx *core.Syntax) (PackageID, error) {
@@ -173,7 +211,10 @@ func importPackage(pathStx *core.Syntax, alias core.Word, ctx *Context) error {
 	if err != nil {
 		return fmt.Errorf("import: %w", err)
 	}
-	pkg, ok := ctx.Packages.Lookup(path)
+	pkg, ok, err := ctx.Packages.Resolve(path)
+	if err != nil {
+		return fmt.Errorf("import: %w", err)
+	}
 	if !ok {
 		return fmt.Errorf("import: package not found: %s", path)
 	}
@@ -189,7 +230,10 @@ func usePackage(pathStx *core.Syntax, ctx *Context) error {
 	if err != nil {
 		return fmt.Errorf("use: %w", err)
 	}
-	pkg, ok := ctx.Packages.Lookup(path)
+	pkg, ok, err := ctx.Packages.Resolve(path)
+	if err != nil {
+		return fmt.Errorf("use: %w", err)
+	}
 	if !ok {
 		return fmt.Errorf("use: package not found: %s", path)
 	}
@@ -214,7 +258,10 @@ func implementsPackage(pathStx *core.Syntax, ctx *Context) error {
 	if err != nil {
 		return fmt.Errorf("implements: %w", err)
 	}
-	pkg, ok := ctx.Packages.Lookup(path)
+	pkg, ok, err := ctx.Packages.Resolve(path)
+	if err != nil {
+		return fmt.Errorf("implements: %w", err)
+	}
 	if !ok {
 		return fmt.Errorf("implements: package not found: %s", path)
 	}
@@ -250,7 +297,6 @@ func activateProtocol(protocol ProtocolExport, ctx *Context, phase core.Phase) {
 	scopes := ctx.Scopes[phase]
 	for _, h := range protocol.Handlers {
 		h.Phase = phase
-		h.Scopes = scopes
 		if h.DefScopes == nil {
 			h.DefScopes = ctx.Scopes
 		}
@@ -267,7 +313,6 @@ func activateProtocol(protocol ProtocolExport, ctx *Context, phase core.Phase) {
 	var opOrder []opKey
 	for _, op := range protocol.Operators {
 		op.Phase = phase
-		op.Scopes = scopes
 		if op.DefScopes == nil {
 			op.DefScopes = ctx.Scopes
 		}

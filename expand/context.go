@@ -66,7 +66,6 @@ type ProtocolHandler struct {
 	Form        core.Word
 	Kind        ContextKind
 	Phase       core.Phase
-	Scopes      core.ScopeSet
 	Claim       func(*core.Syntax) bool
 	Transformer Transformer
 	DefScopes   core.PhaseScopes
@@ -101,7 +100,6 @@ type OperatorEntry struct {
 	Token       core.Word
 	Kind        ContextKind
 	Phase       core.Phase
-	Scopes      core.ScopeSet
 	Precedence  int
 	Assoc       OperatorAssociativity
 	Fixity      OperatorFixity

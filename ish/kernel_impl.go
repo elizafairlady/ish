@@ -2,6 +2,7 @@ package ish
 
 import (
 	"fmt"
+	"strings"
 
 	"ish/core"
 	"ish/expand"
@@ -50,6 +51,32 @@ func (r *Runtime) installDefaultImplementation() error {
 		}
 	}
 	return nil
+}
+
+// resolveStdPackage is the registry's fallback loader: it loads a package from
+// the embedded std tree on demand. A package is addressed by its full path,
+// `std/<dir>` (e.g. `std/enum`, `std/impl/kernel`); the `std/` prefix selects
+// the embedded standard library, and the remainder is the package directory. It
+// returns (nil, nil) for any id not under std/ — letting the registry fall
+// through to a locally-registered package — and the cached package when one was
+// already loaded, so a std package is compiled at most once.
+func (r *Runtime) resolveStdPackage(id expand.PackageID) (*expand.Package, error) {
+	dir, ok := strings.CutPrefix(string(id), "std/")
+	if !ok {
+		return nil, nil
+	}
+	source, err := std.PackageSource(dir)
+	if err != nil {
+		return nil, nil
+	}
+	if pkg, ok := r.Registry.Lookup(id); ok {
+		return pkg, nil
+	}
+	pkg, err := r.LoadPackageSource(id, string(id)+".ish", source)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", id, err)
+	}
+	return pkg, nil
 }
 
 // loadStdKernel loads the base standard library (std/kernel) from embedded ish

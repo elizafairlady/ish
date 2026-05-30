@@ -1,0 +1,149 @@
+# std/enum — the collection library, after Elixir's Enum.
+#
+# Everything is built on `reduce`, which walks the concrete cons-list produced
+# by the polymorphic kernel primitive `to-list`. Because `to-list` yields an
+# ordinary list that the private `enum-reduce-list` walk consumes with `(h . t)`
+# matching, the recursion terminates and never re-enters polymorphic dispatch.
+# Every public function is expressed in terms of `reduce` (or a small private
+# list walk for the index/prefix operations), so the whole library is ish over
+# the kernel.
+#
+# Following Elixir, functions are collection-FIRST: `map(enumerable, fun)`,
+# `reduce(enumerable, acc, fun)`. That reads naturally with the thread-first
+# pipe: `coll |> map &f |> filter &p`. The reducer receives the element first
+# and the accumulator second, as in Elixir's `fn elem, acc -> … end`.
+#
+# Higher-order functions thread their function argument with `&` at each
+# pass-through, the call/value model's consequence (a bare function-valued
+# identifier in argument position is a zero-argument call). Definitions are
+# ordered so every cross-reference is to an already-defined name; private
+# helpers (the `enum-*-list` walks) precede their callers and are not exported.
+
+defn enum-reduce-list lst acc f do
+  match lst do
+    :nil -> acc
+    (h . t) -> enum-reduce-list t (f h acc) &f
+  end
+end
+
+export defn reduce coll acc f do
+  enum-reduce-list (to-list coll) acc &f
+end
+
+export defn reverse coll do
+  reduce coll :nil (fn x acc -> cons x acc)
+end
+
+export defn map coll f do
+  reverse (reduce coll :nil (fn x acc -> cons (f x) acc))
+end
+
+export defn filter coll f do
+  reverse (reduce coll :nil (fn x acc ->
+    case (f x) do
+      :true -> cons x acc
+      _ -> acc
+    end))
+end
+
+export defn each coll f do
+  reduce coll :nil (fn x acc -> do
+    f x
+    acc
+  end)
+  :ok
+end
+
+export defn count coll do
+  reduce coll 0 (fn x acc -> acc + 1)
+end
+
+export defn sum coll do
+  reduce coll 0 (fn x acc -> x + acc)
+end
+
+export defn product coll do
+  reduce coll 1 (fn x acc -> x * acc)
+end
+
+export defn member? coll x do
+  reduce coll :false (fn e acc ->
+    case acc do
+      :true -> :true
+      _ -> eq? e x
+    end)
+end
+
+export defn any? coll f do
+  reduce coll :false (fn x acc ->
+    case acc do
+      :true -> :true
+      _ -> f x
+    end)
+end
+
+export defn all? coll f do
+  reduce coll :true (fn x acc ->
+    case acc do
+      :true -> f x
+      _ -> :false
+    end)
+end
+
+export defn find coll f do
+  reduce coll :nil (fn x acc ->
+    case acc do
+      :nil -> case (f x) do
+        :true -> x
+        _ -> :nil
+      end
+      _ -> acc
+    end)
+end
+
+export defn empty? coll do
+  match (to-list coll) do
+    :nil -> :true
+    _ -> :false
+  end
+end
+
+# Index and prefix operations are expressed over `reduce` too, threading a small
+# {index, result} accumulator, so the single `enum-reduce-list` walk is the only
+# recursion in the library.
+export defn at coll i do
+  found = reduce coll {0 :nil} (fn x acc -> match acc do
+    {idx val} -> case (idx == i) do
+      :true -> {(idx + 1) x}
+      _ -> {(idx + 1) val}
+    end
+  end)
+  match found do {idx val} -> val end
+end
+
+export defn take coll n do
+  taken = reduce coll {0 :nil} (fn x acc -> match acc do
+    {idx kept} -> case (idx < n) do
+      :true -> {(idx + 1) (cons x kept)}
+      _ -> {(idx + 1) kept}
+    end
+  end)
+  match taken do {idx kept} -> reverse kept end
+end
+
+export defn drop coll n do
+  dropped = reduce coll {0 :nil} (fn x acc -> match acc do
+    {idx kept} -> case (idx < n) do
+      :true -> {(idx + 1) kept}
+      _ -> {(idx + 1) (cons x kept)}
+    end
+  end)
+  match dropped do {idx kept} -> reverse kept end
+end
+
+export defn join coll sep do
+  match (to-list coll) do
+    :nil -> ""
+    (h . t) -> reduce t (to-string h) (fn x acc -> str-concat acc (str-concat sep (to-string x)))
+  end
+end

@@ -66,6 +66,7 @@ func InstallRuntimeKernel(tbl *expand.BindingTable) {
 		def("list-splice", listSpliceFn)
 		def("syntax-error", syntaxErrorFn)
 		def("syntax-kind", syntaxKindFn)
+		def("syntax-property", syntaxPropertyFn)
 		def("syntax-word?", syntaxWordPredFn)
 		def("dotted-parts", dottedPartsFn)
 		def("space-of", spaceOfFn)
@@ -188,18 +189,9 @@ func asSequence(d core.Datum) ([]core.Datum, bool) {
 	case core.Tuple:
 		return []core.Datum(v), true
 	case core.Pair:
-		var out []core.Datum
-		cur := core.Datum(v)
-		for {
-			switch p := cur.(type) {
-			case core.Nil:
-				return out, true
-			case core.Pair:
-				out = append(out, p.Head)
-				cur = p.Tail
-			default:
-				return nil, false
-			}
+		elems, tail := core.ListElems(v)
+		if _, ok := tail.(core.Nil); ok {
+			return elems, true
 		}
 	}
 	return nil, false
@@ -312,8 +304,12 @@ func dictGetFn(args []Value, _ *Env) (Value, error) {
 	if !ok {
 		return nil, fmt.Errorf("dict-get: not a dict")
 	}
+	k, ok := args[1].(core.Datum)
+	if !ok {
+		return nil, fmt.Errorf("dict-get: key must be data")
+	}
 	for _, e := range d {
-		if datumEqual(e.Key, args[1]) {
+		if core.DatumEqual(e.Key, k) {
 			return e.Value, nil
 		}
 	}
@@ -336,7 +332,7 @@ func dictPutFn(args []Value, _ *Env) (Value, error) {
 	out := make(core.Dict, 0, len(d)+1)
 	replaced := false
 	for _, e := range d {
-		if datumEqual(e.Key, k) {
+		if core.DatumEqual(e.Key, k) {
 			out = append(out, core.DictEntry{Key: k, Value: v})
 			replaced = true
 		} else {
@@ -819,6 +815,54 @@ func syntaxKindFn(args []Value, _ *Env) (Value, error) {
 	return kindFn([]Value{stx.Node}, nil)
 }
 
+// syntaxPropertyFn is the syntax-property accessor (after Racket): with two
+// arguments it reads the property under a key (atom or string), returning :nil
+// when absent; with three it returns a copy of the syntax carrying the property.
+// This is what makes the reader's per-token metadata (token-raw, token-kind,
+// leading-space, adjacent-previous, reader-shape) — and any macro-attached
+// property — observable in the language.
+func syntaxPropertyFn(args []Value, _ *Env) (Value, error) {
+	if len(args) != 2 && len(args) != 3 {
+		return nil, fmt.Errorf("syntax-property expects 2 or 3 arguments, got %d", len(args))
+	}
+	stx, err := argSyntax("syntax-property", args, 0)
+	if err != nil {
+		return nil, err
+	}
+	key, err := propertyKey(args[1])
+	if err != nil {
+		return nil, err
+	}
+	if len(args) == 3 {
+		val, ok := args[2].(core.Datum)
+		if !ok {
+			return nil, fmt.Errorf("syntax-property: value must be data, got %T", args[2])
+		}
+		return &core.Syntax{
+			Node:       stx.Node,
+			Span:       stx.Span,
+			Scopes:     stx.Scopes,
+			Properties: stx.Properties.With(key, val),
+			Origin:     append([]core.Origin(nil), stx.Origin...),
+		}, nil
+	}
+	if v, ok := stx.Properties.Get(key); ok {
+		return v, nil
+	}
+	return core.Nil{}, nil
+}
+
+// propertyKey accepts an atom or string as a syntax-property key.
+func propertyKey(v Value) (string, error) {
+	switch k := v.(type) {
+	case core.Atom:
+		return string(k), nil
+	case core.String:
+		return string(k), nil
+	}
+	return "", fmt.Errorf("syntax-property: key must be an atom or string, got %T", v)
+}
+
 func syntaxWordPredFn(args []Value, _ *Env) (Value, error) {
 	if err := wantArgs("syntax-word?", args, 1); err != nil {
 		return nil, err
@@ -1248,23 +1292,19 @@ func syntaxSequenceFlat(v Value) ([]*core.Syntax, error) {
 		}
 		return out, nil
 	case core.Pair, core.Nil:
-		var out []*core.Syntax
-		cur := seq
-		for {
-			switch p := cur.(type) {
-			case core.Nil:
-				return out, nil
-			case core.Pair:
-				stx, ok := p.Head.(*core.Syntax)
-				if !ok {
-					return nil, fmt.Errorf("list element is %T, want syntax", p.Head)
-				}
-				out = append(out, stx)
-				cur = p.Tail
-			default:
-				return nil, fmt.Errorf("improper syntax splice list")
-			}
+		elems, tail := core.ListElems(seq.(core.Datum))
+		if _, ok := tail.(core.Nil); !ok {
+			return nil, fmt.Errorf("improper syntax splice list")
 		}
+		out := make([]*core.Syntax, len(elems))
+		for i, elem := range elems {
+			stx, ok := elem.(*core.Syntax)
+			if !ok {
+				return nil, fmt.Errorf("list element is %T, want syntax", elem)
+			}
+			out[i] = stx
+		}
+		return out, nil
 	}
 	return nil, fmt.Errorf("%T is not spliceable syntax sequence", v)
 }

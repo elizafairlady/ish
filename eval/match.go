@@ -88,7 +88,9 @@ func match(p core.Pattern, target Value, env *Env, frame map[core.BindingID]Valu
 }
 
 // matchSeq matches an ordered-sequence pattern against a list/vector/tuple
-// value or its syntax counterpart.
+// value or its syntax counterpart. A rest pattern (PatSeq.Tail) binds the
+// remainder after the fixed leading elements, rebound as the same kind of
+// sequence; for a list it also carries the (possibly improper) tail.
 func matchSeq(pat core.PatSeq, target Value, env *Env, frame map[core.BindingID]Value) (bool, string) {
 	switch pat.Kind {
 	case core.SeqVector:
@@ -96,13 +98,19 @@ func matchSeq(pat core.PatSeq, target Value, env *Env, frame map[core.BindingID]
 		if !ok {
 			return false, "expected a vector"
 		}
-		return matchSeqElems(pat.Elems, terms, env, frame)
+		if pat.Tail == nil {
+			return matchSeqElems(pat.Elems, terms, env, frame)
+		}
+		return matchSeqRest(pat, terms, env, frame, func(rest []Value) Value { return rebuildVector(rest) })
 	case core.SeqTuple:
 		terms, ok := asTupleElems(target)
 		if !ok {
 			return false, "expected a tuple"
 		}
-		return matchSeqElems(pat.Elems, terms, env, frame)
+		if pat.Tail == nil {
+			return matchSeqElems(pat.Elems, terms, env, frame)
+		}
+		return matchSeqRest(pat, terms, env, frame, func(rest []Value) Value { return rebuildTuple(rest) })
 	case core.SeqList:
 		terms, tail, ok := asListElems(target)
 		if !ok {
@@ -117,20 +125,23 @@ func matchSeq(pat core.PatSeq, target Value, env *Env, frame map[core.BindingID]
 			}
 			return true, ""
 		}
-		// Rest pattern (value-only; syntax lists are proper): fixed leading
-		// elements, then Tail binds the remainder as a list.
-		if len(terms) < len(pat.Elems) {
-			return false, "too few elements for list pattern"
-		}
-		for i, e := range pat.Elems {
-			if ok, fail := match(e.Sub, terms[i], env, frame); !ok {
-				return false, fail
-			}
-		}
-		rest := rebuildList(terms[len(pat.Elems):], tail)
-		return match(pat.Tail, rest, env, frame)
+		return matchSeqRest(pat, terms, env, frame, func(rest []Value) Value { return rebuildList(rest, tail) })
 	}
 	return false, "unknown sequence kind"
+}
+
+// matchSeqRest matches a rest pattern: the fixed leading Elems against the first
+// terms, then PatSeq.Tail against the remainder built by `build`.
+func matchSeqRest(pat core.PatSeq, terms []Value, env *Env, frame map[core.BindingID]Value, build func([]Value) Value) (bool, string) {
+	if len(terms) < len(pat.Elems) {
+		return false, "too few elements for rest pattern"
+	}
+	for i, e := range pat.Elems {
+		if ok, fail := match(e.Sub, terms[i], env, frame); !ok {
+			return false, fail
+		}
+	}
+	return match(pat.Tail, build(terms[len(pat.Elems):]), env, frame)
 }
 
 // matchSeqElems matches pattern elements against the full term slice (vectors,
@@ -389,15 +400,8 @@ func asListElems(target Value) (elems []Value, tail Value, ok bool) {
 	case core.Nil:
 		return nil, core.Nil{}, true
 	case core.Pair:
-		cur := core.Datum(t)
-		for {
-			p, isPair := cur.(core.Pair)
-			if !isPair {
-				return elems, cur, true
-			}
-			elems = append(elems, p.Head)
-			cur = p.Tail
-		}
+		ds, dtail := core.ListElems(t)
+		return datumsToValues(ds), dtail, true
 	case *core.Syntax:
 		cur := t
 		if lowered, ok := core.LowerReaderListSyntax(cur); ok {
@@ -493,6 +497,29 @@ func rebuildList(elems []Value, tail Value) Value {
 		cur = core.Pair{Head: head, Tail: cur}
 	}
 	return cur
+}
+
+// rebuildVector / rebuildTuple rebind the remainder of a vector/tuple rest
+// pattern as the same kind of sequence. Rest patterns are value-only, so the
+// elements are datums.
+func rebuildVector(elems []Value) Value {
+	out := make(core.Vector, 0, len(elems))
+	for _, e := range elems {
+		if d, ok := e.(core.Datum); ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func rebuildTuple(elems []Value) Value {
+	out := make(core.Tuple, 0, len(elems))
+	for _, e := range elems {
+		if d, ok := e.(core.Datum); ok {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // datumEqual compares two values for structural equality. Functions (now

@@ -41,6 +41,7 @@ func InstallKernel(tbl *BindingTable) {
 		def("protocol", protocolForm)
 		defC("defmacro", defmacroForm)
 		defC("defprotocol", defprotocolForm)
+		defC("for-syntax", forSyntaxForm)
 		defC("import", importForm)
 		defC("use", useForm)
 		defC("implements", implementsForm)
@@ -1323,6 +1324,29 @@ func parseFnDoSurface(elems []*core.Syntax, ctx *Context) ([]core.LambdaClause, 
 	if len(elems) != 2 {
 		return nil, false, nil
 	}
+	// `fn do … end` is two-faced. With clauses (`pat -> body`) inside, it is a
+	// multi-clause lambda dispatching on its argument. With a plain body, it is
+	// a zero-argument thunk whose body is the block — the block analogue of
+	// `fn -> body`. The discriminator is whether the block is a list of
+	// clauses: a clause has a top-level arrow whose left side is a PATTERN.
+	// Mere presence of `->` is not enough — a thunk statement such as
+	// `g = fn x -> x + 1` carries an arrow that belongs to a nested lambda, and
+	// its pattern position holds `=`/`fn`, never a pattern. Requiring every form
+	// to be clause-shaped catches the distinction regardless of which form (a
+	// leading `x = …` or a trailing call) reveals the body.
+	body, ok := bodyForms(elems[1])
+	if !ok {
+		return nil, false, nil
+	}
+	if !allFormsAreClauses(body) {
+		params := &core.Syntax{Node: core.SyntaxVector{}, Span: elems[0].Span}
+		bodyStx := readerDoExpr(elems[1].Span, body)
+		c, err := compileFnClause(params, nil, bodyStx, ctx)
+		if err != nil {
+			return nil, true, err
+		}
+		return []core.LambdaClause{c}, true, nil
+	}
 	clauseStxs, ok, err := surfaceClausesFromDo(elems[1], ctx, false)
 	if !ok || err != nil {
 		return nil, ok, err
@@ -1358,9 +1382,11 @@ func parseFnArrowSurface(stx *core.Syntax, elems []*core.Syntax, ctx *Context) (
 	if arrow < 0 {
 		return core.LambdaClause{}, false, nil
 	}
-	if arrow == 1 || arrow == len(elems)-1 {
-		return core.LambdaClause{}, true, ctx.fail(stx.Span, DiagSyntaxShape, "fn arrow form expects parameters before -> and body after")
+	if arrow == len(elems)-1 {
+		return core.LambdaClause{}, true, ctx.fail(stx.Span, DiagSyntaxShape, "fn arrow form expects a body after ->")
 	}
+	// arrow == 1 means no parameters: `fn -> body` is a zero-argument thunk
+	// (elems[1:1] is the empty parameter vector).
 	params := &core.Syntax{Node: core.SyntaxVector(elems[1:arrow]), Span: stx.Span}
 	body := readerExprCandidate(stx.Span, elems[arrow+1:])
 	clause, err := compileFnClause(params, nil, body, ctx)
@@ -1458,6 +1484,95 @@ func bindForm(stx *core.Syntax, ctx *Context) (*core.Syntax, error) {
 // doForm implements `(do form...)`: expand each form in a fresh body scope
 // and emit core.Begin for sequential evaluation. Empty `(do)` evaluates to
 // Nil per the evaluator's Begin handling.
+// forSyntaxForm implements `for-syntax do BODY end` (Racket's begin-for-syntax):
+// it raises the phase by one and expands BODY there, then has the MacroRunner
+// evaluate it so its definitions populate the raised phase's environment, where
+// transformer bodies (which run one phase up) can reference them. The form has
+// no runtime effect at the current phase, so it erases to nil.
+func forSyntaxForm(stx *core.Syntax, ctx *Context) (*core.Syntax, error) {
+	if ctx.Macros == nil {
+		return nil, ctx.fail(stx.Span, DiagInvalidContext, "for-syntax: no MacroRunner installed on context")
+	}
+	elems, ok := core.SyntaxListElems(stx)
+	if !ok || len(elems) < 2 {
+		return nil, ctx.fail(stx.Span, DiagSyntaxArity, "for-syntax expects a body")
+	}
+	body := elems[1:]
+	if len(body) == 1 {
+		if bodyElems, ok := bodyForms(body[0]); ok {
+			body = bodyElems
+		}
+	}
+	up := ctx.Sub(WithPhase(ctx.Phase + 1))
+	_, up = up.IntroduceScope()
+	up = up.Sub(WithKind(BodyCtx))
+	expanded, err := expandDoBody(stx.Span, body, up)
+	if err != nil {
+		return nil, err
+	}
+	// A transformer body runs one phase up and carries the empty scope set
+	// there, so for-syntax definitions are republished at the empty (global)
+	// scope at the raised phase — the same way kernel and std/kernel bindings
+	// are made visible across that phase. Their binding IDs are preserved, so
+	// the values the evaluation below installs resolve.
+	publishForSyntaxNames(expanded, up, up.Phase)
+	if err := ctx.Macros.EvaluateForSyntax(expanded, up.Phase, ctx); err != nil {
+		return nil, ctx.fail(stx.Span, DiagBadMacroResult, fmt.Sprintf("for-syntax: %v", err))
+	}
+	return &core.Syntax{Node: core.Nil{}, Span: stx.Span}, nil
+}
+
+// publishForSyntaxNames republishes the top-level binding names of an expanded
+// for-syntax body at the empty scope set at the given phase, preserving each
+// binding's ID so the evaluated value resolves. This is what makes a
+// for-syntax definition visible to later transformer bodies (which resolve at
+// the raised phase with the empty scope set).
+func publishForSyntaxNames(stx *core.Syntax, ctx *Context, phase core.Phase) {
+	switch n := stx.Node.(type) {
+	case core.Begin:
+		for _, f := range n.Body {
+			publishForSyntaxNames(f, ctx, phase)
+		}
+	case core.LetRec:
+		for _, b := range n.Bindings {
+			publishGlobalRef(b.Ref, ctx, phase)
+		}
+	case core.Bind:
+		var refs []core.Resolved
+		collectPatternRefs(n.Pattern, &refs)
+		for _, ref := range refs {
+			publishGlobalRef(ref, ctx, phase)
+		}
+	}
+}
+
+func publishGlobalRef(ref core.Resolved, ctx *Context, phase core.Phase) {
+	b := ctx.Bindings.Define(ref.Name, phase, DefaultSpace, core.ScopeSet{}, ValueBinding, nil)
+	b.ID = ref.ID
+}
+
+func collectPatternRefs(p core.Pattern, out *[]core.Resolved) {
+	switch x := p.(type) {
+	case core.PatVar:
+		*out = append(*out, x.Ref)
+	case core.PatSeq:
+		for _, e := range x.Elems {
+			collectPatternRefs(e.Sub, out)
+		}
+		if x.Tail != nil {
+			collectPatternRefs(x.Tail, out)
+		}
+	case core.PatGroup:
+		for _, s := range x {
+			collectPatternRefs(s, out)
+		}
+	case core.PatDict:
+		for _, e := range x {
+			collectPatternRefs(e.Value, out)
+		}
+	}
+}
+
 func doForm(stx *core.Syntax, ctx *Context) (*core.Syntax, error) {
 	elems, ok := core.SyntaxListElems(stx)
 	if !ok {
@@ -1875,6 +1990,48 @@ func findArrow(elems []*core.Syntax, from int) int {
 		}
 	}
 	return -1
+}
+
+// allFormsAreClauses reports whether every body form is a clause, which marks
+// a `fn do … end` as a multi-clause lambda rather than a zero-argument thunk.
+// An empty block is not a clause list (it is an empty thunk body).
+func allFormsAreClauses(forms []*core.Syntax) bool {
+	if len(forms) == 0 {
+		return false
+	}
+	for _, form := range forms {
+		if !formIsClause(form) {
+			return false
+		}
+	}
+	return true
+}
+
+// formIsClause reports whether a body form is a `pattern -> body` clause: a
+// reader expression with a top-level arrow whose left side (the pattern
+// position) is a pattern. A pattern never contains `=` and is never led by a
+// `fn`/`macro` binder, so a thunk statement like `g = fn x -> x + 1` — whose
+// arrow belongs to the nested lambda — is correctly rejected, as is a thunk
+// that simply returns a lambda (`fn do fn x -> x end`). A bare, unwrapped form
+// (a single token with no `%-expr` head) is never a clause.
+func formIsClause(form *core.Syntax) bool {
+	elems, ok := core.SyntaxListElems(form)
+	if !ok || len(elems) == 0 {
+		return false
+	}
+	if w, ok := elems[0].Node.(core.Word); !ok || w != "%-expr" {
+		return false
+	}
+	arrow := findArrow(elems, 1)
+	if arrow < 2 {
+		return false
+	}
+	for i := 1; i < arrow; i++ {
+		if w, ok := elems[i].Node.(core.Word); ok && (w == "=" || w == "fn" || w == "macro") {
+			return false
+		}
+	}
+	return true
 }
 
 func expandBodyForm(stx *core.Syntax, ctx *Context) (*core.Syntax, bool, *Context, error) {

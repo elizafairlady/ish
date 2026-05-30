@@ -22,6 +22,11 @@ func NewRuntime() *Runtime {
 	rt := eval.NewRuntime()
 	ctx.Macros = &eval.MacroRunner{Runtime: rt}
 	r := &Runtime{Registry: ctx.Packages, Context: ctx, Env: &eval.Env{Runtime: rt, Process: rt.NewProcess(), Resolver: eval.NewResolver(ctx)}}
+	// Packages not already loaded are resolved from the embedded std tree first
+	// (later: ISHPATH, then the local directory). kernel and impl/kernel are the
+	// only packages auto-loaded below; every other std package (enum, …) loads
+	// on first import/use/implements.
+	r.Registry.SetResolver(r.resolveStdPackage)
 	if err := r.installDefaultImplementation(); err != nil {
 		panic(err)
 	}

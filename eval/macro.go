@@ -14,16 +14,49 @@ import (
 // use sites. Each macro use calls Closure.Call with the use-site syntax
 // as its single argument.
 //
-// The env handed to the macro body has no Process. Actor/process primitives
+// phaseEnv holds the accumulated definition environment for each phase above 0,
+// populated by `for-syntax` blocks (EvaluateForSyntax). A transformer body runs
+// one phase up from where its macro is defined, so it is evaluated against the
+// raised phase's environment and can call any for-syntax-defined helper.
+//
+// The env handed to a macro body has no Process. Actor/process primitives
 // are not installed at phase 1 by the default runtime kernel; expansion-time
 // process authority must be introduced deliberately by a future package policy.
 type MacroRunner struct {
-	Runtime *Runtime
+	Runtime  *Runtime
+	phaseEnv map[core.Phase]*Env
+}
+
+// phaseBase returns the accumulated environment for a raised phase, carrying a
+// resolver bound to ctx so identifier comparisons work in the body. A phase
+// with no for-syntax definitions yet starts from a bare environment.
+func (r *MacroRunner) phaseBase(phase core.Phase, ctx *expand.Context) *Env {
+	resolver := expanderResolver{ctx: ctx}
+	if e, ok := r.phaseEnv[phase]; ok && e != nil {
+		return &Env{lex: e.lex, Runtime: r.Runtime, Resolver: resolver}
+	}
+	return &Env{Runtime: r.Runtime, Resolver: resolver}
+}
+
+// EvaluateForSyntax evaluates an expanded for-syntax body at `phase`, threading
+// the result back as that phase's accumulated environment so its definitions
+// persist for later for-syntax blocks and for transformer bodies at that phase.
+func (r *MacroRunner) EvaluateForSyntax(body *core.Syntax, phase core.Phase, ctx *expand.Context) error {
+	_, next, err := Eval(body, r.phaseBase(phase, ctx))
+	if err != nil {
+		return err
+	}
+	if r.phaseEnv == nil {
+		r.phaseEnv = map[core.Phase]*Env{}
+	}
+	r.phaseEnv[phase] = next
+	return nil
 }
 
 func (r *MacroRunner) EvaluateTransformer(body *core.Syntax, ctx *expand.Context) (expand.Transformer, error) {
-	env := &Env{Runtime: r.Runtime, Resolver: expanderResolver{ctx: ctx}}
-	v, err := EvalExpr(body, env)
+	// A macro body is compiled and resolved at phase 1, so it is evaluated in
+	// the phase-1 environment — letting it call for-syntax-defined helpers.
+	v, err := EvalExpr(body, r.phaseBase(core.PhaseExpand, ctx))
 	if err != nil {
 		return nil, fmt.Errorf("macro body evaluation: %w", err)
 	}

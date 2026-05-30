@@ -211,6 +211,13 @@ func transformerValue(v any) (Transformer, core.PhaseScopes, bool) {
 // evaluate that body and wrap the resulting closure as a Transformer. The
 // runner is supplied by whoever wires the language together (REPL, test
 // harness) and stored on Context.
+//
+// EvaluateForSyntax evaluates an already-expanded `for-syntax` body at the
+// given (raised) phase, accumulating its definitions into that phase's
+// environment so a later transformer body — which runs one phase up — can
+// reference them. This is the Racket begin-for-syntax mechanism: phase-1 code
+// is instantiated during expansion of the phase-0 program.
 type MacroRunner interface {
 	EvaluateTransformer(body *core.Syntax, ctx *Context) (Transformer, error)
+	EvaluateForSyntax(body *core.Syntax, phase core.Phase, ctx *Context) error
 }

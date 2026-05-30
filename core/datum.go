@@ -59,6 +59,22 @@ func (Dict) datum()    {}
 func (Tagged) datum()  {}
 func (*Syntax) datum() {}
 
+// ListElems walks a Pair/Nil cons chain into its element data and final tail
+// (Nil for a proper list, the improper cdr otherwise). A non-pair datum yields
+// (nil, d). It is the single datum cons-walk shared by the runtime sequence
+// views (asSequence, the matcher's list view, splice flattening).
+func ListElems(d Datum) (elems []Datum, tail Datum) {
+	cur := d
+	for {
+		p, ok := cur.(Pair)
+		if !ok {
+			return elems, cur
+		}
+		elems = append(elems, p.Head)
+		cur = p.Tail
+	}
+}
+
 // DatumEqual is the single structural-equality relation over data. It is
 // explicit (no reflect) so every datum kind has defined semantics, and it is
 // shared by every "are these data equal?" site — `eq?`, dict keys, literal/pin

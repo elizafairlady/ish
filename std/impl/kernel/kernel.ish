@@ -1,3 +1,12 @@
+for-syntax do
+  defn access-ref base member chain at do
+    match (kind chain) do
+      :nil -> ref->syntax (resolve member (space-of base))
+      _ -> syntax-error at "chained access (a.b.c) is not supported; access one member at a time"
+    end
+  end
+end
+
 defmacro access-claim? stx do
   found-value? = match (dotted-parts stx) do
     :false -> :false
@@ -18,13 +27,10 @@ end
 
 defmacro access-lower stx do
   {base member args chain} = dotted-parts stx
-  ref-syntax = ref->syntax (resolve member (space-of base))
-  match (kind chain) do
-    :nil -> match (kind args) do
-      :nil -> ref-syntax
-      _ -> %`(%,ref-syntax %,@args)
-    end
-    _ -> syntax-error stx "chained access (a.b.c) is not supported; access one member at a time"
+  ref-syntax = access-ref base member chain stx
+  match (kind args) do
+    :nil -> ref-syntax
+    _ -> %`(%,ref-syntax %,@args)
   end
 end
 
@@ -32,7 +38,29 @@ defn not-eq? a b do
   not (eq? a b)
 end
 
+defmacro thread-first stx -> syntax-parse stx do
+  (_ lhs rhs) -> match (dotted-parts rhs) do
+    :false -> syntax-parse rhs do
+      (f args ...) -> %`(%,f %,lhs %,@args)
+      f -> %`(%,f %,lhs)
+    end
+    {base member args chain} -> %`(%,(access-ref base member chain rhs) %,lhs %,@args)
+  end
+end
+
+defmacro thread-last stx -> syntax-parse stx do
+  (_ lhs rhs) -> match (dotted-parts rhs) do
+    :false -> syntax-parse rhs do
+      (f args ...) -> %`(%,f %,@args %,lhs)
+      f -> %`(%,f %,lhs)
+    end
+    {base member args chain} -> %`(%,(access-ref base member chain rhs) %,@args %,lhs)
+  end
+end
+
 export defprotocol kernel do
+  operator |> %:precedence 10 %:assoc left -> thread-first
+  operator |>> %:precedence 10 %:assoc left -> thread-last
   operator + %:precedence 60 %:assoc left -> add
   operator - do
     %:precedence 60 %:assoc left %:fixity infix -> sub

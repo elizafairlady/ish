@@ -63,8 +63,12 @@ type PatSeqElem struct {
 	Rep RepKind
 }
 
-// PatSeq matches an ordered sequence. Tail matches the improper tail of a
-// SeqList (PatLit{Nil} for a proper list); it is nil for vectors and tuples.
+// PatSeq matches an ordered sequence. Tail is the rest pattern bound to the
+// remainder after the fixed leading Elems: for a SeqList it is the improper
+// tail (PatLit{Nil} for a proper list, a pattern for `(h . t)`); for a
+// SeqVector or SeqTuple it is nil for an exact-length match and a pattern for a
+// rest match (`[h . t]`, `{h . t}`), where the remainder is rebound as the same
+// kind of sequence.
 type PatSeq struct {
 	Kind  SeqKind
 	Elems []PatSeqElem

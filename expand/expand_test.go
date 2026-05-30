@@ -173,15 +173,14 @@ func TestMoreSpecificProtocolWins(t *testing.T) {
 			return core.SyntaxList(stx.Span, word("quote"), &core.Syntax{Node: core.Atom("outer")}), nil
 		}),
 	})
-	installTestHandler(ctx, ProtocolHandler{
-		Form:   "%-unknown",
-		Kind:   PackageCtx,
-		Phase:  core.PhaseRuntime,
-		Scopes: core.ScopeSet{}.Add(s),
+	installTestHandlerScoped(ctx, ProtocolHandler{
+		Form:  "%-unknown",
+		Kind:  PackageCtx,
+		Phase: core.PhaseRuntime,
 		Transformer: Transformer(func(stx *core.Syntax, _ *Context) (*core.Syntax, error) {
 			return core.SyntaxList(stx.Span, word("quote"), &core.Syntax{Node: core.Atom("inner")}), nil
 		}),
-	})
+	}, core.ScopeSet{}.Add(s))
 	stx := core.AddScope(core.SyntaxList(core.Span{}, word("%-unknown"), word("anything")), core.PhaseRuntime, s)
 	out, err := Expand(stx, ctx)
 	if err != nil {
@@ -662,11 +661,15 @@ func infixTestOperator(token string, precedence int, assoc OperatorAssociativity
 }
 
 func installTestOperator(ctx *Context, op OperatorEntry) {
-	ctx.Bindings.Define(operatorBindingName(op.Kind, op.Token), op.Phase, OperatorSpace, op.Scopes, OperatorBinding, []OperatorEntry{op})
+	ctx.Bindings.Define(operatorBindingName(op.Kind, op.Token), op.Phase, OperatorSpace, core.ScopeSet{}, OperatorBinding, []OperatorEntry{op})
 }
 
 func installTestHandler(ctx *Context, h ProtocolHandler) {
-	ctx.Bindings.Define(protocolHandlerBindingName(h.Kind, h.Form), h.Phase, ProtocolHandlerSpace, h.Scopes, ProtocolHandlerBinding, h)
+	installTestHandlerScoped(ctx, h, core.ScopeSet{})
+}
+
+func installTestHandlerScoped(ctx *Context, h ProtocolHandler, scopes core.ScopeSet) {
+	ctx.Bindings.Define(protocolHandlerBindingName(h.Kind, h.Form), h.Phase, ProtocolHandlerSpace, scopes, ProtocolHandlerBinding, h)
 }
 
 func TestExpandQuoteArityDiagnoses(t *testing.T) {
@@ -761,16 +764,15 @@ func TestExpandApplicationEmitsExplicitApp(t *testing.T) {
 func TestDottedExpressionCanBeClaimedByProtocol(t *testing.T) {
 	ctx, _ := newTestCtx()
 	s := core.NewScope()
-	installTestHandler(ctx, ProtocolHandler{
-		Form:   "%-expr",
-		Kind:   PackageCtx,
-		Phase:  core.PhaseRuntime,
-		Scopes: core.ScopeSet{}.Add(s),
-		Claim:  func(stx *core.Syntax) bool { return readerExprHeadIs(stx, "a") },
+	installTestHandlerScoped(ctx, ProtocolHandler{
+		Form:  "%-expr",
+		Kind:  PackageCtx,
+		Phase: core.PhaseRuntime,
+		Claim: func(stx *core.Syntax) bool { return readerExprHeadIs(stx, "a") },
 		Transformer: Transformer(func(stx *core.Syntax, _ *Context) (*core.Syntax, error) {
 			return core.SyntaxList(stx.Span, word("quote"), &core.Syntax{Node: core.Atom("custom")}), nil
 		}),
-	})
+	}, core.ScopeSet{}.Add(s))
 	access := core.AddScope(core.SyntaxList(core.Span{}, word("%-expr"), word("a"), word("."), word("b")), core.PhaseRuntime, s)
 	out, err := Expand(access, ctx)
 	if err != nil {
@@ -890,6 +892,10 @@ type staticMacroRunner struct{ transformer Transformer }
 
 func (r staticMacroRunner) EvaluateTransformer(body *core.Syntax, ctx *Context) (Transformer, error) {
 	return r.transformer, nil
+}
+
+func (r staticMacroRunner) EvaluateForSyntax(body *core.Syntax, phase core.Phase, ctx *Context) error {
+	return nil
 }
 
 // Hygiene positive: a transformer-introduced identifier resolves to a

@@ -32,11 +32,11 @@ func evalSyntaxParse(n core.SyntaxParse, env *Env) (Value, error) {
 		}
 		clauseEnv := env.extend(frame)
 		if clause.Guard != nil {
+			// A guard that errors or is non-truthy is a clause failure, not an
+			// abort — uniform with fn/match/receive (Erlang/Elixir semantics):
+			// move on to the next clause.
 			g, gerr := EvalExpr(clause.Guard, clauseEnv)
-			if gerr != nil {
-				return nil, gerr
-			}
-			if !truthy(g) {
+			if gerr != nil || !truthy(g) {
 				failures = append(failures, "guard rejected match")
 				continue
 			}

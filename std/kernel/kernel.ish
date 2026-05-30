@@ -1,31 +1,15 @@
-# std/kernel is the base standard library, authored in ish and loaded into the
-# global scope at startup. It provides ordinary base macros — conditional and
-# boolean forms — over the kernel `case`/`match` substrate, adding no Go
-# expander or evaluator cases. This is the proof that base surface forms are
-# extractable into the language itself.
-
-# if is the Elixir-style block conditional:
-#   if EXPR do … else if EXPR do … else do … end
-# It reads as a flat list — `else` is a literal, a chained `if` and the final
-# do-block follow it — and decomposes directly into `case` on truthiness (only
-# :true is truthy). The `(%,@e)` splice handles both shapes: an else-if tail
-# re-expands as a nested `if`, and a final `else do …` collapses to its block.
-# A missing else yields :nil.
-export if
-defmacro if stx -> syntax-case stx [else] do
+export defmacro if stx -> syntax-case stx [else] do
   (if c t else e ...) -> %`(case %,c [:true %,t] [_ (%,@e)])
   (if c t) -> %`(case %,c [:true %,t] [_ :nil])
 end
 
-export and
-defmacro and stx -> syntax-case stx [] do
+export defmacro and stx -> syntax-case stx [] do
   (and) -> %':true
   (and a) -> %`%,a
   (and a b ...) -> %`(case %,a [:true (and %,@b)] [_ :false])
 end
 
-export or
-defmacro or stx -> syntax-case stx [] do
+export defmacro or stx -> syntax-case stx [] do
   (or) -> %':false
   (or a) -> %`%,a
   (or a b ...) -> %`(case %,a [:true :true] [_ (or %,@b)])

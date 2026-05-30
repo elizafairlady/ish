@@ -81,10 +81,13 @@ func (pc *patCompiler) compile(stx *core.Syntax, depth int) (core.Pattern, error
 		if n == "_" {
 			return core.PatWild{}, nil
 		}
-		if pc.syntax {
-			if n == "..." {
+		if n == "..." {
+			if pc.syntax {
 				return nil, pc.ctx.fail(stx.Span, DiagSyntaxShape, "unexpected ellipsis in pattern")
 			}
+			return nil, pc.ctx.fail(stx.Span, DiagSyntaxShape, "`...` is only meaningful in syntax patterns; use a `.` rest pattern (e.g. (h . t), [h . t]) to bind the remainder")
+		}
+		if pc.syntax {
 			if core.IsSyntaxParseCombinator(n) {
 				return nil, pc.ctx.fail(stx.Span, DiagSyntaxShape, fmt.Sprintf("combinator %s needs arguments", n))
 			}
@@ -94,17 +97,9 @@ func (pc *patCompiler) compile(stx *core.Syntax, depth int) (core.Pattern, error
 	case core.Int, core.Float, core.String, core.Bytes, core.Atom, core.Nil:
 		return core.PatLit{Value: n.(core.Datum)}, nil
 	case core.SyntaxVector:
-		elems, err := pc.compileSeqElems([]*core.Syntax(n), depth)
-		if err != nil {
-			return nil, err
-		}
-		return core.PatSeq{Kind: core.SeqVector, Elems: elems}, nil
+		return pc.compileSeq(core.SeqVector, []*core.Syntax(n), stx, depth)
 	case core.SyntaxTuple:
-		elems, err := pc.compileSeqElems([]*core.Syntax(n), depth)
-		if err != nil {
-			return nil, err
-		}
-		return core.PatSeq{Kind: core.SeqTuple, Elems: elems}, nil
+		return pc.compileSeq(core.SeqTuple, []*core.Syntax(n), stx, depth)
 	case core.SyntaxDict:
 		return pc.compileDict(n, depth)
 	case core.SyntaxPair:
@@ -138,6 +133,49 @@ func (pc *patCompiler) variable(stx *core.Syntax, n core.Word, depth int) (core.
 	pc.seen[n] = b
 	pc.depth[n] = depth
 	return core.PatVar{Ref: b.Ref()}, nil
+}
+
+// compileSeq compiles a vector or tuple pattern, recognizing a trailing `.`
+// rest marker (`[a b . rest]`, `{a . rest}`) the same way a list does. Without a
+// rest the Tail stays nil (exact-length match); with one, Tail is the remainder
+// pattern and the matcher rebinds the rest as the same kind of sequence.
+func (pc *patCompiler) compileSeq(kind core.SeqKind, elems []*core.Syntax, stx *core.Syntax, depth int) (core.Pattern, error) {
+	lead, tail, err := splitDotTail(elems)
+	if err != nil {
+		return nil, pc.ctx.fail(stx.Span, DiagSyntaxShape, err.Error())
+	}
+	seqElems, err := pc.compileSeqElems(lead, depth)
+	if err != nil {
+		return nil, err
+	}
+	pat := core.PatSeq{Kind: kind, Elems: seqElems}
+	if tail != nil {
+		if pc.syntax {
+			return nil, pc.ctx.fail(tail.Span, DiagSyntaxShape, "rest pattern not allowed in syntax pattern")
+		}
+		tp, err := pc.compile(tail, depth)
+		if err != nil {
+			return nil, err
+		}
+		pat.Tail = tp
+	}
+	return pat, nil
+}
+
+// splitDotTail splits sequence elements on a `.` rest marker: `[a b . rest]`
+// yields leading [a b] and tail rest. A `.` must be the second-to-last element
+// (exactly one pattern after it); anywhere else is an error. With no `.`, the
+// elements are returned unchanged and tail is nil.
+func splitDotTail(elems []*core.Syntax) (lead []*core.Syntax, tail *core.Syntax, err error) {
+	for i, e := range elems {
+		if w, ok := e.Node.(core.Word); ok && w == "." {
+			if i != len(elems)-2 {
+				return nil, nil, errors.New("a `.` rest marker must be followed by exactly one pattern")
+			}
+			return elems[:i], elems[i+1], nil
+		}
+	}
+	return elems, nil, nil
 }
 
 func (pc *patCompiler) compileList(stx *core.Syntax, depth int) (core.Pattern, error) {

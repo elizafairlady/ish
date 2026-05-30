@@ -12,7 +12,11 @@ import (
 	"strings"
 )
 
-//go:embed impl/kernel/*.ish kernel/*.ish
+// The entire std tree is embedded: kernel and impl/kernel are auto-loaded at
+// startup, and every other package (e.g. enum) is available to be imported/used
+// on demand. New package directories are picked up without editing this list.
+//
+//go:embed all:*
 var files embed.FS
 
 // PackageSource returns the source of an embedded package directory, formed by
