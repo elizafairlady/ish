@@ -135,6 +135,31 @@ func expandProtocolForm(stx *core.Syntax, form core.Word, head *core.Syntax, ctx
 	}
 	return Expand(result, ctx)
 }
+
+// expandCallArgs expands an application's arguments. A clause binder (`fn`/
+// `macro`) in argument position consumes the rest of the arguments as its
+// clause, so it is the final argument and needs no surrounding parentheses
+// (`spawn fn do … end`, `reduce xs 0 fn x a -> x + a`). Parenthesize it only
+// when a further argument must follow.
+func expandCallArgs(elems []*core.Syntax, ctx *Context) ([]*core.Syntax, error) {
+	args := make([]*core.Syntax, 0, len(elems))
+	for i := 0; i < len(elems); i++ {
+		if isClauseBinderHead(elems[i], ctx) {
+			grouped, err := Expand(readerExprCandidate(elems[i].Span, elems[i:]), ctx)
+			if err != nil {
+				return nil, err
+			}
+			return append(args, grouped), nil
+		}
+		ee, err := Expand(elems[i], ctx)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, ee)
+	}
+	return args, nil
+}
+
 func expandHeadedForm(stx *core.Syntax, elems []*core.Syntax, fallbackHead *core.Syntax, ctx *Context) (*core.Syntax, error) {
 	if len(elems) == 0 {
 		return nil, errors.New("application: empty")
@@ -167,13 +192,9 @@ func expandHeadedForm(stx *core.Syntax, elems []*core.Syntax, fallbackHead *core
 					Scopes:     elems[0].Scopes,
 					Properties: elems[0].Properties,
 				}
-				args := make([]*core.Syntax, 0, len(elems)-1)
-				for _, e := range elems[1:] {
-					ee, err := Expand(e, ctx)
-					if err != nil {
-						return nil, err
-					}
-					args = append(args, ee)
+				args, err := expandCallArgs(elems[1:], ctx)
+				if err != nil {
+					return nil, err
 				}
 				return &core.Syntax{Node: core.App{Callee: callee, Args: args}, Span: stx.Span}, nil
 			default:

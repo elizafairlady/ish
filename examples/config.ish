@@ -1,0 +1,28 @@
+# File I/O: persist and load data. We write a small settings file, read it back,
+# and parse its "key = value" lines into a dict by folding over the lines — a
+# realistic config-load round-trip that is self-contained (it writes the file it
+# then reads).
+
+use std/enum
+
+path = "/tmp/ish-config.txt"
+
+# Parse "key = value" lines into a dict; lines without " = " are skipped.
+defn load-config text do
+  reduce (to-list (str-split text "\n")) dict fn line acc ->
+    match (to-list (str-split line " = ")) do
+      (k v . _) -> dict-put acc k v
+      _ -> acc
+    end
+end
+
+file-write path "host = localhost\nport = 8080\ndebug = true"
+
+config = load-config (file-read path)
+
+print (str-concat "host  = " (dict-get config "host"))
+print (str-concat "port  = " (dict-get config "port"))
+print (str-concat "debug = " (dict-get config "debug"))
+
+# Return the looked-up settings so the round-trip is observable.
+{(dict-get config "host") (dict-get config "port")}

@@ -275,7 +275,15 @@ func (r *reader) readExpr(close byte, terminators bool) (*core.Syntax, error) {
 	}
 	parts := []*core.Syntax{first}
 	for {
-		r.skipExprSpace(terminators)
+		// A clause arrow `->` always expects a body, so a newline (or blank
+		// line / comment) immediately after it is a continuation, not a form
+		// terminator: the body may begin on the next line. `pat ->\n  body` and
+		// `fn x ->\n  match … end` read as one form.
+		if endsWithArrow(parts) {
+			r.skipExprSpace(false)
+		} else {
+			r.skipExprSpace(terminators)
+		}
 		if r.atStop(close, terminators) {
 			break
 		}
@@ -301,6 +309,16 @@ func (r *reader) readExpr(close byte, terminators bool) (*core.Syntax, error) {
 		return first, nil
 	}
 	return r.protocol(start, "%-expr", parts...), nil
+}
+
+// endsWithArrow reports whether the last read part is a clause arrow `->`,
+// which always expects a body to follow.
+func endsWithArrow(parts []*core.Syntax) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	w, ok := parts[len(parts)-1].Node.(core.Word)
+	return ok && w == "->"
 }
 
 func (r *reader) readPrimary(close byte, terminators bool) (*core.Syntax, error) {

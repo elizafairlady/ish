@@ -1,0 +1,92 @@
+# A real HTTP/1.1 server. An acceptor process loops `tcp-accept` and spawns one
+# process per connection — the connection's owning process is its "port", the
+# Erlang model. Request parsing, routing, and response formatting are all ish;
+# only the raw socket calls (tcp-*) are host primitives. Each blocking call
+# parks just its own process.
+
+use std/enum
+
+# --- Router: a path -> body function (Sinatra-style). :not-found falls through
+#     to a 404. ---
+defn route path do
+  case path do
+    "/" -> "<h1>home</h1>"
+    "/about" -> "<h1>about us</h1>"
+    "/health" -> "ok"
+    _ -> :not-found
+  end
+end
+
+# --- HTTP wire format ---
+defn status-text code do
+  case code do
+    200 -> "200 OK"
+    404 -> "404 Not Found"
+    _ -> "400 Bad Request"
+  end
+end
+
+defn response code body do
+  join {"HTTP/1.1 " (status-text code)
+        "\r\nContent-Length: " (to-string (str-length body))
+        "\r\nConnection: close\r\n\r\n" body} ""
+end
+
+# Parse the request line "METHOD PATH HTTP/1.1" into {method path}, or :bad.
+defn request-line req do
+  match (to-list (str-split req "\r\n")) do
+    (line . _) -> match (to-list (str-split line " ")) do
+      (method path . _) -> {method path}
+      _ -> :bad
+    end
+    _ -> :bad
+  end
+end
+
+defn reply-for req do
+  match (request-line req) do
+    {method path} -> match (route path) do
+      :not-found -> response 404 (str-concat "no route: " path)
+      body -> response 200 body
+    end
+    :bad -> response 400 "bad request"
+  end
+end
+
+# TCP is a byte stream: one tcp-recv may return only part of the request, so the
+# request is framed in-language. contains? tests for a substring (present iff
+# splitting on it yields more than one piece); read-request accumulates chunks
+# until the header terminator "\r\n\r\n" (or the peer closes).
+defn contains? s sub do
+  match (to-list (str-split s sub)) do
+    (_ _ . _) -> :true
+    _ -> :false
+  end
+end
+
+defn read-request conn acc do
+  case (contains? acc "\r\n\r\n") do
+    :true -> acc
+    _ -> match (tcp-recv conn) do
+      :eof -> acc
+      chunk -> read-request conn (str-concat acc chunk)
+    end
+  end
+end
+
+# --- One process per connection ---
+defn handle conn do
+  tcp-send conn (reply-for (read-request conn ""))
+  close conn
+end
+
+# --- Acceptor loop ---
+defn serve listener do
+  conn = tcp-accept listener
+  spawn fn do handle conn end
+  serve listener
+end
+
+listener = tcp-listen 8080
+print "listening on http://localhost:8080"
+serve listener

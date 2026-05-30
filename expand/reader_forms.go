@@ -297,9 +297,17 @@ func (p *exprPratt) operand() (*core.Syntax, error) {
 		return p.applyOperator(prefix, opStx, []*core.Syntax{inner})
 	}
 	// Collect the maximal run of non-operator parts as one application candidate,
-	// stopping at the first token that is an active operator in this context.
+	// stopping at the first token that is an active operator in this context. A
+	// clause binder (`fn`/`macro`) in the run owns the rest of the expression as
+	// its clause body, so operators after it (e.g. `+` in `reduce xs 0 fn x a ->
+	// x + a`) belong to that body and must not be enforested here — consume to
+	// the end so the clause binder, not this loop, parses them.
 	start := p.pos
 	for p.pos < len(p.parts) {
+		if isClauseBinderHead(p.parts[p.pos], p.ctx) {
+			p.pos = len(p.parts)
+			break
+		}
 		if _, r := p.activeOperator(p.parts[p.pos]); r != ResolveUnbound {
 			break
 		}

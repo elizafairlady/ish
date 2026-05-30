@@ -1,0 +1,15 @@
+# A UDP echo server. UDP is connectionless: one socket receives and sends, and
+# every datagram carries its sender's address — so there is no accept loop and
+# no process-per-connection. `udp-recv` returns {data sender}, and the server
+# replies to that sender on the same socket.
+
+defn echo-loop sock do
+  match (udp-recv sock) do
+    {data from} -> udp-send sock from (str-concat "echo: " data)
+  end
+  echo-loop sock
+end
+
+server = udp-open 9000
+print "udp echo server on :9000"
+echo-loop server

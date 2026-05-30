@@ -59,6 +59,18 @@ func (Dict) datum()    {}
 func (Tagged) datum()  {}
 func (*Syntax) datum() {}
 
+// Handle is an opaque host resource — a socket, listener, or file — owned by
+// the process that created it. Its payload is host-managed and not data, so it
+// is compared by identity and never structurally cloned (you cannot copy a live
+// socket; handing a Handle to another process shares the one resource, as
+// intended when an acceptor passes a connection to a worker).
+type Handle struct {
+	Kind     string
+	Resource any
+}
+
+func (*Handle) datum() {}
+
 // ListElems walks a Pair/Nil cons chain into its element data and final tail
 // (Nil for a proper list, the improper cdr otherwise). A non-pair datum yields
 // (nil, d). It is the single datum cons-walk shared by the runtime sequence
@@ -166,6 +178,9 @@ func DatumEqual(a, b Datum) bool {
 		return ok && av == bv
 	case *Native:
 		bv, ok := b.(*Native)
+		return ok && av == bv
+	case *Handle:
+		bv, ok := b.(*Handle)
 		return ok && av == bv
 	}
 	return false

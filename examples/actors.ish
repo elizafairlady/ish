@@ -11,7 +11,7 @@ defn counter-loop n do
 end
 
 me = self
-counter = spawn (fn [[] (counter-loop 0)])
+counter = spawn fn do counter-loop 0 end
 send counter {:inc me}
 receive do _ -> :ok end
 send counter {:inc me}

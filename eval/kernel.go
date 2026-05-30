@@ -94,6 +94,23 @@ func InstallRuntimeKernel(tbl *expand.BindingTable) {
 		def("register", registerFn)
 		def("unregister", unregisterFn)
 		def("whereis", whereisFn)
+		// Host I/O: the irreducible socket/file layer that ish ports wrap. Like
+		// Erlang's port drivers and Racket's runtime ports, these are the only
+		// part of I/O in Go; listeners/connections/files are opaque Handles, and
+		// each blocking call simply parks its process's goroutine.
+		def("tcp-listen", tcpListenFn)
+		def("tcp-listener-port", tcpListenerPortFn)
+		def("tcp-accept", tcpAcceptFn)
+		def("tcp-connect", tcpConnectFn)
+		def("tcp-recv", tcpRecvFn)
+		def("tcp-send", tcpSendFn)
+		def("udp-open", udpOpenFn)
+		def("udp-port", udpPortFn)
+		def("udp-recv", udpRecvFn)
+		def("udp-send", udpSendFn)
+		def("close", closeFn)
+		def("file-read", fileReadFn)
+		def("file-write", fileWriteFn)
 	}
 }
 
@@ -693,6 +710,8 @@ func kindFn(args []Value, _ *Env) (Value, error) {
 		return core.Atom("syntax"), nil
 	case *core.Closure, *core.Native:
 		return core.Atom("function"), nil
+	case *core.Handle:
+		return core.Atom("handle"), nil
 	}
 	return core.Atom("unknown"), nil
 }

@@ -1,0 +1,44 @@
+# Web access-log analytics — a data pipeline over std/enum and the thread-first
+# pipe. Each record is a tuple {method path status bytes}; the report counts
+# requests, the error rate, bytes served, and a per-path tally built by folding
+# into a dict. (Pairs with http_server.ish, whose logs look like these.)
+
+use std/enum
+
+# Field accessors by tuple pattern.
+defn req-method r do match r do {m p s b} -> m end end
+defn req-path r do match r do {m p s b} -> p end end
+defn req-status r do match r do {m p s b} -> s end end
+defn req-bytes r do match r do {m p s b} -> b end end
+
+logs = '(
+  {"GET" "/" 200 1024}
+  {"GET" "/about" 200 512}
+  {"POST" "/login" 302 0}
+  {"GET" "/missing" 404 256}
+  {"GET" "/" 200 1024}
+  {"GET" "/api/users" 500 128}
+  {"GET" "/about" 200 512}
+)
+
+# Aggregate with the pipe: collection-first enum functions read left to right.
+total  = logs |> count
+errors = logs |> filter (fn r -> (req-status r) >= 400) |> count
+bytes  = logs |> map &req-bytes |> sum
+
+# Per-path request tally: fold the paths into a dict, bumping each count.
+defn bump tally key do
+  dict-put tally key (case (dict-get tally key) do
+    :nil -> 1
+    n -> n + 1
+  end)
+end
+by-path = logs |> map &req-path |> reduce (dict) (fn p acc -> bump acc p)
+
+print (str-concat "total requests: " (to-string total))
+print (str-concat "errors (>=400): " (to-string errors))
+print (str-concat "bytes served:   " (to-string bytes))
+print (str-concat "requests / path: " (to-string by-path))
+
+# The report as a value, so it can be consumed (and tested) directly.
+{total errors bytes}
